@@ -63,7 +63,7 @@ func TestValidateProposals(t *testing.T) {
 		{name: "missing context", proposals: []model.Proposal{with(onMain("a"), func(p *model.Proposal) { p.Benefit = "" })},
 			fragments: []string{`proposal "a" has no benefit`}},
 		{name: "disabled category", proposals: []model.Proposal{with(onMain("a"), func(p *model.Proposal) { p.Category = "astrology" })},
-			fragments: []string{`Unknown tier or disabled category for proposal "a"`}},
+			fragments: []string{`Unknown tier or ineligible category for proposal "a"`}},
 		{name: "ineligible target", proposals: []model.Proposal{proposal("a", "someone-elses-branch")},
 			fragments: []string{`Proposal "a" target "someone-elses-branch"`, "owned open PR"}},
 		{name: "recorded work", proposals: []model.Proposal{onMain("a")}, history: []model.Task{published},
@@ -173,7 +173,7 @@ func TestValidateTaskPlan(t *testing.T) {
 		{name: "forked writers", tasks: []model.Task{task("a", existing), task("b", existing, "a"), task("c", existing, "a")}, want: "Accepted tasks on octomus/existing need a complete dependency order; unordered or forked branch plans cannot execute"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateTaskPlan(tc.tasks)
+			err := validateTaskPlan(tc.tasks, cfg)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("valid plan rejected: %v", err)

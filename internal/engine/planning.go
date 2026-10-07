@@ -246,7 +246,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		ExternalPRs:        external,
 		PRCoverage:         coverage,
 		History:            history.Items,
-		MaintenanceDue:     cycle.Number%cfg.MaintenanceEveryCycles == 0,
+		MaintenanceDue:     cfg.DeliveryMode == config.DeliveryModeMaintenance || cycle.Number%cfg.MaintenanceEveryCycles == 0,
 		MaintenanceTargets: targets,
 	}
 
@@ -290,7 +290,7 @@ func prAgeReached(createdAt string, threshold uint64, now time.Time) bool {
 }
 
 func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle, recorded string) (string, error) {
-	outcome := a.role(ctx, cfg, cycle.ID, cycle.Grounding.Revision, "grounding", "orchestrator", groundingPrompt+recorded, schemas.GroundingSchema())
+	outcome := a.role(ctx, cfg, cycle.ID, cycle.Grounding.Revision, "grounding", "orchestrator", groundingPrompt+maintenancePolicy(cfg)+recorded, schemas.GroundingSchema())
 	if err := a.attachOutcomes(cycle, []roleOutcome{outcome}); err != nil {
 		return "", err
 	}
@@ -305,8 +305,12 @@ func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *
 }
 
 func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) error {
-	if cfg.DiscoveryAgents > uint64(len(discoveryScopes)) {
-		return fmt.Errorf("Discovery supports at most %d agents", len(discoveryScopes))
+	scopes := discoveryScopes
+	if cfg.DeliveryMode == config.DeliveryModeMaintenance {
+		scopes = maintenanceDiscoveryScopes
+	}
+	if cfg.DiscoveryAgents > uint64(len(scopes)) {
+		return fmt.Errorf("Discovery supports at most %d agents", len(scopes))
 	}
 	cycleID, revision := cycle.ID, cycle.Grounding.Revision
 	perAgent := discoveryProposalLimit(len(cycle.Proposals), cfg.DiscoveryAgents)
@@ -355,7 +359,7 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 		if !ok {
 			return fmt.Errorf("Missing review focus for %s", slot)
 		}
-		prompts[i] = fmt.Sprintf("%s Candidates: %s. Grounding: %s. Context: %s", focus, candidates, ground, recorded)
+		prompts[i] = fmt.Sprintf("%s%s Candidates: %s. Grounding: %s. Context: %s", focus, maintenancePolicy(cfg), candidates, ground, recorded)
 	}
 	cycleID, revision := cycle.ID, cycle.Grounding.Revision
 	outcomes := runRoles(len(slots), func(i int) roleOutcome {

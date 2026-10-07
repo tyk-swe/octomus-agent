@@ -670,6 +670,7 @@ func (s *Store) RecordPRObservation(repository string, p model.PullRequest, deli
 		ExternalHeadMovement: delivered != nil && *delivered != p.Head,
 		DeliveredHead:        delivered,
 		PR:                   p,
+		AutoMerge:            preserveAutoMerge(previous, p),
 	}
 	return txPut(s.conn, "pr", recordID, observation)
 }

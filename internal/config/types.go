@@ -27,6 +27,10 @@ type Config struct {
 	Tiers                  map[string]Route  `json:"tiers"`
 	RepairRoute            Route             `json:"repair_route"`
 	Categories             []string          `json:"categories"`
+	DeliveryMode           DeliveryMode      `json:"delivery_mode" wire:"default"`
+	AutoMergeMaxLines      uint64            `json:"auto_merge_max_lines" wire:"default"`
+	AutoMergeMaxFiles      uint64            `json:"auto_merge_max_files" wire:"default"`
+	AutoMergeExcludedPaths []string          `json:"auto_merge_excluded_paths" wire:"default"`
 	VerificationCommands   []string          `json:"verification_commands"`
 	DiscoveryAgents        uint64            `json:"discovery_agents"`
 	ExecutionConcurrency   uint64            `json:"execution_concurrency"`

@@ -184,12 +184,38 @@ const (
 	BatchPhaseDraining  BatchPhase = 0
 	BatchPhasePlanning  BatchPhase = 1
 	BatchPhaseExecuting BatchPhase = 2
+	BatchPhaseMerging   BatchPhase = 3
 )
 
-var batchPhaseNames = []string{"draining", "planning", "executing"}
+var batchPhaseNames = []string{"draining", "planning", "executing", "merging"}
 
 func (v BatchPhase) String() string               { return wirejson.EnumName(v, batchPhaseNames) }
 func (v BatchPhase) MarshalText() ([]byte, error) { return wirejson.EnumText(v, batchPhaseNames) }
 func (v *BatchPhase) UnmarshalText(text []byte) error {
 	return wirejson.ParseEnum(v, text, batchPhaseNames)
+}
+
+type AutoMergeStatus uint8
+
+const (
+	AutoMergeWaiting   AutoMergeStatus = 0
+	AutoMergeManual    AutoMergeStatus = 1
+	AutoMergeMerging   AutoMergeStatus = 2
+	AutoMergeUncertain AutoMergeStatus = 3
+	AutoMergeMerged    AutoMergeStatus = 4
+	AutoMergeClosed    AutoMergeStatus = 5
+)
+
+var autoMergeStatusNames = []string{"waiting", "manual", "merging", "uncertain", "merged", "closed"}
+
+func (v AutoMergeStatus) String() string { return wirejson.EnumName(v, autoMergeStatusNames) }
+func (v AutoMergeStatus) MarshalText() ([]byte, error) {
+	return wirejson.EnumText(v, autoMergeStatusNames)
+}
+func (v *AutoMergeStatus) UnmarshalText(text []byte) error {
+	return wirejson.ParseEnum(v, text, autoMergeStatusNames)
+}
+
+func (v AutoMergeStatus) Pending() bool {
+	return v == AutoMergeWaiting || v == AutoMergeMerging || v == AutoMergeUncertain
 }

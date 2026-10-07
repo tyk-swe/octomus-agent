@@ -333,6 +333,8 @@ export function reviewRound(over: Partial<ReviewRoundEvidence> = {}): ReviewRoun
     completed: true,
     summary_present: true,
     matches_output_revision: true,
+    maintenance: null,
+    trusted_diff_complete: false,
     findings: [],
     ...over
   };
@@ -366,6 +368,9 @@ export function taskEvidence(id: string, over: Partial<TaskEvidence> = {}): Task
     error_recorded: false,
     created_at: now,
     updated_at: now,
+    delivery_mode: 'standard',
+    maintenance_footprint: null,
+    auto_merge: null,
     revisions: { source: A, comparison_base: A, default_branch: 'main', output: B },
     sessions: [
       {
@@ -436,6 +441,7 @@ export function runEvidence(
       id: 'synthetic-cycle',
       number: 7,
       mode: 'execution',
+      delivery_mode: 'standard',
       status: 'completed',
       started_at: now,
       completed_at: now,

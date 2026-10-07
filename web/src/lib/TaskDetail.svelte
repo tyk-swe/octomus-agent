@@ -412,7 +412,37 @@
             <dt>Operator retries</dt>
             <dd>{task.attempts}</dd>
           </div>
+          <div>
+            <dt>Delivery mode</dt>
+            <dd>{task.config.delivery_mode ?? 'standard'}</dd>
+          </div>
         </dl>
+        {#if task.maintenance_footprint}
+          {@const footprint = task.maintenance_footprint}
+          <h3>Maintenance footprint</h3>
+          <dl class="detail-grid">
+            <div>
+              <dt>Changed lines</dt>
+              <dd>{footprint.changed_lines ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt>Changed files</dt>
+              <dd>{footprint.changed_files ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt>Measurement</dt>
+              <dd>{footprint.complete ? 'Complete trusted diff' : 'Incomplete'}</dd>
+            </div>
+            {#if footprint.paths.length}<div class="full">
+                <dt>Changed paths</dt>
+                <dd>{footprint.paths.join(', ')}</dd>
+              </div>{/if}
+            {#if footprint.manual_reasons.length}<div class="full">
+                <dt>Manual-only reasons</dt>
+                <dd>{footprint.manual_reasons.join(' · ')}</dd>
+              </div>{/if}
+          </dl>
+        {/if}
         <h3>Scope & evidence</h3>
         <p>{task.proposal.scope}</p>
         {#each task.proposal.evidence as item}<p class="evidence">
@@ -479,6 +509,23 @@
                 label="Review summary"
                 value={round.result.summary}
               />{:else}<p>No review summary was recorded for this round.</p>{/if}
+            {#if round.maintenance}
+              <div class="maintenance-assessment">
+                <Badge
+                  label={round.maintenance.qualifies
+                    ? round.maintenance.manual_merge_required
+                      ? 'Maintenance · manual merge'
+                      : 'Maintenance'
+                    : 'Not maintenance'}
+                  tone={round.maintenance.qualifies ? 'clean' : 'blocked'}
+                />
+                {#if !round.trusted_diff_complete}<Badge
+                    label="Partial trusted diff"
+                    tone="blocked"
+                  />{/if}
+                <p>{round.maintenance.reason}</p>
+              </div>
+            {/if}
             <ReviewChangeSet
               comparisonBase={round.comparison_base}
               revision={round.revision}

@@ -48,10 +48,15 @@
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
     commands = $state(''),
+    excluded = $state(''),
+    savedExcluded = $state(''),
     preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(
-    config !== null && (JSON.stringify(config) !== savedJson || commands !== savedCommands)
+    config !== null &&
+      (JSON.stringify(config) !== savedJson ||
+        commands !== savedCommands ||
+        excluded !== savedExcluded)
   );
   const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
   // Saved commands can contain newlines or whitespace that the line editor cannot round-trip.
@@ -59,6 +64,11 @@
     commands !== savedCommands || replaced.verification_commands
       ? parseCommands(commands)
       : (config?.verification_commands ?? [])
+  );
+  const draftExcluded = $derived(
+    excluded !== savedExcluded || replaced.auto_merge_excluded_paths
+      ? parseCommands(excluded)
+      : (config?.auto_merge_excluded_paths ?? [])
   );
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
   const locked = (field: string) => transformedByField.has(field) && !replaced[field];
@@ -122,6 +132,8 @@
     transformed = view.transformed_fields;
     commands = view.config.verification_commands.join('\n');
     savedCommands = commands;
+    excluded = view.config.auto_merge_excluded_paths.join('\n');
+    savedExcluded = excluded;
     replaced = {};
     loadError = '';
   }
@@ -142,12 +154,14 @@
   function unlockField(field: string) {
     for (const path of transformedByField.get(field)?.paths ?? []) clearPath(path);
     if (field === 'verification_commands') commands = '';
+    if (field === 'auto_merge_excluded_paths') excluded = '';
     replaced[field] = true;
   }
   function discard() {
     if (!dirty || busy) return;
     config = JSON.parse(savedJson);
     commands = savedCommands;
+    excluded = savedExcluded;
     replaced = {};
     error = '';
     conflict = false;
@@ -158,6 +172,7 @@
     if (config) {
       config = JSON.parse(savedJson);
       commands = savedCommands;
+      excluded = savedExcluded;
       replaced = {};
     }
     error = '';
@@ -173,7 +188,11 @@
     conflict = false;
     message = '';
     try {
-      const draft: Config = { ...config, verification_commands: draftCommands };
+      const draft: Config = {
+        ...config,
+        verification_commands: draftCommands,
+        auto_merge_excluded_paths: draftExcluded
+      };
       const patch: Record<string, unknown> = {};
       for (const key of Object.keys(draft) as (keyof Config)[]) {
         if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
@@ -500,10 +519,66 @@
               ><input
                 type="checkbox"
                 value={category}
-                disabled={locked('categories')}
+                disabled={locked('categories') ||
+                  (config.delivery_mode === 'maintenance' && category === 'features')}
                 bind:group={config.categories}
               /><span>{categoryLabel(category)}</span></label
             >{/each}
+        </div>
+        {#if config.delivery_mode === 'maintenance'}<p class="muted">
+            Features stay in the saved category selection but are never eligible while maintenance
+            delivery is active.
+          </p>{/if}
+      </section>
+      <section class="panel settings-section">
+        <div class="section-heading">
+          <div>
+            <h2>Delivery</h2>
+            <p>How reviewed work reaches your project.</p>
+          </div>
+          <Icon name="branch" />
+        </div>
+        <div class="form-grid">
+          <label class="full"
+            >Delivery mode<select
+              id="delivery-mode"
+              aria-label="Delivery mode"
+              bind:value={config.delivery_mode}
+              required
+            >
+              <option value="standard">Standard — publish pull requests for manual merge</option>
+              <option value="maintenance"
+                >Maintenance — reviewed small maintenance PRs can merge automatically</option
+              >
+            </select><small
+              >Standard keeps every pull request manual. Maintenance restricts work to non-feature
+              upkeep.</small
+            ></label
+          >
+          {#if config.delivery_mode === 'maintenance'}
+            <div class="notice delivery-warning" role="status">
+              <Icon name="alert" /> Maintenance mode is opt-in: after a clean scope-assessed review and
+              passing verification, the orchestrator can squash-merge a small pull request itself when
+              GitHub checks, reviews and protections allow it. Sensitive or oversized changes stay manual.
+            </div>
+            <label class="full"
+              >Manual-merge paths<textarea
+                id="auto-merge-excluded-paths"
+                bind:value={excluded}
+                rows="3"
+                readonly={locked('auto_merge_excluded_paths')}
+                placeholder={'deploy/\nsecrets.txt'}
+              ></textarea>{@render previewNote(
+                'auto_merge_excluded_paths',
+                'path list',
+                true
+              )}<small
+                >One repository-relative name or subtree prefix per line; a matching change keeps
+                the pull request manual. CI rules, security policy, deployment and migration paths
+                are always manual.</small
+              ></label
+            >
+          {/if}
         </div>
       </section>
       <section class="panel settings-section">

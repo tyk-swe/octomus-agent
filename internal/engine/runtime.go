@@ -39,6 +39,10 @@ type prRefreshJob struct {
 	cancel context.CancelFunc
 }
 
+type mergeJob struct {
+	cancel context.CancelFunc
+}
+
 type runtimeState struct {
 	cycle               *cycleJob
 	preflight           *model.CycleMode
@@ -54,6 +58,11 @@ type runtimeState struct {
 	lastObserve         time.Time
 	reconciling         bool
 	baseline            *baselineJob
+	merges              map[string]struct{}
+	mergeWorker         *mergeJob
+	mergeCursor         int64
+	lastMergeCheck      time.Time
+	mergeRecoveryErrors map[string]string
 	defaultObservation  *model.DefaultBranchObservation
 	cleanups            map[cleanupKey]struct{}
 	cleanupReports      map[cleanupKey]cleanupReport
@@ -64,7 +73,7 @@ type runtimeState struct {
 }
 
 func (r *runtimeState) idle() bool {
-	return !r.planning() && len(r.tasks) == 0 && r.baseline == nil
+	return !r.planning() && len(r.tasks) == 0 && r.baseline == nil && r.mergeWorker == nil
 }
 
 func (r *runtimeState) planning() bool { return r.cycle != nil || r.preflight != nil }
@@ -134,7 +143,7 @@ func (a *App) setRecoveryError(err error) string {
 func (a *App) recoveryConflict() error {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
-	if a.runtime.activeRecoveryError != nil {
+	if a.runtime.activeRecoveryError != nil || len(a.runtime.mergeRecoveryErrors) != 0 {
 		return errRecoveryBlocked
 	}
 	return nil

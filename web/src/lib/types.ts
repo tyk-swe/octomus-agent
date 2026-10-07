@@ -1,4 +1,6 @@
 export type Backend = 'codex' | 'opencode';
+export type DeliveryMode = 'standard' | 'maintenance';
+export type AutoMergeStatus = 'waiting' | 'manual' | 'merging' | 'uncertain' | 'merged' | 'closed';
 export type CycleMode = 'execution' | 'audit';
 export type CycleStatus = 'running' | 'completed' | 'idle' | 'failed' | 'interrupted';
 export type SessionStatus = 'running' | 'completed' | 'failed' | 'interrupted';
@@ -24,6 +26,42 @@ export type Route = {
   provider?: string | null;
   variant?: string | null;
 };
+export type MaintenanceAssessment = {
+  qualifies: boolean;
+  manual_merge_required: boolean;
+  reason: string;
+};
+export type MaintenanceFootprint = {
+  comparison_base: string;
+  revision: string;
+  changed_lines: number | null;
+  changed_files: number | null;
+  paths: string[];
+  complete: boolean;
+  manual_reasons: string[];
+};
+export type AutoMergeState = {
+  task_id: string;
+  head: string;
+  comparison_base: string;
+  head_branch: string;
+  base_branch: string;
+  policy_revision: string;
+  authorized: boolean;
+  footprint: MaintenanceFootprint | null;
+  status: AutoMergeStatus;
+  reason: string;
+  observed_at: string;
+  attempt_id: string | null;
+  attempted_at: string | null;
+  merge_commit: string | null;
+  result_source: string | null;
+};
+export type AutoMergeSnapshot = {
+  repository: string;
+  pr_number: number;
+  state: AutoMergeState;
+};
 export type Config = {
   repository: string;
   github_repo: string;
@@ -35,6 +73,10 @@ export type Config = {
   tiers: Record<string, Route>;
   repair_route: Route;
   categories: string[];
+  delivery_mode: DeliveryMode;
+  auto_merge_max_lines: number;
+  auto_merge_max_files: number;
+  auto_merge_excluded_paths: string[];
   verification_commands: string[];
   discovery_agents: number;
   execution_concurrency: number;
@@ -131,6 +173,8 @@ export type ReviewRound = {
     summary: string;
     findings: FindingEvidence[];
   };
+  maintenance: MaintenanceAssessment | null;
+  trusted_diff_complete: boolean;
 };
 export type AttemptPolicy = Pick<
   Config,
@@ -150,6 +194,7 @@ export type PRObservation = {
   observed_at: string;
   delivered_head: string | null;
   external_head_movement: boolean;
+  auto_merge: AutoMergeState | null;
 };
 export type CycleSummary = Pick<
   Cycle,
@@ -177,6 +222,8 @@ export type Task = Omit<TaskRow, 'title' | 'target' | 'tier' | 'category'> & {
   source_revision: string;
   comparison_base: string;
   default_revision: string;
+  maintenance_footprint: MaintenanceFootprint | null;
+  auto_merge_snapshot: AutoMergeSnapshot | null;
   run_id: string | null;
   attempt_policy: AttemptPolicy | null;
   workspace: string;
@@ -261,6 +308,7 @@ export type PRCoverage = {
 };
 export type Cycle = {
   mode: CycleMode;
+  delivery_mode: DeliveryMode;
   id: string;
   number: number;
   status: CycleStatus;
@@ -314,6 +362,8 @@ export type ReviewRoundEvidence = {
   completed: boolean;
   summary_present: boolean;
   matches_output_revision: boolean | null;
+  maintenance: MaintenanceAssessment | null;
+  trusted_diff_complete: boolean;
   findings: FindingEvidence[];
 };
 export type ReviewEvidence = {
@@ -349,6 +399,9 @@ export type TaskEvidence = {
   error_recorded: boolean;
   created_at: string;
   updated_at: string;
+  delivery_mode: DeliveryMode;
+  maintenance_footprint: MaintenanceFootprint | null;
+  auto_merge: AutoMergeState | null;
   revisions: EvidenceRevisions;
   sessions: SessionRoute[];
   latest_review: ReviewEvidence;
@@ -385,6 +438,7 @@ export type CycleEvidence = {
   id: string;
   number: number;
   mode: CycleMode;
+  delivery_mode: DeliveryMode;
   status: CycleStatus;
   started_at: string;
   completed_at: string | null;
@@ -553,12 +607,14 @@ export type Snapshot = {
     idle_streak: number;
     batch: {
       id: string;
-      phase: 'draining' | 'planning' | 'executing';
+      phase: 'draining' | 'planning' | 'executing' | 'merging';
       cycle_id: string | null;
     } | null;
     context_fingerprint: string;
   };
   repository: string;
+  delivery_mode: DeliveryMode;
+  auto_merge: { active: boolean; counts: Record<string, number> };
   configured: boolean;
   audit_configured: boolean;
   active_cycle_mode: CycleMode | null;

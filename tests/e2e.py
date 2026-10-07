@@ -521,6 +521,120 @@ def pr_context():
         assert git('--git-dir', str(root / 'remote.git'), 'for-each-ref', '--format=%(refname) %(objectname)', cwd=root) == before
 
 
+def observed_pr(service, number):
+    return next((p for p in service.request('/state')['prs'] if p['pr']['number'] == number), {})
+
+
+def maintenance():
+    def prepare(root):
+        (root / 'maintenance').touch()
+        (root / 'pr-create-patch.json').write_text(json.dumps({'check_status': 'EXPECTED'}))
+
+    with fixture_service('octomus-maintenance-', prepare) as (root, service):
+        service.configure(routes(), [FEATURE_CHECK], delivery_mode='maintenance')
+        task = service.wait(service.terminal_task, 'maintenance task completion')
+        assert task['status'] == 'published' and task['config']['delivery_mode'] == 'maintenance', task['error']
+        assert task['proposal']['category'] == 'correctness'
+        footprint = task['maintenance_footprint']
+        assert footprint and footprint['complete'] and footprint['changed_lines'] and footprint['paths'] == ['feature.txt'], footprint
+        latest = task['reviews'][-1]
+        assert latest['maintenance']['qualifies'] and latest['maintenance']['reason'] and latest['trusted_diff_complete'], latest
+
+        waiting = service.wait(lambda: observed_pr(service, task['pr_number'])['auto_merge'] if (observed_pr(service, task['pr_number']).get('auto_merge') or {}).get('status') == 'waiting' and 'Waiting for checks' in observed_pr(service, task['pr_number'])['auto_merge']['reason'] else None, 'merge waiting on pending checks')
+        assert waiting['authorized'] and waiting['footprint']['complete'], waiting
+        assert not (root / 'merge-attempts.jsonl').exists(), 'no mutation while checks are pending'
+        update_prs(root, lambda prs: prs[0].update(check_status='SUCCESS'))
+
+        merged = service.wait(lambda: (lambda merge: merge if merge.get('status') == 'merged' else None)(observed_pr(service, task['pr_number']).get('auto_merge') or {}), 'confirmed squash merge')
+        assert merged['result_source'] == 'confirmed' and merged['merge_commit'] and merged['authorized'], merged
+        attempts = [json.loads(line) for line in (root / 'merge-attempts.jsonl').read_text().splitlines()]
+        assert attempts == [{'number': task['pr_number'], 'sha': task['output_commit'], 'method': 'squash'}], attempts
+        saved = json.loads((root / 'prs.json').read_text())[0]
+        assert saved['state'] == 'merged' and saved['merge_commit_sha'] == merged['merge_commit'], saved
+        remote = str(root / 'remote.git')
+        head = git('rev-parse', 'main', cwd=remote)
+        assert head == merged['merge_commit'] and len(git('rev-list', '--parents', '-n', '1', 'main', cwd=remote).split()) == 2, 'one squash commit on main'
+        assert git('show', f'{head}:feature.txt', cwd=remote) == 'fixed'
+        service.wait(lambda: service.request('/state')['control']['paused'], 'run once settles after the merge')
+
+
+def maintenance_gates():
+    def prepare(root):
+        (root / 'maintenance').touch()
+        (root / 'parallel').touch()
+        (root / 'maintenance-sensitive').touch()
+        (root / 'pr-create-patch.json').write_text(json.dumps({'check_status': 'FAILURE', 'review_decision': 'CHANGES_REQUESTED'}))
+
+    with fixture_service('octomus-maintenance-gates-', prepare) as (root, service):
+        service.configure(routes(), [FEATURE_CHECK], delivery_mode='maintenance')
+        service.wait(lambda: len([t for t in service.request('/state')['tasks'] if t['status'] == 'published']) == 2, 'both deliveries')
+        prs = json.loads((root / 'prs.json').read_text())
+        assert len(prs) == 2
+        baseline = git('rev-parse', 'main', cwd=root / 'remote.git')
+
+        def settled(number):
+            merge = observed_pr(service, number).get('auto_merge') or {}
+            return merge if merge.get('status') == 'manual' else None
+
+        outcomes = []
+        for number in [pr['number'] for pr in prs]:
+            merge = service.wait(lambda n=number: settled(n), f'manual merge outcome for pull request {number}')
+            assert merge['reason'], merge
+            outcomes.append(merge)
+        reasons = [merge['reason'] for merge in outcomes]
+        sensitive = [merge for merge in outcomes if '.github' in merge['reason'] or 'sensitive' in merge['reason'].lower()]
+        conditional = [merge for merge in outcomes if 'review requested changes' in merge['reason'] or 'Checks failed' in merge['reason']]
+        assert sensitive and not sensitive[0]['authorized'], f'sensitive change kept authority: {sensitive}'
+        assert conditional and conditional[0]['authorized'], f'conditional gate lost its recorded authorization: {conditional}'
+        assert not (root / 'merge-attempts.jsonl').exists(), 'a refused gate must never reach the mutation'
+        assert git('rev-parse', 'main', cwd=root / 'remote.git') == baseline
+        service.wait(lambda: service.request('/state')['control']['paused'], 'run once completes with manual outcomes')
+
+
+def maintenance_oversize():
+    first_line = 'for file in feature*.txt; do test "$(head -n 1 "$file")" = fixed || exit 1; done'
+
+    def prepare(root):
+        (root / 'maintenance').touch()
+        (root / 'maintenance-oversize').touch()
+
+    with fixture_service('octomus-maintenance-oversize-', prepare) as (root, service):
+        service.configure(routes(), [first_line], delivery_mode='maintenance')
+        task = service.wait(service.terminal_task, 'oversize maintenance task completion')
+        assert task['status'] == 'published' and task['config']['delivery_mode'] == 'maintenance', task['error']
+        footprint = task['maintenance_footprint']
+        assert footprint and footprint['complete'] and footprint['changed_lines'] == 601 and footprint['changed_files'] == 1, footprint
+        assert footprint['paths'] == ['feature.txt'], footprint
+        baseline = git('rev-parse', 'main', cwd=root / 'remote.git')
+        merge = service.wait(lambda: (lambda m: m if m.get('status') == 'manual' else None)(observed_pr(service, task['pr_number']).get('auto_merge') or {}), 'manual oversize outcome')
+        assert not merge['authorized'] and 'exceeds' in merge['reason'], merge
+        assert not (root / 'merge-attempts.jsonl').exists(), 'a static oversize delivery must never reach the mutation'
+        assert git('rev-parse', 'main', cwd=root / 'remote.git') == baseline
+        service.wait(lambda: service.request('/state')['control']['paused'], 'run once completes with the manual outcome')
+
+
+def interrupt_merge():
+    def prepare(root):
+        (root / 'maintenance').touch()
+        (root / 'merge-after-hold').touch()
+
+    with fixture_service('octomus-interrupt-merge-', prepare) as (root, service):
+        service.configure(routes(), [FEATURE_CHECK], delivery_mode='maintenance')
+        task = service.wait(service.terminal_task, 'maintenance task completion')
+        assert task['status'] == 'published', task['error']
+        service.wait(lambda: (root / 'merge-written').exists(), 'merge mutation inside the after-write hold')
+        saved = json.loads((root / 'prs.json').read_text())[0]
+        assert saved['state'] == 'merged' and saved['merge_commit_sha'], 'the remote write completed while the service waited'
+        service.stop(crash=True)
+        (root / 'merge-after-hold').unlink()
+        service.start()
+        merged = service.wait(lambda: (lambda merge: merge if merge.get('status') == 'merged' else None)(observed_pr(service, task['pr_number']).get('auto_merge') or {}), 'reconciled merge outcome')
+        assert merged['result_source'] == 'observed' and merged['merge_commit'] == saved['merge_commit_sha'], merged
+        assert len((root / 'merge-attempts.jsonl').read_text().splitlines()) == 1, 'the read reconciled before any retry'
+        assert git('rev-parse', 'main', cwd=root / 'remote.git') == saved['merge_commit_sha']
+        service.wait(lambda: service.request('/state')['control']['paused'], 'run once settles after reconciliation')
+
+
 def upgrade():
     """A v0.1.0 database migrates, serves saved evidence and plans with refreshed owned-PR status.
 
@@ -574,6 +688,10 @@ def upgrade():
 # Longest first, so the workers finish together instead of waiting on a late long scenario.
 SCENARIOS = [
     ('notify', notify),
+    ('maintenance-gates', maintenance_gates),
+    ('maintenance-oversize', maintenance_oversize),
+    ('interrupt-merge', interrupt_merge),
+    ('maintenance', maintenance),
     ('chain', chain),
     ('interrupt-publication', interrupt_publication),
     ('normal-mixed', functools.partial(normal, 'opencode', planning='codex', reviewer='codex')),

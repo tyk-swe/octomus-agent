@@ -37,6 +37,22 @@ func TestStructuredResultSchemas(t *testing.T) {
 	if err := Validate(review, ReviewSchema()); err == nil {
 		t.Fatal("accepted a non-boolean review verdict")
 	}
+	document := map[string]any{
+		"review":      map[string]any{"completed": true, "summary": "reviewed", "findings": []any{}},
+		"maintenance": map[string]any{"qualifies": true, "manual_merge_required": false, "reason": "bounded upkeep"},
+	}
+	if err := Validate(document, MaintenanceReviewSchema()); err != nil {
+		t.Fatal(err)
+	}
+	document["maintenance"] = map[string]any{"qualifies": true}
+	if err := Validate(document, MaintenanceReviewSchema()); err == nil {
+		t.Fatal("accepted a maintenance assessment missing required fields")
+	}
+	document["maintenance"] = map[string]any{"qualifies": true, "manual_merge_required": false, "reason": "bounded upkeep"}
+	document["extra"] = "value"
+	if err := Validate(document, MaintenanceReviewSchema()); err == nil {
+		t.Fatal("accepted an unexpected maintenance document field")
+	}
 }
 
 func validProposal() map[string]any {
@@ -81,6 +97,12 @@ func TestEverySchemaMatchesTheTypeThatDecodesIt(t *testing.T) {
 			review := decoded.(*model.Review)
 			if !review.Completed || len(review.Findings) != 1 || review.Findings[0].Priority != "x" {
 				t.Fatalf("decoded review = %#v", review)
+			}
+		}},
+		{"maintenance review document", MaintenanceReviewSchema(), reflect.TypeOf(model.MaintenanceReviewDocument{}), func(t *testing.T, decoded any) {
+			document := decoded.(*model.MaintenanceReviewDocument)
+			if !document.Review.Completed || !document.Maintenance.Qualifies || document.Maintenance.Reason != "x" {
+				t.Fatalf("decoded maintenance review = %#v", document)
 			}
 		}},
 	} {

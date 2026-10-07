@@ -117,6 +117,7 @@ func (a *App) baselineBlocker() (*string, error) {
 	baseline := a.runtime.baseline != nil
 	tasks := len(a.runtime.tasks)
 	planning := a.runtime.planning()
+	merging := a.runtime.mergeWorker != nil
 	a.runtimeMu.Unlock()
 	var reason *string
 	switch {
@@ -130,6 +131,8 @@ func (a *App) baselineBlocker() (*string, error) {
 		reason = new("Wait for active tasks before running a baseline check")
 	case planning:
 		reason = new("Wait for planning to finish before running a baseline check")
+	case merging:
+		reason = new("Wait for automatic merge checks to finish before running a baseline check")
 	}
 	return reason, nil
 }

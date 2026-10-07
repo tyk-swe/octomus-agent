@@ -126,12 +126,97 @@ type GroundingDocument struct {
 	Context string `json:"context"`
 }
 
+type MaintenanceAssessment struct {
+	Qualifies           bool   `json:"qualifies"`
+	ManualMergeRequired bool   `json:"manual_merge_required"`
+	Reason              string `json:"reason"`
+}
+
+func (v *MaintenanceAssessment) UnmarshalJSON(data []byte) error {
+	return wirejson.DecodeRecord(data, v)
+}
+func (v MaintenanceAssessment) MarshalJSON() ([]byte, error) {
+	type plain MaintenanceAssessment
+	return wirejson.Record(plain(v))
+}
+
+type MaintenanceReviewDocument struct {
+	Review      Review                `json:"review"`
+	Maintenance MaintenanceAssessment `json:"maintenance"`
+}
+
+func (v *MaintenanceReviewDocument) UnmarshalJSON(data []byte) error {
+	return wirejson.DecodeRecord(data, v)
+}
+func (v MaintenanceReviewDocument) MarshalJSON() ([]byte, error) {
+	type plain MaintenanceReviewDocument
+	return wirejson.Record(plain(v))
+}
+
+type MaintenanceFootprint struct {
+	ComparisonBase string   `json:"comparison_base"`
+	Revision       string   `json:"revision"`
+	ChangedLines   *uint64  `json:"changed_lines"`
+	ChangedFiles   *uint64  `json:"changed_files"`
+	Paths          []string `json:"paths"`
+	Complete       bool     `json:"complete"`
+	ManualReasons  []string `json:"manual_reasons"`
+}
+
+func (v *MaintenanceFootprint) UnmarshalJSON(data []byte) error {
+	return wirejson.DecodeRecord(data, v)
+}
+func (v MaintenanceFootprint) MarshalJSON() ([]byte, error) {
+	type plain MaintenanceFootprint
+	return wirejson.Record(plain(v))
+}
+func (v MaintenanceFootprint) Clone() MaintenanceFootprint { return wirejson.Clone(v) }
+
+type AutoMergeState struct {
+	TaskID         string                `json:"task_id"`
+	Head           string                `json:"head"`
+	HeadBranch     string                `json:"head_branch" wire:"default"`
+	BaseBranch     string                `json:"base_branch" wire:"default"`
+	ComparisonBase string                `json:"comparison_base"`
+	PolicyRevision string                `json:"policy_revision"`
+	Authorized     bool                  `json:"authorized"`
+	Footprint      *MaintenanceFootprint `json:"footprint"`
+	Status         AutoMergeStatus       `json:"status"`
+	Reason         string                `json:"reason"`
+	ObservedAt     string                `json:"observed_at"`
+	AttemptID      *string               `json:"attempt_id"`
+	AttemptedAt    *string               `json:"attempted_at"`
+	MergeCommit    *string               `json:"merge_commit"`
+	ResultSource   *string               `json:"result_source"`
+}
+
+func (v *AutoMergeState) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v AutoMergeState) MarshalJSON() ([]byte, error) {
+	type plain AutoMergeState
+	return wirejson.Record(plain(v))
+}
+func (v AutoMergeState) Clone() AutoMergeState { return wirejson.Clone(v) }
+
+type AutoMergeSnapshot struct {
+	Repository string         `json:"repository"`
+	PRNumber   uint64         `json:"pr_number"`
+	State      AutoMergeState `json:"state"`
+}
+
+func (v *AutoMergeSnapshot) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v AutoMergeSnapshot) MarshalJSON() ([]byte, error) {
+	type plain AutoMergeSnapshot
+	return wirejson.Record(plain(v))
+}
+
 type ReviewRound struct {
-	SessionID      string `json:"session_id"`
-	Revision       string `json:"revision"`
-	ComparisonBase string `json:"comparison_base"`
-	Result         Review `json:"result"`
-	CreatedAt      string `json:"created_at"`
+	SessionID           string                 `json:"session_id"`
+	Revision            string                 `json:"revision"`
+	ComparisonBase      string                 `json:"comparison_base"`
+	Result              Review                 `json:"result"`
+	CreatedAt           string                 `json:"created_at"`
+	Maintenance         *MaintenanceAssessment `json:"maintenance" wire:"default"`
+	TrustedDiffComplete bool                   `json:"trusted_diff_complete" wire:"default"`
 }
 
 func (v *ReviewRound) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -237,40 +322,42 @@ func (v RepairProgress) MarshalJSON() ([]byte, error) {
 }
 
 type Task struct {
-	ID                   string             `json:"id"`
-	CycleID              string             `json:"cycle_id"`
-	Proposal             Proposal           `json:"proposal"`
-	Status               Status             `json:"status"`
-	Route                config.Route       `json:"route"`
-	Config               config.Config      `json:"config"`
-	SourceRevision       string             `json:"source_revision"`
-	ComparisonBase       string             `json:"comparison_base"`
-	DefaultRevision      string             `json:"default_revision"`
-	Branch               string             `json:"branch"`
-	Workspace            string             `json:"workspace"`
-	ExecutionSession     *string            `json:"execution_session"`
-	RepairSession        *string            `json:"repair_session"`
-	Sessions             []Session          `json:"sessions"`
-	Reviews              []ReviewRound      `json:"reviews"`
-	Verification         []Verification     `json:"verification"`
-	OutputCommit         *string            `json:"output_commit"`
-	PRNumber             *uint64            `json:"pr_number"`
-	PRURL                *string            `json:"pr_url"`
-	Attempts             uint64             `json:"attempts"`
-	Error                *string            `json:"error"`
-	CreatedAt            string             `json:"created_at"`
-	UpdatedAt            string             `json:"updated_at"`
-	AttemptPolicy        *AttemptPolicy     `json:"attempt_policy"`
-	ReviewBaseline       uint64             `json:"review_baseline"`
-	RepairRounds         *uint64            `json:"repair_rounds"` // Completed repairs this attempt; nil retains the legacy estimate.
-	RepairProgress       *RepairProgress    `json:"repair_progress"`
-	BlockedReason        *BlockedReason     `json:"blocked_reason"`
-	RunID                *string            `json:"run_id"`
-	SupersededBy         []string           `json:"superseded_by"`
-	Supersedes           []string           `json:"supersedes"`
-	RediscoveryRequested bool               `json:"rediscovery_requested"`
-	RediscoveryResult    *string            `json:"rediscovery_result"`
-	Lifecycle            WorkspaceLifecycle `json:"lifecycle"`
+	ID                   string                `json:"id"`
+	CycleID              string                `json:"cycle_id"`
+	Proposal             Proposal              `json:"proposal"`
+	Status               Status                `json:"status"`
+	Route                config.Route          `json:"route"`
+	Config               config.Config         `json:"config"`
+	SourceRevision       string                `json:"source_revision"`
+	ComparisonBase       string                `json:"comparison_base"`
+	DefaultRevision      string                `json:"default_revision"`
+	Branch               string                `json:"branch"`
+	Workspace            string                `json:"workspace"`
+	ExecutionSession     *string               `json:"execution_session"`
+	RepairSession        *string               `json:"repair_session"`
+	Sessions             []Session             `json:"sessions"`
+	Reviews              []ReviewRound         `json:"reviews"`
+	Verification         []Verification        `json:"verification"`
+	OutputCommit         *string               `json:"output_commit"`
+	PRNumber             *uint64               `json:"pr_number"`
+	PRURL                *string               `json:"pr_url"`
+	Attempts             uint64                `json:"attempts"`
+	Error                *string               `json:"error"`
+	CreatedAt            string                `json:"created_at"`
+	UpdatedAt            string                `json:"updated_at"`
+	AttemptPolicy        *AttemptPolicy        `json:"attempt_policy"`
+	ReviewBaseline       uint64                `json:"review_baseline"`
+	RepairRounds         *uint64               `json:"repair_rounds"` // Completed repairs this attempt; nil retains the legacy estimate.
+	RepairProgress       *RepairProgress       `json:"repair_progress"`
+	BlockedReason        *BlockedReason        `json:"blocked_reason"`
+	RunID                *string               `json:"run_id"`
+	SupersededBy         []string              `json:"superseded_by"`
+	Supersedes           []string              `json:"supersedes"`
+	RediscoveryRequested bool                  `json:"rediscovery_requested"`
+	RediscoveryResult    *string               `json:"rediscovery_result"`
+	Lifecycle            WorkspaceLifecycle    `json:"lifecycle"`
+	MaintenanceFootprint *MaintenanceFootprint `json:"maintenance_footprint" wire:"default"`
+	AutoMergeSnapshot    *AutoMergeSnapshot    `json:"auto_merge_snapshot" wire:"default"`
 }
 
 func (t *Task) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, t) }
@@ -306,11 +393,12 @@ func (p PullRequest) MarshalJSON() ([]byte, error) {
 func (p PullRequest) Clone() PullRequest { return wirejson.Clone(p) }
 
 type PRObservation struct {
-	Repository           string      `json:"repository"`
-	PR                   PullRequest `json:"pr"`
-	ObservedAt           string      `json:"observed_at"`
-	DeliveredHead        *string     `json:"delivered_head"`
-	ExternalHeadMovement bool        `json:"external_head_movement"`
+	Repository           string          `json:"repository"`
+	PR                   PullRequest     `json:"pr"`
+	ObservedAt           string          `json:"observed_at"`
+	DeliveredHead        *string         `json:"delivered_head"`
+	ExternalHeadMovement bool            `json:"external_head_movement"`
+	AutoMerge            *AutoMergeState `json:"auto_merge" wire:"default"`
 }
 
 func (v *PRObservation) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
@@ -417,21 +505,22 @@ func (v PRCapacity) MarshalJSON() ([]byte, error) {
 // Cycle keeps saved assessment batches raw so malformed slots remain exportable.
 // New reviewer answers are validated as AssessmentDocument before saving.
 type Cycle struct {
-	Mode           CycleMode          `json:"mode"`
-	ID             string             `json:"id"`
-	Number         uint64             `json:"number"`
-	Status         CycleStatus        `json:"status"`
-	StartedAt      string             `json:"started_at"`
-	CompletedAt    *string            `json:"completed_at"`
-	Grounding      *Grounding         `json:"grounding"`
-	Proposals      []Proposal         `json:"proposals"`
-	Assessments    []any              `json:"assessments"`
-	Sessions       []Session          `json:"sessions"`
-	Error          *string            `json:"error"`
-	Repository     string             `json:"repository,omitempty" wire:"default"`
-	DecisionMemory []DecisionRecord   `json:"decision_memory,omitempty" wire:"default"`
-	RunID          *string            `json:"run_id,omitempty"`
-	Lifecycle      WorkspaceLifecycle `json:"lifecycle,omitzero" wire:"default"`
+	Mode           CycleMode           `json:"mode"`
+	DeliveryMode   config.DeliveryMode `json:"delivery_mode" wire:"default"`
+	ID             string              `json:"id"`
+	Number         uint64              `json:"number"`
+	Status         CycleStatus         `json:"status"`
+	StartedAt      string              `json:"started_at"`
+	CompletedAt    *string             `json:"completed_at"`
+	Grounding      *Grounding          `json:"grounding"`
+	Proposals      []Proposal          `json:"proposals"`
+	Assessments    []any               `json:"assessments"`
+	Sessions       []Session           `json:"sessions"`
+	Error          *string             `json:"error"`
+	Repository     string              `json:"repository,omitempty" wire:"default"`
+	DecisionMemory []DecisionRecord    `json:"decision_memory,omitempty" wire:"default"`
+	RunID          *string             `json:"run_id,omitempty"`
+	Lifecycle      WorkspaceLifecycle  `json:"lifecycle,omitzero" wire:"default"`
 }
 
 // DecisionRecord is one saved planning decision. Kind and ReconsiderationDue are

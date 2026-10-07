@@ -121,7 +121,9 @@ model IDs stay visible when a catalog changes or cannot be loaded.
 
 Use **Start continuous** only when you want ongoing scheduling; it is never the default
 first action. Inspect each task's review and verification evidence and its PR; only you
-decide to merge. A cycle with no worthwhile work is a valid outcome.
+decide to merge, unless you opt in to maintenance delivery — under it a small,
+clean-reviewed, verified maintenance PR can squash-merge itself when GitHub checks
+and protections allow. A cycle with no worthwhile work is a valid outcome.
 
 A complete planning pass needs 12–14 admissions (13 with nine discovery agents).
 Unaffordable audits and Run once requests are refused before spending admissions.

@@ -219,6 +219,16 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	}
 }
 
+func TestChildEnvironmentDropsGitAttrSource(t *testing.T) {
+	t.Setenv("GIT_ATTR_SOURCE", "9f/invalid..ref")
+	cmd := Command("git", t.TempDir())
+	for _, entry := range cmd.Env {
+		if key, _, _ := strings.Cut(entry, "="); key == "GIT_ATTR_SOURCE" {
+			t.Fatalf("inherited GIT_ATTR_SOURCE reached the child environment: %q", entry)
+		}
+	}
+}
+
 func TestRunMachineFailsClosed(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

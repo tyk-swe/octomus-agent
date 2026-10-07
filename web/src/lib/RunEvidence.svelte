@@ -223,6 +223,10 @@
             </dd>
           </div>
           <div>
+            <dt>Delivery mode</dt>
+            <dd>{run.cycle.delivery_mode ?? 'standard'}</dd>
+          </div>
+          <div>
             <dt>Reviewer batches saved</dt>
             <dd>{run.cycle.planning.reviewer_batches_saved} of 2</dd>
           </div>
@@ -573,6 +577,50 @@
                     createdAt={review.created_at}
                     oncopy={feedback.copy}
                   />
+                  {#if review.maintenance}
+                    <p class="maintenance-assessment">
+                      <Badge
+                        label={review.maintenance.qualifies
+                          ? review.maintenance.manual_merge_required
+                            ? 'Maintenance · manual merge'
+                            : 'Maintenance'
+                          : 'Not maintenance'}
+                        tone={review.maintenance.qualifies ? 'clean' : 'blocked'}
+                      />
+                      {#if !review.trusted_diff_complete}<Badge
+                          label="Partial trusted diff"
+                          tone="blocked"
+                        />{/if}
+                      {review.maintenance.reason}
+                    </p>
+                  {/if}
+                  {#if task.maintenance_footprint}
+                    {@const footprint = task.maintenance_footprint}
+                    <p class="muted">
+                      Frozen footprint at the reviewed output: {footprint.changed_lines ??
+                        'unknown'} changed lines across {footprint.changed_files ?? 'unknown'} files{footprint.complete
+                        ? ' (complete trusted diff)'
+                        : ' (incomplete measurement)'}{footprint.manual_reasons.length
+                        ? ` · ${footprint.manual_reasons.join(' · ')}`
+                        : ''}.
+                    </p>
+                  {/if}
+                  {#if task.auto_merge}
+                    {@const merge = task.auto_merge}
+                    <p class="muted" data-merge-outcome={merge.status}>
+                      Automatic merge outcome: <strong>{merge.status}</strong>{merge.authorized
+                        ? ''
+                        : ' (not authorized)'}{merge.reason
+                        ? ` — ${merge.reason}`
+                        : ''}{merge.result_source === 'confirmed'
+                        ? ' · Squash merged by Octomus'
+                        : merge.result_source === 'observed'
+                          ? ' · outcome observed on GitHub; the merging actor is not confirmed'
+                          : ''}{merge.merge_commit
+                        ? ` · merge commit ${shortHash(merge.merge_commit)}`
+                        : ''}.
+                    </p>
+                  {/if}
                   {#if review.matches_output_revision === false && task.revisions.output}
                     <p class="muted">
                       This round reviewed {shortHash(review.revision)}, but the recorded output

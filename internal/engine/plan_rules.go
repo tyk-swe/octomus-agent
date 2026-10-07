@@ -141,8 +141,8 @@ func validateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 		if field := missingField(proposal); field != "" {
 			return fmt.Errorf("Accepted proposal is missing grounding or execution context: proposal %q has no %s", proposal.ID, field)
 		}
-		if _, ok := cfg.Tiers[proposal.Tier]; !ok || !slices.Contains(cfg.Categories, proposal.Category) {
-			return fmt.Errorf("Unknown tier or disabled category for proposal %q (tier %q, category %q)", proposal.ID, proposal.Tier, proposal.Category)
+		if _, ok := cfg.Tiers[proposal.Tier]; !ok || !slices.Contains(cfg.EffectiveCategories(), proposal.Category) {
+			return fmt.Errorf("Unknown tier or ineligible category for proposal %q (tier %q, category %q)", proposal.ID, proposal.Tier, proposal.Category)
 		}
 		if _, err := resolveTarget(cfg, grounding.PRs, proposal.Target); err != nil {
 			return fmt.Errorf("Proposal %q target %q: %w", proposal.ID, proposal.Target, err)
@@ -165,7 +165,7 @@ func validateProposals(cfg config.Config, proposals []model.Proposal, grounding 
 
 // validateTaskPlan rechecks a committed cycle's dependency plan before dispatch. The tasks of one cycle share the
 // configuration snapshot their plan was committed with.
-func validateTaskPlan(tasks []model.Task) error {
+func validateTaskPlan(tasks []model.Task, live config.Config) error {
 	nodes := make([]depNode, 0, len(tasks))
 	seen := map[string]struct{}{}
 	defaultBranch := ""
@@ -174,6 +174,10 @@ func validateTaskPlan(tasks []model.Task) error {
 			return fmt.Errorf("Duplicate task identity %s", task.ID)
 		}
 		seen[task.ID] = struct{}{}
+		if task.Config.DeliveryMode != live.DeliveryMode ||
+			!slices.Contains(task.Config.EffectiveCategories(), task.Proposal.Category) {
+			return fmt.Errorf("Task %s was planned under an incompatible delivery mode or category (mode %s, category %q)", task.ID, task.Config.DeliveryMode, task.Proposal.Category)
+		}
 		nodes = append(nodes, depNode{id: task.ID, target: task.Proposal.Target, deps: task.Proposal.Dependencies})
 		defaultBranch = task.Config.DefaultBranch
 	}

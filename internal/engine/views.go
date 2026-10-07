@@ -49,6 +49,10 @@ func (a *App) StateView() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	mergeCounts, err := a.Store.MergeCounts(cfg.GitHubRepo)
+	if err != nil {
+		return nil, err
+	}
 	a.runtimeMu.Lock()
 	var cycleMode *model.CycleMode
 	if a.runtime.cycle != nil {
@@ -59,7 +63,14 @@ func (a *App) StateView() (map[string]any, error) {
 	activeTasks := len(a.runtime.tasks)
 	cycleActive := a.runtime.cycle != nil
 	baselineActive := a.runtime.baseline != nil
+	mergeActive := a.runtime.mergeWorker != nil
 	recoveryError := a.runtime.activeRecoveryError
+	if recoveryError == nil {
+		for _, message := range a.runtime.mergeRecoveryErrors {
+			recoveryError = new(message)
+			break
+		}
+	}
 	a.runtimeMu.Unlock()
 	if !cycleActive {
 		running, err := a.Store.RunningCycles("")
@@ -115,6 +126,8 @@ func (a *App) StateView() (map[string]any, error) {
 		"recovery_error":    recoveryError,
 		"control":           controlJSON,
 		"repository":        cfg.GitHubRepo,
+		"delivery_mode":     cfg.DeliveryMode,
+		"auto_merge":        map[string]any{"active": mergeActive, "counts": mergeCounts},
 		"configured":        cfg.Validate(true) == nil,
 		"audit_configured":  cfg.ValidateAudit() == nil,
 		"active_cycle_mode": cycleMode,

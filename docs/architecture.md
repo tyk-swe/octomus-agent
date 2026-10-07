@@ -284,4 +284,8 @@ at 24 hours without shortening a longer configured interval. Lightweight reposit
 and PR-head observation every five minutes shortens extended idle backoff on changed context while preserving the ordinary configured cadence.
 Manual one-shot runs bypass backoff. PR outcomes are observations distinct from
 task delivery; known follow-up outputs are recognized when checking external head
-movement. The service never infers provider charges or merges a PR.
+movement. The service never infers provider charges. It never merges a PR outside the
+opt-in maintenance delivery mode, whose trusted orchestrator may squash-merge a small,
+clean-reviewed, verified maintenance delivery only after fresh remote checks, review
+state, identity and protections confirm the recorded head; every other delivery stays
+manual.

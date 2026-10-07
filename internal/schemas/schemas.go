@@ -34,6 +34,16 @@ func ReviewSchema() Schema {
 func AssessmentSchema() Schema {
 	return Object(Schema{"assessments": Array(Object(Schema{"id": String(), "decision": String(), "reason": String()}))})
 }
+func MaintenanceReviewSchema() Schema {
+	return Object(Schema{
+		"review": ReviewSchema(),
+		"maintenance": Object(Schema{
+			"qualifies":             Schema{"type": "boolean"},
+			"manual_merge_required": Schema{"type": "boolean"},
+			"reason":                String(),
+		}),
+	})
+}
 func GroundingSchema() Schema { return Object(Schema{"context": String()}) }
 
 func Validate(value any, schema Schema) error { return validate(value, schema, "") }

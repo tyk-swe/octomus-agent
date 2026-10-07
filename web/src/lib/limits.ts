@@ -129,6 +129,20 @@ export const LIMITS: Limit[] = [
     max: 36500
   },
   {
+    key: 'auto_merge_max_lines',
+    label: 'Auto-merge line limit',
+    help: 'Full-PR changed lines a maintenance delivery may merge automatically',
+    min: 1,
+    max: 10000
+  },
+  {
+    key: 'auto_merge_max_files',
+    label: 'Auto-merge file limit',
+    help: 'Full-PR changed files a maintenance delivery may merge automatically',
+    min: 1,
+    max: 100
+  },
+  {
     key: 'retain_events',
     label: 'Retained activity events',
     help: 'Most recent events to keep',

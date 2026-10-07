@@ -58,7 +58,11 @@ external side effect happened.
 
 Repository-scoped authentication, protected default branches and release tags, and owner
 review remain necessary in both models. Octomus delivers PRs; the owner decides whether to
-merge.
+merge. The opt-in maintenance delivery mode is the one exception: the trusted orchestrator
+can then squash-merge a small, reviewed, verified maintenance PR only after fresh remote
+checks and protections confirm the recorded head, with explicit manual outcomes for
+conflicts, required reviews, queue requirements, disabled squash, failed checks and
+partial or sensitive evidence.
 
 ## Dashboard exposure
 
