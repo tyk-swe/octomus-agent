@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """GitHub fixture backed by a real local Git remote."""
 import json
+import fnmatch
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +10,8 @@ import time
 root = Path(os.environ['OCTOMUS_FIXTURE'])
 assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
+assert 'OCTOMUS_MERGE_TOKEN' not in os.environ
+assert 'OCTOMUS_MERGE_TOKEN_FILE' not in os.environ
 import fcntl
 lock = (root / 'github.lock').open('a')
 fcntl.flock(lock, fcntl.LOCK_EX)
@@ -24,6 +27,29 @@ def save():
     temporary = root / 'prs.json.tmp'
     temporary.write_text(json.dumps(prs))
     os.replace(temporary, file)
+
+def merge_ruleset():
+    override = root / 'merge-ruleset.json'
+    if override.exists():
+        return json.loads(override.read_text())
+    return {'id': 17, 'target': 'branch', 'source_type': 'Repository',
+            'source': 'fixture/project', 'enforcement': 'active',
+            'bypass_actors': [{'actor_type': 'User', 'actor_id': 1001, 'bypass_mode': 'always'}],
+            'conditions': {'ref_name': {'include': ['~ALL'], 'exclude': ['refs/heads/main']}},
+            'rules': [{'type': 'update', 'parameters': {'update_allows_fetch_and_merge': False}}]}
+
+def destination_restricted(pr):
+    """Model a real configured update restriction, not a fictitious merge base parameter."""
+    policy = merge_ruleset()
+    if policy.get('enforcement') != 'active' or policy.get('target') != 'branch':
+        return False
+    refs = policy['conditions']['ref_name']
+    ref = 'refs/heads/' + pr['base']['ref']
+    matches = lambda pattern: pattern == '~ALL' or fnmatch.fnmatchcase(ref, pattern)
+    if not any(map(matches, refs['include'])) or any(map(matches, refs['exclude'])):
+        return False
+    bypass = any(a.get('actor_type') == 'User' and a.get('actor_id') == 2002 for a in policy.get('bypass_actors', []))
+    return not bypass and any(r.get('type') == 'update' for r in policy.get('rules', []))
 
 def refresh(pr):
     pr['base'].setdefault('repo', {'full_name': 'fixture/project'})
@@ -116,8 +142,18 @@ def squash_merge(pr, head):
 if args[:2] == ['auth', 'status']:
     print('Authenticated fixture operator')
 elif args[0] == 'api':
-    endpoint = next((a for a in args[1:] if a == 'graphql' or a.startswith('repos/')), args[1])
-    if endpoint == 'graphql':
+    endpoint = next((a for a in args[1:] if a in ('graphql', 'user') or a.startswith('repos/')), args[1])
+    if endpoint == 'user' or endpoint.endswith('/merge'):
+        assert os.environ.get('GH_TOKEN') == 'fixture-merge-token', 'restricted merge identity was not used'
+        assert arg('--hostname') == 'github.com'
+    else:
+        assert os.environ.get('GH_TOKEN') != 'fixture-merge-token', 'merger credential escaped its dedicated requests'
+    if endpoint == 'user':
+        print(json.dumps({'id': 2002, 'type': 'User'}))
+    elif '/rulesets/' in endpoint:
+        assert endpoint == 'repos/fixture/project/rulesets/17?includes_parents=false'
+        print(json.dumps(merge_ruleset()))
+    elif endpoint == 'graphql':
         fields = dict(a.split('=', 1) for a in args if '=' in a)
         assert fields['owner'] == 'fixture' and fields['name'] == 'project', fields
         assert 'statusCheckRollup{state' in fields['query'] and 'commits(last:1)' in fields['query']
@@ -125,6 +161,10 @@ elif args[0] == 'api':
         with (root / 'github-status.jsonl').open('a') as log:
             log.write(json.dumps({'number': pr['number'], 'merge': 'mergeStateStatus' in fields['query']}) + '\n')
         if 'mergeStateStatus' in fields['query']:
+            if pr['state'] == 'merged' and (root / 'merge-status-unreadable').exists():
+                status = (root / 'merge-status-unreadable').read_text().strip() or '503'
+                print(f'HTTP {status}: Status temporarily unavailable', file=sys.stderr)
+                sys.exit(1)
             print(json.dumps(merge_status_response(pr)))
         else:
             rollup = {'state': pr['check_status']} if pr.get('check_status') else None
@@ -144,6 +184,11 @@ elif args[0] == 'api':
             (root / 'merge-entered').touch()
             while (root / 'merge-hold').exists():
                 time.sleep(0.05)
+        # Simulate a retarget after all client policy/readiness checks, at the
+        # mutation itself. Only the server's configured rule can prevent it.
+        if (root / 'merge-retarget.json').exists():
+            pr['base']['ref'] = json.loads((root / 'merge-retarget.json').read_text())['base']
+            save()
         owned_source = (pr['head'].get('repo') or {}).get('full_name') == 'fixture/project'
         if owned_source:
             pr['head']['sha'] = subprocess.check_output(['/usr/bin/git', '--git-dir', str(root / 'remote.git'), 'rev-parse', pr['head']['ref']], text=True).strip()
@@ -170,8 +215,8 @@ elif args[0] == 'api':
             refusal = 'HTTP 422: The pull request has conflicts'
         elif not owned_source:
             refusal = 'HTTP 422: The pull request head is not owned by the repository'
-        elif pr['head']['ref'] != pr.get('original_head_ref', pr['head']['ref']) or pr['base']['ref'] != pr.get('original_base_ref', pr['base']['ref']):
-            refusal = 'HTTP 422: The pull request branches changed'
+        elif destination_restricted(pr):
+            refusal = 'HTTP 403: Repository rule violations: Cannot update this protected ref'
         elif pr['head']['sha'] != fields['sha']:
             refusal = 'HTTP 422: Head sha does not match the requested commit'
         if refusal:
@@ -186,7 +231,10 @@ elif args[0] == 'api':
             (root / 'merge-written').touch()
             while (root / 'merge-after-hold').exists():
                 time.sleep(0.05)
-        print(json.dumps({'sha': commit, 'merged': True, 'message': 'Merge completed'}))
+        acknowledgement = {'sha': commit, 'merged': True, 'message': 'Merge completed'}
+        if (root / 'merge-ack.json').exists():
+            acknowledgement.update(json.loads((root / 'merge-ack.json').read_text()))
+        print(json.dumps(acknowledgement))
     elif '/comments' in endpoint:
         number = int(endpoint.split('/')[-2])
         print(json.dumps(next(p for p in prs if p['number'] == number).get('comments', [])))
@@ -199,7 +247,7 @@ elif args[:2] == ['pr', 'create']:
     branch = arg('--head')
     assert not any(p['head']['ref'] == branch for p in prs), 'Duplicate PR creation attempted'
     number = len(prs) + 1
-    pr = {'number': number, 'title': arg('--title'), 'body': Path(arg('--body-file')).read_text(), 'head': {'ref': branch, 'sha': '', 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': arg('--base'), 'repo': {'full_name': 'fixture/project'}}, 'original_head_ref': branch, 'original_base_ref': arg('--base'), 'html_url': f'https://github.com/fixture/project/pull/{number}', 'state': 'open', 'merged_at': None, 'additions': 1, 'deletions': 0, 'created_at': '2026-09-07T00:00:00Z'}
+    pr = {'number': number, 'title': arg('--title'), 'body': Path(arg('--body-file')).read_text(), 'head': {'ref': branch, 'sha': '', 'repo': {'full_name': 'fixture/project'}}, 'base': {'ref': arg('--base'), 'repo': {'full_name': 'fixture/project'}}, 'html_url': f'https://github.com/fixture/project/pull/{number}', 'state': 'open', 'merged_at': None, 'additions': 1, 'deletions': 0, 'created_at': '2026-09-07T00:00:00Z'}
     if (root / 'pr-create-patch.json').exists():
         pr.update(json.loads((root / 'pr-create-patch.json').read_text()))
     prs.append(refresh(pr))

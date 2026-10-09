@@ -137,7 +137,7 @@
   <article class="stat">
     <div class="stat-label">Delivered tasks<Icon name="prs" size={17} /></div>
     <strong>{(data.counts.published ?? 0).toString().padStart(2, '0')}</strong><small
-      >{data.merged_prs} PRs merged by maintainers</small
+      >{data.merged_prs} PRs observed merged</small
     >
   </article>
   <article class="stat">
@@ -203,7 +203,11 @@
                 <strong>{entry.count}</strong><Badge label={entry.label} tone={entry.tone} />
               </li>{/each}
           </ul>
-          <small>Published means a pull request was delivered. Merging stays with you.</small>
+          <small
+            >Published means a pull request was delivered. {data.delivery_mode === 'maintenance'
+              ? 'Eligible maintenance PRs may be merged automatically after checks and protections allow it.'
+              : 'Merging stays with you.'}</small
+          >
         {:else}
           <p class="muted">
             {cycle.mode === 'audit'

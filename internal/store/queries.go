@@ -109,7 +109,59 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 	if err != nil {
 		return nil, err
 	}
-	return collectPageRows(rows)
+	collected, err := collectPageRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	for i := range collected {
+		if collected[i].summary, err = boundRecordSummary(kind, collected[i].summary); err != nil {
+			return nil, err
+		}
+	}
+	return collected, nil
+}
+
+// record_meta retains whole source fields. Bound them only after applying the
+// current process's secret set: a database may outlive an operator token, and a
+// saved prefix cannot later be matched against the complete replacement value.
+func boundRecordSummary(kind, summary string) (string, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(summary), &fields); err != nil {
+		return "", err
+	}
+	text := fields
+	if kind == "pr" {
+		text = nil
+		if err := json.Unmarshal(fields["pr"], &text); err != nil {
+			return "", err
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		limit int
+	}{{"title", 200}, {"error", 512}} {
+		value, found := text[field.name]
+		if !found {
+			continue
+		}
+		var complete *string
+		if err := json.Unmarshal(value, &complete); err != nil {
+			return "", err
+		}
+		if complete != nil {
+			text[field.name], _ = json.Marshal(boundText(*complete, field.limit))
+		}
+	}
+	if kind == "pr" {
+		fields["pr"], _ = json.Marshal(text)
+	}
+	result, err := json.Marshal(fields)
+	return string(result), err
+}
+
+func boundText(text string, limit int) string {
+	runes := []rune(redact.Secrets(text))
+	return string(runes[:min(len(runes), limit)])
 }
 
 func collectPageRows(rows *sql.Rows) ([]pageRow, error) {
@@ -192,8 +244,7 @@ func boundProposalText(item json.RawMessage) (json.RawMessage, error) {
 		if json.Unmarshal(fields[name], &text) != nil || text == nil {
 			continue
 		}
-		bounded := []rune(redact.Secrets(*text))
-		fields[name], _ = json.Marshal(string(bounded[:min(len(bounded), proposalTextLimit)]))
+		fields[name], _ = json.Marshal(boundText(*text, proposalTextLimit))
 	}
 	return json.Marshal(fields)
 }
@@ -570,8 +621,11 @@ func (s *Store) Dashboard() (Dashboard, error) {
 			return err
 		}
 		result.PRs = prs.Items
-		if result.Events, err = queryEvents(c, "SELECT id,at,entity_id,kind,substr(message,1,512) FROM events ORDER BY id DESC LIMIT 200"); err != nil {
+		if result.Events, err = queryEvents(c, "SELECT id,at,entity_id,kind,message FROM events ORDER BY id DESC LIMIT 200"); err != nil {
 			return err
+		}
+		for i := range result.Events {
+			result.Events[i].Message = boundText(result.Events[i].Message, 512)
 		}
 		if result.SessionsToday, err = sessionsOn(c, model.Today()); err != nil {
 			return err

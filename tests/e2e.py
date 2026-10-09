@@ -558,6 +558,48 @@ def maintenance():
         service.wait(lambda: service.request('/state')['control']['paused'], 'run once settles after the merge')
 
 
+def maintenance_destination():
+    def prepare(root):
+        (root / 'maintenance').touch()
+        remote = str(root / 'remote.git')
+        initial = git('--git-dir', remote, 'rev-parse', 'main', cwd=root)
+        git('--git-dir', remote, 'update-ref', 'refs/heads/release', initial, cwd=root)
+        (root / 'merge-retarget.json').write_text(json.dumps({'base': 'release'}))
+
+    with fixture_service('octomus-merge-destination-', prepare) as (root, service):
+        remote = str(root / 'remote.git')
+        initial = git('--git-dir', remote, 'rev-parse', 'main', cwd=root)
+        service.configure(routes(), [FEATURE_CHECK], delivery_mode='maintenance')
+        task = service.wait(service.terminal_task, 'maintenance task completion')
+        assert task['status'] == 'published', task['error']
+        def refused():
+            merge = observed_pr(service, task['pr_number']).get('auto_merge') or {}
+            return merge if merge.get('status') == 'manual' else None
+        merge = service.wait(refused, 'retarget refused by the server destination rule')
+        assert 'protected ref' in merge['reason'] and merge['result_source'] is None and merge['merge_commit'] is None, merge
+        for branch in ['main', 'release']:
+            assert git('--git-dir', remote, 'rev-parse', branch, cwd=root) == initial, branch
+        assert len((root / 'merge-attempts.jsonl').read_text().splitlines()) == 1
+        service.wait(lambda: service.request('/state')['control']['paused'], 'retargeted delivery settles for manual review')
+
+
+def maintenance_without_destination():
+    with fixture_service('octomus-no-merge-policy-', lambda root: (root / 'maintenance').touch(),
+                         env={'OCTOMUS_MERGE_TOKEN': '', 'OCTOMUS_MERGE_RULESET_ID': ''}) as (root, service):
+        initial = git('--git-dir', str(root / 'remote.git'), 'rev-parse', 'main', cwd=root)
+        service.configure(routes(), [FEATURE_CHECK], delivery_mode='maintenance')
+        task = service.wait(service.terminal_task, 'maintenance task completion')
+        assert task['status'] == 'published', task['error']
+        def manual():
+            merge = observed_pr(service, task['pr_number']).get('auto_merge') or {}
+            return merge if merge.get('status') == 'manual' else None
+        merge = service.wait(manual, 'manual outcome without enforced destination')
+        assert 'destination is not enforced' in merge['reason'] and merge['authorized'], merge
+        assert not (root / 'merge-attempts.jsonl').exists()
+        assert git('--git-dir', str(root / 'remote.git'), 'rev-parse', 'main', cwd=root) == initial
+        service.wait(lambda: service.request('/state')['control']['paused'], 'unconfigured delivery settles for manual review')
+
+
 def maintenance_gates():
     def prepare(root):
         (root / 'maintenance').touch()
@@ -692,6 +734,8 @@ SCENARIOS = [
     ('maintenance-oversize', maintenance_oversize),
     ('interrupt-merge', interrupt_merge),
     ('maintenance', maintenance),
+    ('maintenance-destination', maintenance_destination),
+    ('maintenance-without-destination', maintenance_without_destination),
     ('chain', chain),
     ('interrupt-publication', interrupt_publication),
     ('normal-mixed', functools.partial(normal, 'opencode', planning='codex', reviewer='codex')),

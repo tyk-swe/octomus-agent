@@ -3,7 +3,7 @@
 #   octomus-agent --sandboxd         the sandbox broker, the only holder of the Docker socket
 #   octomus-agent --egress           the egress gateway sandboxes reach the internet through
 # Untrusted code never runs in this image; it runs in sandbox containers built from sandbox.Dockerfile.
-ARG GO_VERSION=1.27.1
+ARG GO_VERSION=1.27.2
 ARG NODE_VERSION=22
 
 # The dashboard and binary build on the builder's own platform; Go cross-compiles for the target.

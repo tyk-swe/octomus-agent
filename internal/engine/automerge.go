@@ -472,16 +472,22 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 	mutCtx, cancel := context.WithTimeout(ctx, mergeMutationBound)
 	bounded := live
 	bounded.CommandTimeoutSeconds = min(bounded.CommandTimeoutSeconds, uint64(mergeMutationBound/time.Second))
-	commit, mutateErr := gitops.SquashMerge(mutCtx, bounded, number, merge.Head)
+	commit, mutateErr := gitops.SquashMerge(mutCtx, bounded, number, merge.Head, merge.HeadBranch)
 	cancel()
 	unlock()
 	if mutateErr == nil {
 		a.mergeConfirmed(current, observation, expected, commit)
 		return
 	}
-	if refusal := mergeRefusal(mutateErr); refusal != "" {
-		a.settleMerge(observation, expected, model.AutoMergeManual, refusal, "", nil, true)
+	if errors.Is(mutateErr, gitops.ErrMergeDestination) {
+		a.settleMerge(observation, expected, model.AutoMergeManual, redact.Error(mutateErr), "", nil, false)
 		return
+	}
+	if !errors.Is(mutateErr, gitops.ErrMergeUnconfirmed) {
+		if refusal := mergeRefusal(mutateErr); refusal != "" {
+			a.settleMerge(observation, expected, model.AutoMergeManual, refusal, "", nil, true)
+			return
+		}
 	}
 	a.settleMerge(observation, expected, model.AutoMergeUncertain, "The merge request outcome is unconfirmed: "+redact.Error(mutateErr), "", nil, false)
 }

@@ -220,9 +220,24 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 			forks = append(forks, pr.Number)
 		}
 	}
-	missing, err := gitops.FetchForkHeads(ctx, cfg, forks)
-	if err != nil {
+	if _, err := gitops.FetchForkHeads(ctx, cfg, forks); err != nil {
 		return model.OpenPRInventory{}, err
+	}
+	// A PR may move after inventory collection, including while its fork ref
+	// is being fetched. Only the recorded commit's presence proves that the
+	// planning clones can inspect that observation; fetching a newer ref does
+	// not. False is also the conservative default for older saved context.
+	missing := []uint64{}
+	for i := range external {
+		pr := &external[i]
+		head, err := gitops.Git(ctx, cfg, cfg.Repository, []string{"rev-parse", "--verify", "--end-of-options", pr.Head + "^{commit}"})
+		if ctx.Err() != nil {
+			return model.OpenPRInventory{}, ctx.Err()
+		}
+		pr.LocalHeadAvailable = err == nil && pr.Head != "" && head == pr.Head
+		if !pr.LocalHeadAvailable && !config.EqualASCII(pr.HeadRepository, cfg.GitHubRepo) {
+			missing = append(missing, pr.Number)
+		}
 	}
 	if len(missing) > 0 {
 		_ = a.Store.Event(cycle.ID, "grounding", fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))

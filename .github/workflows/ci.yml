@@ -10,9 +10,9 @@ on:
         required: false
 permissions:
   contents: read
-# Coalesce overlapping checks for the same repository and checkout commit.
+# Coalesce ordinary checks for the same checkout, while keeping the release caller in a separate lane.
 concurrency:
-  group: ci-${{ github.repository }}-${{ inputs.ref || github.sha }}
+  group: ci-${{ github.workflow }}-${{ github.repository }}-${{ inputs.ref || github.sha }}
   cancel-in-progress: true
 jobs:
   quality:
@@ -143,7 +143,7 @@ jobs:
           name: package-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
 
   client-contracts:
     runs-on: ubuntu-24.04
@@ -204,12 +204,17 @@ jobs:
         run: |
           docker info --format 'ServerVersion={{.ServerVersion}} CgroupDriver={{.CgroupDriver}} CgroupVersion={{.CgroupVersion}} KernelVersion={{.KernelVersion}}'
 
+  production-images:
+    uses: ./.github/workflows/production-images.yml
+    with:
+      ref: ${{ inputs.ref || github.sha }}
+
   verify:
     name: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: always()
-    needs: [quality, go, e2e, package, client-contracts, sandbox]
+    needs: [quality, go, e2e, package, client-contracts, sandbox, production-images]
     steps:
       - name: All jobs succeeded
         run: test "${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}" = true

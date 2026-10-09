@@ -304,7 +304,10 @@
   </div>
 </div>
 {#if !editable}<div class="notice">
-    <Icon name="clock" /> Pause the service and wait for active work to finish to edit configuration.
+    <Icon name="clock" />
+    {status?.auto_merge_active
+      ? 'An automatic merge check is still running. Wait for it to finish before editing configuration.'
+      : 'Pause the service and wait for active work to finish to edit configuration.'}
   </div>{/if}
 {#if loadError}<div class="notice error" role="alert">
     <span

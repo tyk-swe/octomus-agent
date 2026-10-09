@@ -221,6 +221,11 @@ class Service:
         self.port = None
         self.env = fixture_git_environment()
         self.env.pop('OCTOMUS_NOTIFICATION_WEBHOOK_URL', None)
+
+        self.env.pop('OCTOMUS_MERGE_TOKEN_FILE', None)
+        # The gh fixture models a configured update-restriction ruleset and a
+        # separate merger identity. Production has no implicit merge credential.
+        self.env.update({'OCTOMUS_MERGE_TOKEN': 'fixture-merge-token', 'OCTOMUS_MERGE_RULESET_ID': '17'})
         # Fixture runners are host scripts; tests/e2e_sandbox.py covers the Docker sandbox.
         self.env.update({'OCTOMUS_TOKEN': TOKEN, 'OCTOMUS_FIXTURE': str(root), 'OCTOMUS_SANDBOX': 'off', 'PATH': f'{root / "bin"}:{os.environ["PATH"]}'})
 

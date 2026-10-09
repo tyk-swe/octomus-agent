@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Loopback-only synthetic model provider for tests of actual pinned clients."""
+"""Synthetic model provider for actual pinned clients; loopback by default, optional TLS in the isolated image test."""
+import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-import sys
+import ssl
 import time
 
-root = Path(sys.argv[1])
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('root', type=Path)
+parser.add_argument('--host', default='127.0.0.1')
+parser.add_argument('--port', type=int, default=0)
+parser.add_argument('--tls-cert')
+parser.add_argument('--tls-key')
+parser.add_argument('--namespaced', action='store_true')
+args = parser.parse_args()
+root = args.root
 answer = {'completed': True, 'summary': 'Controlled contract result.', 'findings': []}
 
 class Handler(BaseHTTPRequestHandler):
@@ -15,8 +24,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        backend = self.path.split('/')[1] if args.namespaced else ''
+        if args.namespaced and backend not in ('codex', 'opencode'):
+            self.send_error(404)
+            return
         if 'CANCEL_CONTRACT_TURN' in json.dumps(request):
-            (root / 'turn-entered').touch()
+            (root / ('turn-entered-' + backend if backend else 'turn-entered')).touch()
             time.sleep(90)
             return
         structured = bool(request.get('text', {}).get('format', {}).get('schema'))
@@ -59,6 +72,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self.close_connection = True
 
-server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+server = ThreadingHTTPServer((args.host, args.port), Handler)
+if args.tls_cert:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(args.tls_cert, args.tls_key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
 (root / 'provider-port').write_text(str(server.server_port))
 server.serve_forever()

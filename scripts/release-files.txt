@@ -5,6 +5,7 @@ SECURITY.md
 deploy/docker/Dockerfile
 deploy/docker/compose.yaml
 deploy/docker/env.example
+deploy/docker/maintenance.compose.yaml
 deploy/docker/sandbox.Dockerfile
 deploy/docker/setup.sh
 deploy/octomus-agent.service
@@ -15,6 +16,7 @@ docs/cost.md
 docs/dashboard.png
 docs/deployment.md
 docs/getting-started.md
+docs/maintenance-merging.md
 docs/model-routing.md
 docs/run-evidence.md
 docs/sandbox.md

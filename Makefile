@@ -1,4 +1,4 @@
-.PHONY: dashboard build check test test-go test-go-race test-ui-logic test-integration test-browser test-sandbox package audit
+.PHONY: dashboard build check test test-go test-go-race test-ui-logic test-python test-integration test-browser test-sandbox production-image-driver test-production-images package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
@@ -23,7 +23,7 @@ build: dashboard
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/octomus-agent ./cmd/octomus-agent
 
 check: dashboard
-	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal web/*.go) || exit 1; \
+	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal web/*.go tests/productionimage) || exit 1; \
 	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
@@ -47,8 +47,10 @@ test-go-race: dashboard
 test-ui-logic:
 	npm run test:unit --prefix web -- $(PLAYWRIGHT_ARGS)
 
-test-integration: build
-	$(E2E_ENV) python3 -m unittest discover -s tests -p 'test_harness.py'
+test-python:
+	$(E2E_ENV) python3 -m unittest discover -s tests -p 'test_*.py'
+
+test-integration: build test-python
 	$(E2E_ENV) python3 tests/distribution.py
 	$(E2E_ENV) python3 tests/e2e.py $(SCENARIOS)
 
@@ -60,6 +62,15 @@ test-browser: build
 test-sandbox: dashboard
 	OCTOMUS_DOCKER_TEST=1 go test -count=1 ./internal/sandbox/...
 	PYTHONUNBUFFERED=1 python3 tests/e2e_sandbox.py
+
+# Real pinned clients in the exact retained production OCI images. Native Docker Engine 28+, Compose, Skopeo and
+# OpenSSL are required; use a disposable host because the fixture reserves a globally numbered local Docker subnet.
+# CI provides dist/images from the production Dockerfiles and requires both native release architectures.
+production-image-driver:
+	CGO_ENABLED=0 go test -c -o bin/production-image-contract ./tests/productionimage
+
+test-production-images: production-image-driver
+	PYTHONUNBUFFERED=1 python3 tests/production_images.py
 
 # Pin govulncheck's toolchain to this module's: `go run pkg@version` would otherwise select govulncheck's own (possibly older) go.mod toolchain.
 audit:

@@ -154,6 +154,8 @@ type ending struct {
 	err error
 	// started is set once the daemon started the container, so its program may have run.
 	started bool
+	// startAttempted also covers a lost start answer: Docker may have run the program even then.
+	startAttempted bool
 	// deadline bounds the teardown.
 	deadline time.Time
 }
@@ -185,6 +187,11 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 		attached <- demux(s.attach.reader, out.stdout, out.stderr)
 	}()
 	end := s.run(ctx, timeout, controls, input)
+	if end.startAttempted && !end.started && s.lease != "" {
+		// Cancelling the start request does not establish that Docker never started it. Cut its egress before
+		// collecting evidence and force-removing the known container ID, even if the daemon is still busy starting it.
+		s.b.leases.Revoke(s.lease)
+	}
 	if end.deadline.IsZero() {
 		end.deadline = time.Now().Add(teardownBudget)
 	}
@@ -201,11 +208,18 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 	switch {
 	case end.cut:
 		report = wire.ExitReport{Killed: true, Error: streamClosed}
+		if end.startAttempted {
+			// The caller may already be gone, but a local caller can still retain the record of an uncertain run.
+			report.Sandbox = s.evidence(false, false)
+		}
 	case end.err != nil:
 		failure = end.err
-		if end.started {
-			// The program ran before the sandbox failed, so what it did is still on record.
+		if end.startAttempted {
+			// A failed or unanswered start may still have run the program; preserve its evidence too.
 			report.Sandbox = s.evidence(s.oomKilled(within(5 * time.Second)))
+			if !end.started {
+				report.Sandbox.Incomplete = true
+			}
 		}
 	default:
 		report = wire.ExitReport{Killed: end.killed, Error: end.reason}
@@ -246,17 +260,31 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 // whose answer never came counts as delivered when the sandbox then ends with a SIGKILL's status.
 func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-chan control, input chan<- control) (end ending) {
 	b := s.b
-	if err := b.engine.containerStart(ctx, s.id); err != nil {
-		end.err = fmt.Errorf("Starting the sandbox: %w", err)
+	if ctx.Err() != nil {
+		end.cut = true
 		return end
 	}
-	end.started = true
+	// One absolute deadline covers both the daemon's start request and the running command. Start must not block
+	// the control loop: it can have started the process while its HTTP answer is still pending.
+	deadline := time.Now().Add(timeout)
+	startCtx, cancelStart := context.WithDeadline(ctx, deadline)
+	defer cancelStart()
+	starting := make(chan error, 1)
+	end.startAttempted = true
+	go func() { starting <- b.engine.containerStart(startCtx, s.id) }()
 	waitCtx, cancelWait := context.WithCancel(context.Background())
 	defer cancelWait()
-	// Waiting for not-running after start also observes an exit that happened before the wait request arrived.
-	results, errs := b.engine.containerWait(waitCtx, s.id)
-	limit := time.NewTimer(timeout)
+	var results <-chan waitResult
+	var errs <-chan error
+	limit := time.NewTimer(time.Until(deadline))
 	defer limit.Stop()
+	startFailed := func(err error) ending {
+		end.err = fmt.Errorf("Starting the sandbox: %w", err)
+		if end.deadline.IsZero() {
+			end.deadline = time.Now().Add(teardownBudget)
+		}
+		return end
+	}
 	retry := time.NewTimer(time.Hour)
 	retry.Stop()
 	defer retry.Stop()
@@ -284,6 +312,12 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			retry.Reset(time.Second)
 		}
 	}
+	terminate := func() {
+		termCtx, cancel := context.WithTimeout(context.Background(), killWait)
+		_ = b.engine.containerKill(termCtx, s.id, "SIGTERM")
+		cancel()
+	}
+	terminatePending := false
 	var pendingInput []control
 	pendingBytes := 0
 	for {
@@ -293,6 +327,29 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			sendInput, nextInput = input, pendingInput[0]
 		}
 		select {
+		case err := <-starting:
+			if ctx.Err() != nil {
+				end.cut = true
+				return end
+			}
+			if !time.Now().Before(deadline) {
+				return startFailed(fmt.Errorf("%s: %w", wire.TimeLimitReason, context.DeadlineExceeded))
+			}
+			if err != nil {
+				return startFailed(err)
+			}
+			starting = nil
+			end.started = true
+			cancelStart()
+			// Only a confirmed start permits a wait: not-running on a merely created container is not an exit.
+			results, errs = b.engine.containerWait(waitCtx, s.id)
+			if !end.deadline.IsZero() && !end.killed {
+				// A kill sent during startup may have found a merely created container. Starting later must not
+				// let it escape that request; its original teardown deadline still applies.
+				kill(asked)
+			} else if terminatePending {
+				terminate()
+			}
 		case sendInput <- nextInput:
 			pendingBytes -= len(nextInput.stdin)
 			pendingInput[0] = control{}
@@ -314,10 +371,16 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			end.err = fmt.Errorf("Waiting for the sandbox: %w", err)
 			return end
 		case <-limit.C:
+			if !end.started {
+				return startFailed(fmt.Errorf("%s: %w", wire.TimeLimitReason, context.DeadlineExceeded))
+			}
 			kill(wire.TimeLimitReason)
 		case <-retry.C:
 			kill(asked)
 		case <-stopped:
+			if !end.started {
+				return startFailed(errors.New("Docker did not confirm the start after a kill request"))
+			}
 			b.logf("Sandbox %s did not report its exit after a kill; removing it by force", s.name)
 			if !end.killed {
 				end.killed, end.reason = true, asked
@@ -340,9 +403,8 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 				pendingInput = append(pendingInput, msg)
 				pendingBytes += len(msg.stdin)
 			case msg.signal == wire.SignalTerminate:
-				termCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = b.engine.containerKill(termCtx, s.id, "SIGTERM")
-				cancel()
+				terminatePending = !end.started
+				terminate()
 			case msg.signal == wire.SignalKill:
 				kill("")
 			}

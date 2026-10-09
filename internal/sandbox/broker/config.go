@@ -25,7 +25,9 @@ type Config struct {
 	RunnerDir   string
 	ToolsVolume string
 	// ToolsDir is where the broker mounts the tools volume to install its own executable for sandboxes.
-	ToolsDir      string
+	ToolsDir string
+	// CAFile optionally names an operator-owned PEM bundle outside runner-writable volumes.
+	CAFile        string
 	RunnerNetwork string
 	VerifyNetwork string
 	// Instance labels every sandbox this broker owns; it never touches a container without it.
@@ -55,6 +57,7 @@ const (
 	toolsBinary = toolsMount + "/octomus-agent"
 	// toolsGitConfig is runner sandboxes' global git configuration, read-only in the tools volume.
 	toolsGitConfig = toolsMount + "/gitconfig"
+	toolsCAFile    = toolsMount + "/ca-certificates.pem"
 	instanceLabel  = "octomus.sandbox.instance"
 	kindLabel      = "octomus.sandbox.kind"
 	rootLabel      = "octomus.sandbox.root"
@@ -84,6 +87,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		RunnerDir:       value("OCTOMUS_SANDBOX_RUNNER_DIR", "/var/lib/octomus/runner"),
 		ToolsVolume:     value("OCTOMUS_SANDBOX_TOOLS_VOLUME", ""),
 		ToolsDir:        value("OCTOMUS_SANDBOX_TOOLS_DIR", "/opt/octomus-tools"),
+		CAFile:          value("OCTOMUS_SANDBOX_CA_FILE", ""),
 		RunnerNetwork:   value("OCTOMUS_SANDBOX_RUNNER_NETWORK", ""),
 		VerifyNetwork:   value("OCTOMUS_SANDBOX_VERIFY_NETWORK", ""),
 		Instance:        value("OCTOMUS_SANDBOX_INSTANCE", "octomus"),
@@ -112,10 +116,21 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		"OCTOMUS_DATA_DIR":           c.DataDir,
 		"OCTOMUS_SANDBOX_RUNNER_DIR": c.RunnerDir,
 		"OCTOMUS_SANDBOX_TOOLS_DIR":  c.ToolsDir,
+		"OCTOMUS_SANDBOX_CA_FILE":    c.CAFile,
 		"OCTOMUS_EGRESS_LEASES":      c.LeaseDir,
 	} {
 		if path != "" && (!filepath.IsAbs(path) || filepath.Clean(path) != path) {
 			errs = append(errs, fmt.Errorf("%s must be a clean absolute path", key))
+		}
+	}
+	if c.CAFile != "" {
+		for _, dir := range []string{c.DataDir, c.RunnerDir, c.ToolsDir} {
+			if dir != "" {
+				rel, err := filepath.Rel(dir, c.CAFile)
+				if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					errs = append(errs, errors.New("OCTOMUS_SANDBOX_CA_FILE must be outside sandbox data, runner and tools volumes"))
+				}
+			}
 		}
 	}
 	if (c.LeaseDir == "") != (c.EgressProxy == "") {

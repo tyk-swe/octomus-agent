@@ -98,6 +98,16 @@ func Router(app *engine.App, token, assetsOverride, version string) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setHeaders(w)
 		if r.URL.Path == "/healthz" {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				w.Header().Set("Allow", "GET, HEAD")
+				writeAPIError(w, http.StatusMethodNotAllowed, "Method not allowed")
+				return
+			}
+			if r.Method == http.MethodHead {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			writeRawJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version})
 			return
 		}

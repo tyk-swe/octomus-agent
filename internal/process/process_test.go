@@ -207,14 +207,16 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	temp := t.TempDir()
 	t.Setenv(config.TokenEnv, "test-token-value-that-must-not-leak")
 	t.Setenv(config.WebhookEnv, "https://example.invalid/hook")
+	t.Setenv(config.MergeTokenEnv, "restricted-merger-secret")
+	t.Setenv("OCTOMUS_MERGE_TOKEN_FILE", "/run/secrets/merger")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
-	script := fmt.Sprintf(`printf 't=%%s w=%%s g=%%s' "${%s-unset}" "${%s-unset}" "$GIT_TERMINAL_PROMPT"`,
-		config.TokenEnv, config.WebhookEnv)
+	script := fmt.Sprintf(`printf 't=%%s w=%%s m=%%s f=%%s g=%%s' "${%s-unset}" "${%s-unset}" "${%s-unset}" "${OCTOMUS_MERGE_TOKEN_FILE-unset}" "$GIT_TERMINAL_PROMPT"`,
+		config.TokenEnv, config.WebhookEnv, config.MergeTokenEnv)
 	out, err := RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "t=unset w=unset g=0" {
+	if out != "t=unset w=unset m=unset f=unset g=0" {
 		t.Fatalf("child environment = %q; want secrets removed and GIT_TERMINAL_PROMPT=0", out)
 	}
 }

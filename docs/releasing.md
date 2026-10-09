@@ -12,7 +12,9 @@ The application version lives in the `VERSION` file at the repository root. The
 Go binary embeds it at compile time, so `--version`, `/healthz` and runner
 client metadata all report the same string. The dashboard build shows it too, and
 release tooling reads the same file for tag validation and archive names. Bump it
-in one place only.
+in one place only. A published version must start with a digit and use only letters,
+digits, dots and hyphens, up to 128 characters: it is also an OCI tag. SemVer build
+metadata containing `+` cannot be used as an image tag.
 
 ## Build and package
 
@@ -50,31 +52,100 @@ release archives do not include Sigstore signatures.
 
 ## GitHub release workflow
 
-After owner clearance, a pushed `v*` tag runs the reusable full checks, whose
-native Ubuntu 24.04 package jobs on x86_64 and aarch64 build the archives the
-release publishes. The tag must equal `v` plus the `VERSION` file contents; the
-publishing job refuses archives named for any other version. Both tarballs must pass
-the embedded HTTP smoke test before the publishing job receives contents-write permission.
-Checksums cover both archives; generated release notes are the default.
-Prerelease tags are marked as prereleases and excluded from the installer's
-latest-stable lookup.
+After owner clearance, push an existing commit's `v*` tag or dispatch the workflow
+with that tag. Preparation resolves annotated or lightweight tags to an exact commit
+and verifies its `VERSION`. A new release runs the full reusable CI gate at that
+commit: source checks, vulnerability audits, race tests, service and browser tests,
+native package smoke tests, client contracts, sandbox tests and production image
+acceptance. A failed gate prevents release staging and image publication.
 
-The manual workflow accepts an existing tag and optional multiline notes. Use
-that path with the final owner-approved release notes. If the release already exists,
-nonempty supplied notes update only its description; published assets are never
-replaced. A rerun without notes fails for an existing release.
-The workflow does not push tags, merge PRs or change visibility.
-Before enabling live workers, configure release-tag protections so their GitHub
-identity cannot trigger a release by pushing a tag. These repository controls
+The native Ubuntu 24.04 package jobs build the x86_64 and aarch64 archives once.
+The image jobs build the production OCI archives once and test their retained native
+manifests as described below. After every required check passes, the publisher
+assembles these six release assets:
+
+- `octomus-agent-vVERSION-x86_64-unknown-linux-gnu.tar.gz`
+- `octomus-agent-vVERSION-aarch64-unknown-linux-gnu.tar.gz`
+- `SHA256SUMS`, covering the two native packages
+- `octomus-agent.oci.tar`
+- `octomus-sandbox.oci.tar`
+- `release-images.json`, containing source and image identities and both native acceptance receipts
+
+The publisher first creates a **draft** with a hidden input receipt in its description.
+That receipt records the original CI run, tag, source commit, version and SHA-256 of
+all six assets. It exists before any upload. The publisher uploads missing assets,
+checks all six required remote assets against those hashes and only then publishes the
+release. Generated notes are the default; supplied multiline notes replace them.
+Prerelease tags are marked as prereleases and excluded from the installer's
+latest-stable lookup. The two native installer jobs then exercise the public release
+assets and checksums.
+
+The manual workflow has three paths:
+
+| Release state | Supplied notes | Operation |
+| --- | --- | --- |
+| Absent | Empty or nonempty | Run full CI, stage verified inputs, publish, promote and sign |
+| Draft or published | Nonempty | Update only the description; preserve the hidden input receipt |
+| Draft or published | Empty | Recover original inputs, finish publication if needed, retry promotion and signing |
+
+Notes updates do not build, test, install, upload assets, publish a draft or promote
+images. They also work for historical releases whose tags predate the current scripts
+or state schema: the workflow uses its own exact revision's helper code and skips
+source/version checks for this operation. Do not remove the hidden input receipt when
+editing a release description manually.
+
+An interrupted draft upload downloads the artifacts from the **original** run and
+requires every reconstructed asset to match the receipt. It never uses a later run's
+build. Package, image and acceptance artifacts retain 90 days, subject to repository
+retention limits. Once all assets are uploaded, retries read the permanent release
+assets and no longer need Actions artifacts. A failed upload's incomplete `starter`
+asset may be removed and retried only while the release is a draft; completed assets
+are never overwritten. A changed asset, moved tag, missing receipt or expired original
+artifact stops recovery. Recover the original verified inputs or release a new version;
+rebuilding into an existing version is not a recovery method. Legacy releases without
+retained inputs still support notes updates, but cannot use image recovery.
+
+For recovery, start a fresh manual dispatch with the same tag and **empty notes**.
+GitHub's **Re-run failed jobs** can reuse an earlier preparation result of `build`;
+if a draft was created since that result, staging safely refuses it. A fresh dispatch
+or **Re-run all jobs** reruns preparation and selects the retained-input recovery path.
+
+Releases with the same tag queue rather than cancel one another. Repository CI and
+release CI have separate concurrency groups. Draft discovery uses the paginated release
+list as well as get-by-tag; GitHub exposes drafts only to identities with push access,
+so the preparation job has contents-write permission even though it only reads.
+
+The workflow does not push tags, merge PRs or change repository/package visibility. Before enabling live
+workers, configure release-tag protections so their GitHub identity cannot trigger a
+release by pushing a tag. Restrict changes to release descriptions, assets, workflow
+code and registry tags to trusted release administrators. These repository controls
 are an owner setup action; worker prompts are not an authorization boundary.
 
 ## Container images
 
-The same tag also builds the two Docker images for `linux/amd64` and `linux/arm64`:
+The CI gate builds the two Docker images for `linux/amd64` and `linux/arm64`:
 `ghcr.io/tyk-swe/octomus-agent:<version>` (the control plane, broker and egress gateway) and
-`ghcr.io/tyk-swe/octomus-sandbox:<version>`. The release workflow pushes each with an SBOM and
-build provenance attached, and signs the pushed digest with cosign keyless signing, bound to
-the workflow's GitHub identity. Verify a pulled image before using it:
+`ghcr.io/tyk-swe/octomus-sandbox:<version>`. The unchanged production Dockerfiles produce
+multi-platform OCI archives with source/version/image labels, SBOM and build provenance.
+Separate native amd64 and arm64 runners load those exact manifests. They exercise the
+real pinned Codex and OpenCode clients through the production broker, helper and egress
+gateway, using a synthetic HTTPS provider with the normal TLS and egress policy active.
+The acceptance gate requires structured completion, session resume in new containers,
+cancellation, verification, containment, dashboard boot and complete cleanup. Host
+inspections bind each recorded runner to its actual image, networks and mounts. See
+[Sandbox validation](sandbox.md#checked-so-far-and-what-is-still-yours-to-check) for the topology.
+
+After the complete release becomes public, the image job downloads its retained assets
+and checks their hashes, manifests, source identity and both native receipts. Skopeo
+copies the complete OCI indexes with `--all --preserve-digests`; there is no Docker build
+in the promotion job. A version tag already pointing to the accepted index is reused.
+A different existing digest is refused. Each exact index digest is signed with cosign
+keyless signing, bound to the workflow's GitHub identity. If copying or signing fails,
+dispatch the same tag with empty notes to retry the retained bytes. Existing registry
+tags are checked before and after copying; external writers with registry permission
+remain trusted because registry tag updates are not a compare-and-swap operation.
+
+Verify a pulled image before using it:
 
 ```bash
 cosign verify ghcr.io/tyk-swe/octomus-agent:0.2.0 \
@@ -103,10 +174,10 @@ fails when `schema.sql` drifts from a migrated golden.
 After tagging a release, generate its golden database:
 
 ```bash
-python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 9 --output internal/store/testdata/state-vX.Y.Z.db > internal/store/testdata/state-vX.Y.Z.json
+python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 10 --output internal/store/testdata/state-vX.Y.Z.db > internal/store/testdata/state-vX.Y.Z.json
 ```
 
-Use the release's actual schema version (`9` for the current schema). Check in the database and the provenance JSON the script prints (commit, scenario, sha256), and extend the golden tests so
+Use the release's actual schema version (`10` for the current schema). Check in the database and the provenance JSON the script prints (commit, scenario, sha256), and extend the golden tests so
 later releases keep opening every checked-in golden. Before tagging a schema change,
 rehearse the upgrade on a copy of real state with the released images, following
 [Backup and upgrade](deployment.md#backup-and-upgrade), and record the image

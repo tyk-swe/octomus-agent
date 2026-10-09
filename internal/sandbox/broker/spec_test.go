@@ -52,6 +52,7 @@ func TestContainerSpecsAreGolden(t *testing.T) {
 	taskDir := OwnedRoot(t, cfg, "tasks/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
 	cases := map[string]wire.Request{
 		"runner-codex":    {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
+		"runner-codex-ca": {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Stdin: true},
 		"runner-opencode": {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"OPENCODE_SERVER_PASSWORD=pw"}},
 		"verify":          {Kind: "verify", Dir: taskDir, Command: "make test"},
 		"probe":           {Kind: "probe", Mode: wire.ProbeContainment},
@@ -65,6 +66,9 @@ func TestContainerSpecsAreGolden(t *testing.T) {
 			// Ownership is validated against this test's uid; the spec is rendered for the deployment's sandbox user.
 			deployed := cfg
 			deployed.UID, deployed.GID = 10001, 10001
+			if name == "runner-codex-ca" {
+				deployed.CAFile = "/run/secrets/provider_ca"
+			}
 			spec := deployed.container(p, []string{"HTTPS_PROXY=http://sandbox:token@egress:3128"})
 			data, err := json.MarshalIndent(spec, "", "  ")
 			if err != nil {
@@ -172,6 +176,8 @@ func TestPlanValidation(t *testing.T) {
 		"opencode unbounded":    {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir},
 		"runner env injection":  {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"LD_PRELOAD=/tmp/x.so"}},
 		"runner proxy override": {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"HTTPS_PROXY=http://evil"}},
+		"runner trust override": {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"SSL_CERT_FILE=/tmp/ca"}},
+		"node trust override":   {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"NODE_EXTRA_CA_CERTS=/tmp/ca"}},
 		"probe with a dir":      {Kind: "probe", Mode: wire.ProbeVersions, Dir: taskDir},
 		"unknown probe":         {Kind: "probe", Mode: "shell"},
 	}
@@ -235,6 +241,7 @@ func TestLoadConfig(t *testing.T) {
 		"OCTOMUS_DATA_DIR":         "relative/data",
 		"OCTOMUS_SANDBOX_IMAGE":    "",
 		"OCTOMUS_EGRESS_PROXY":     "egress:3128",
+		"OCTOMUS_SANDBOX_CA_FILE":  "/var/lib/octomus/runner/codex/ca.pem",
 	} {
 		previous := env[key]
 		env[key] = value

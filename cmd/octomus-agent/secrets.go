@@ -19,6 +19,7 @@ var secretFiles = []struct{ variable, file string }{
 	{config.TokenEnv, "OCTOMUS_TOKEN_FILE"},
 	{config.WebhookEnv, "OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE"},
 	{githubTokenEnv, "OCTOMUS_GITHUB_TOKEN_FILE"},
+	{config.MergeTokenEnv, "OCTOMUS_MERGE_TOKEN_FILE"},
 }
 
 // loadSecretFiles moves file-held secrets into the process environment before anything reads it, so redaction and

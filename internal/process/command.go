@@ -18,7 +18,7 @@ func Command(binary string, cwd string) *exec.Cmd {
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		switch key {
-		case config.TokenEnv, config.WebhookEnv, "GIT_TERMINAL_PROMPT":
+		case config.TokenEnv, config.WebhookEnv, config.MergeTokenEnv, config.MergeRulesetEnv, "OCTOMUS_MERGE_TOKEN_FILE", "GIT_TERMINAL_PROMPT":
 			continue
 		// Repository-locating Git variables would redirect child git away from cmd.Dir; GIT_CONFIG* passes through.
 		case "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_COMMON_DIR",

@@ -1,0 +1,12 @@
+# Opt-in addition to compose.yaml. See docs/maintenance-merging.md before enabling.
+# The credential is mounted only in the trusted control plane.
+services:
+  octomus:
+    environment:
+      OCTOMUS_MERGE_TOKEN_FILE: /run/secrets/merge_token
+      OCTOMUS_MERGE_RULESET_ID: ${OCTOMUS_MERGE_RULESET_ID:?Set the enforced destination ruleset ID}
+    secrets: [merge_token]
+
+secrets:
+  merge_token:
+    file: ./secrets/merge_token

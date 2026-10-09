@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   chooseStep,
+  configurationEditable,
   controlEligibility,
   type ControlAction,
   type SetupStatus
@@ -16,6 +17,7 @@ test('controls and the checklist agree across configuration, activity and recove
     cycle_active: false,
     active_cycle_mode: null,
     baseline_active: false,
+    auto_merge_active: false,
     baseline: null,
     notifications: {
       state: 'disabled',
@@ -97,6 +99,12 @@ test('controls and the checklist agree across configuration, activity and recove
       'Unavailable now: A baseline check is running.'
     ],
     [
+      'merge worker active after Pause',
+      { auto_merge_active: true },
+      ['resume', 'pause'],
+      'Unavailable now: An automatic merge check is still running.'
+    ],
+    [
       'continuous operation',
       { paused: false, mode: 'continuous' },
       ['resume', 'pause'],
@@ -152,6 +160,9 @@ test('controls and the checklist agree across configuration, activity and recove
     audit: false
   });
   expect(chooseStep(null).detail).toContain('Connect to the service first.');
+  expect(configurationEditable(null)).toBe(false);
+  expect(configurationEditable(idle)).toBe(true);
+  expect(configurationEditable({ ...idle, auto_merge_active: true })).toBe(false);
   for (const [name, patch, actions, explanation] of cases) {
     const status = { ...idle, ...patch };
     const available = Object.entries(controlEligibility(status))

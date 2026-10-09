@@ -437,6 +437,8 @@ type ExternalPRContext struct {
 	BaseRepository string `json:"base_repository"`
 	TitleTruncated bool   `json:"title_truncated"`
 	BodyTruncated  bool   `json:"body_truncated"`
+	// False also covers historical records without a local object observation.
+	LocalHeadAvailable bool `json:"local_head_available" wire:"default"`
 }
 
 func (v *ExternalPRContext) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
