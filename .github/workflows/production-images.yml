@@ -34,11 +34,15 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       # Build once, with the production Dockerfiles and no fixture build tags. The OCI archive retains the complete
       # two-platform index, SBOM and provenance; no registry or mutable version tag exists at this stage.
+      # BuildKit needs an image name to emit manifest-bound in-toto subjects. This source-specific local name
+      # supplies that identity to the OCI exporter; it does not push an image or create a release tag.
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           platforms: linux/amd64,linux/arm64
+          tags: octomus-acceptance/${{ matrix.image }}:${{ steps.identity.outputs.source }}
+          push: false
           outputs: type=oci,dest=dist/images/${{ matrix.image }}.oci.tar
           provenance: mode=max
           sbom: true

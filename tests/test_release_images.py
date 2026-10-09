@@ -269,6 +269,8 @@ class ReleaseImageTests(unittest.TestCase):
 
     def test_attestation_statement_must_bind_subject_type_and_predicate(self):
         mutations = {
+            'unnamed OCI export with empty subjects': lambda value: value.__setitem__('subject', []),
+            'missing subjects': lambda value: value.pop('subject'),
             'wrong subject': lambda value: value['subject'][0]['digest'].__setitem__('sha256', '0' * 64),
             'wrong statement type': lambda value: value.__setitem__('_type', 'unrecognized'),
             'mismatched predicate annotation': lambda value: value.__setitem__('predicateType', 'unrecognized'),
@@ -280,6 +282,17 @@ class ReleaseImageTests(unittest.TestCase):
                 archive.write(self.directory / 'octomus-agent.oci.tar')
                 with self.assertRaises(ValueError):
                     RELEASE.metadata(self.directory, 'octomus-agent', SOURCE, VERSION)
+
+    def test_named_oci_export_subjects_bind_to_each_native_manifest(self):
+        # BuildKit derives in-toto subjects from the OCI exporter's image name. A
+        # source-specific local tag supplies names without publishing to a registry.
+        def named_subject(value, platform, kind):
+            value['subject'][0]['name'] = ('pkg:docker/octomus-acceptance/octomus-agent@' + SOURCE +
+                                          '?platform=' + platform.replace('/', '%2F'))
+        OCIArchive('octomus-agent', statement_hook=named_subject).write(
+            self.directory / 'octomus-agent.oci.tar')
+        metadata = RELEASE.metadata(self.directory, 'octomus-agent', SOURCE, VERSION)
+        self.assertEqual(set(metadata['platforms']), {'linux/amd64', 'linux/arm64'})
 
     def test_missing_or_unrelated_attestation_is_rejected(self):
         mutations = {
