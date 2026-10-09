@@ -549,12 +549,27 @@ test('slow proposal history cannot block state polling, controls, or navigation'
   try {
     await openNavigation(page, 'Proposals', false);
     await expect.poll(() => reads).toBe(1);
-    const before = state.reads;
     for (let i = 0; i < 3; i++) {
-      await page.clock.runFor(4000);
-      await expect.poll(() => state.reads).toBeGreaterThan(before + i);
+      const before = state.reads;
+      // Counted reads have only started. Complete each new response before the
+      // next poll, and keep advancing if a tick races the previous response's
+      // application: the dashboard correctly skips ticks while refreshing.
+      await Promise.all([
+        page.waitForRequest('**/api/state').then(async (request) => {
+          const response = await request.response();
+          expect(response?.ok()).toBe(true);
+          expect(await response?.finished()).toBeNull();
+        }),
+        expect
+          .poll(async () => {
+            await page.clock.runFor(4000);
+            return state.reads;
+          })
+          .toBeGreaterThan(before)
+      ]);
     }
     expect(reads).toBe(1);
+    expect(canceled).toBe(0);
     await openNavigation(page, 'Overview', false);
     await expect.poll(() => canceled).toBe(1);
     const after = state.reads;

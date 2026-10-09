@@ -40,6 +40,40 @@ func eventually(t *testing.T, seconds time.Duration, description string, predica
 	t.Fatal(description)
 }
 
+func requestInspection(directory string, backend config.Backend, run int) (string, error) {
+	request := filepath.Join(directory, fmt.Sprintf("inspect-%s-%d", backend.String(), run))
+	if err := os.WriteFile(request, []byte("inspect the active runner container\n"), 0o644); err != nil {
+		return "", err
+	}
+	return request + "-complete", nil
+}
+
+func TestProductionImageInspectionProtocol(t *testing.T) {
+	// The Python host and provider use these literal names. Exercise the actual
+	// file boundary without Docker so enum-to-rune conversions cannot hide in an opt-in test.
+	for _, client := range []struct {
+		backend config.Backend
+		name    string
+	}{{config.BackendCodex, "codex"}, {config.BackendOpencode, "opencode"}} {
+		t.Run(client.name, func(t *testing.T) {
+			directory := t.TempDir()
+			for run := 1; run <= 2; run++ {
+				ack, err := requestInspection(directory, client.backend, run)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := filepath.Join(directory, fmt.Sprintf("inspect-%s-%d", client.name, run))
+				if ack != request+"-complete" {
+					t.Fatalf("host acknowledgment path = %q; want %q", ack, request+"-complete")
+				}
+				if _, err := os.ReadFile(request); err != nil {
+					t.Fatalf("host cannot observe the inspection request: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestProductionImageContracts(t *testing.T) {
 	if os.Getenv("OCTOMUS_PRODUCTION_IMAGE_TEST") != "1" {
 		t.Skip("run make test-production-images with the production OCI archives and Docker Engine 28+")
@@ -66,19 +100,20 @@ func TestProductionImageContracts(t *testing.T) {
 		t.Fatalf("production image containment: %+v (%v)", probe, err)
 	}
 	records := map[string][]*model.SandboxRecord{}
-	inspect := func(t *testing.T, backend string, run int) {
+	inspect := func(t *testing.T, backend config.Backend, run int) {
 		t.Helper()
-		request := fmt.Sprintf("inspect-%s-%d", backend, run)
-		if err := os.WriteFile("/results/"+request, []byte("inspect the active runner container\n"), 0o644); err != nil {
+		ack, err := requestInspection("/results", backend, run)
+		if err != nil {
 			t.Fatal(err)
 		}
 		eventually(t, 30*time.Second, "host did not inspect the production runner container", func() bool {
-			_, err := os.Stat("/results/" + request + "-complete")
+			_, err := os.Stat(ack)
 			return err == nil
 		})
 	}
 	for _, backend := range []config.Backend{config.BackendCodex, config.BackendOpencode} {
-		t.Run(string(backend), func(t *testing.T) {
+		name := backend.String()
+		t.Run(name, func(t *testing.T) {
 			workspace := filepath.Join("/var/lib/octomus/data/system", uuid.NewString(), "workspace")
 			if err := os.MkdirAll(workspace, 0o700); err != nil {
 				t.Fatal(err)
@@ -109,14 +144,14 @@ func TestProductionImageContracts(t *testing.T) {
 					evidence.Egress.Allowed["provider.octomus.test:443"] == 0 {
 					t.Fatalf("missing exact-image or actual provider CONNECT evidence: %+v", evidence)
 				}
-				records[string(backend)] = append(records[string(backend)], evidence)
+				records[name] = append(records[name], evidence)
 			}
 			client := connect()
 			session, err := client.Start(route, workspace, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			inspect(t, string(backend), 1)
+			inspect(t, backend, 1)
 			answer, err := client.Turn(session, route, workspace, "Return the controlled contract result.", nil, nil)
 			if err != nil || !strings.Contains(answer, "Controlled contract result") {
 				t.Fatalf("production client completed turn: %q (%v)", answer, err)
@@ -134,14 +169,14 @@ func TestProductionImageContracts(t *testing.T) {
 			if err != nil || resumed != session {
 				t.Fatalf("production image lost session across containers: %q (%v)", resumed, err)
 			}
-			inspect(t, string(backend), 2)
+			inspect(t, backend, 2)
 			done := make(chan error, 1)
 			go func() {
 				_, err := client.Turn(session, route, workspace, "CANCEL_CONTRACT_TURN", nil, nil)
 				done <- err
 			}()
 			eventually(t, 30*time.Second, "cancellation turn did not reach the TLS provider through egress", func() bool {
-				_, err := os.Stat("/provider-status/turn-entered-" + string(backend))
+				_, err := os.Stat("/provider-status/turn-entered-" + name)
 				return err == nil
 			})
 			stop()
