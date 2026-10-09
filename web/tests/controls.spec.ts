@@ -236,6 +236,7 @@ async function controlFixture(page: Page) {
     auditing: false,
     outage: false,
     reads: 0,
+    completedReads: 0,
     writes: [] as string[],
     holds: [] as ReturnType<typeof deferred>[]
   };
@@ -257,6 +258,7 @@ async function controlFixture(page: Page) {
     if (outage)
       await route.fulfill({ status: 503, json: { error: 'Synthetic state refresh outage' } });
     else await route.fulfill({ json: snapshot });
+    state.completedReads++;
   });
   await page.route('**/api/control/*', async (route) => {
     const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
@@ -550,23 +552,18 @@ test('slow proposal history cannot block state polling, controls, or navigation'
     await openNavigation(page, 'Proposals', false);
     await expect.poll(() => reads).toBe(1);
     for (let i = 0; i < 3; i++) {
-      const before = state.reads;
-      // Counted reads have only started. Complete each new response before the
-      // next poll, and keep advancing if a tick races the previous response's
-      // application: the dashboard correctly skips ticks while refreshing.
-      await Promise.all([
-        page.waitForRequest('**/api/state').then(async (request) => {
-          const response = await request.response();
-          expect(response?.ok()).toBe(true);
-          expect(await response?.finished()).toBeNull();
-        }),
-        expect
-          .poll(async () => {
-            await page.clock.runFor(4000);
-            return state.reads;
-          })
-          .toBeGreaterThan(before)
-      ]);
+      const before = state.completedReads;
+      // Count only responses the page received, from inside the route handler:
+      // a poll issued by an earlier advancement can land its response inside
+      // this wait, and a tick that races an in-flight refresh is correctly
+      // skipped while that response is applied, so keep advancing until a
+      // completion lands.
+      await expect
+        .poll(async () => {
+          await page.clock.runFor(4000);
+          return state.completedReads;
+        })
+        .toBeGreaterThan(before);
     }
     expect(reads).toBe(1);
     expect(canceled).toBe(0);
