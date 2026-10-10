@@ -414,7 +414,8 @@ Rotate the dashboard token by updating the environment file and restarting the s
 ## HTTP API
 
 The dashboard uses this API; scripts can call it with the same token. The route
-table in `internal/httpapi/httpapi.go` (`Router`) is authoritative.
+table in `internal/httpapi/routes.go` is authoritative; `Router` in
+`internal/httpapi/httpapi.go` only assembles the transport and serves health/assets.
 
 - Every route below is under `/api` and needs `Authorization: Bearer <token>`.
   `/healthz` needs no token and reports only liveness and version.
