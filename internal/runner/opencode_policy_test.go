@@ -4,6 +4,8 @@ package runner
 
 import (
 	"testing"
+
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func TestAppliedPolicyRejectsEachDrift(t *testing.T) {
@@ -15,7 +17,7 @@ func TestAppliedPolicyRejectsEachDrift(t *testing.T) {
 	}
 	effective := func() map[string]any {
 		t.Helper()
-		value, err := decodeJSON([]byte(encoded))
+		value, err := wirejson.Parse([]byte(encoded))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -9,12 +9,29 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
+
+func TestCodexRejectsDuplicateMessageFields(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"id":1,"id":2,"result":{}}`,
+		`{"id":1,"result":{"thread":{"id":"first","\u0069d":"second"}}}`,
+	} {
+		lines := make(chan lineResult, 1)
+		lines <- lineResult{line: []byte(raw)}
+		client := &Codex{ctx: context.Background(), lines: lines}
+		value, err := client.receive(time.Now().Add(time.Second), "Response timed out")
+		if err == nil || value != nil || !strings.HasPrefix(err.Error(), "Invalid app-server JSON: duplicate field ") {
+			t.Errorf("receive(%s) = %v, %v; want duplicate fields refused", raw, value, err)
+		}
+	}
+}
 
 func TestCodexModelsAndPreResponseEvents(t *testing.T) {
 	t.Parallel()

@@ -39,8 +39,8 @@ func DecodeStrict[T any](data []byte, dst *T) error {
 	return nil
 }
 
-// DecodeRecord decodes a saved record: unknown keys are ignored, so older binaries can read newer records, but every
-// other rule (required fields, duplicates, exact case, no null, valid UTF-8, no trailing data) holds.
+// DecodeRecord decodes a saved record: unknown fields are ignored after validating their JSON, so older binaries can
+// read newer records. Required fields, unique keys, exact case, non-null typed values and valid Unicode still hold.
 func DecodeRecord[T any](data []byte, dst *T) error {
 	var decoded T
 	if err := marked(decode(data, &decoded, false, false)); err != nil {
@@ -66,6 +66,7 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 		fields[strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]] = i
 	}
 	seen := make([]bool, typ.NumField())
+	seenUnknown := make(map[string]struct{})
 	dec := json.NewDecoder(bytes.NewReader(data))
 	token, err := dec.Token()
 	if err != nil {
@@ -91,6 +92,13 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 			if !ok {
 				if strict {
 					return fmt.Errorf("unknown field %q", name)
+				}
+				if _, duplicate := seenUnknown[name]; duplicate {
+					return fmt.Errorf("duplicate field %q", name)
+				}
+				seenUnknown[name] = struct{}{}
+				if _, err := Parse(raw); err != nil {
+					return fmt.Errorf("%s: %w", name, err)
 				}
 				continue
 			}
@@ -203,13 +211,8 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		v.Set(result)
 		return nil
 	case reflect.Interface:
-		if err := ValidStrings(raw); err != nil {
-			return err
-		}
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		var value any
-		if err := dec.Decode(&value); err != nil {
+		value, err := Parse(raw)
+		if err != nil {
 			return err
 		}
 		if value == nil {

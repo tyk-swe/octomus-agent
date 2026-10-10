@@ -75,6 +75,16 @@ func TestSSEFraming(t *testing.T) {
 			err:  "Invalid OpenCode event JSON: trailing JSON data",
 		},
 		{
+			name: "duplicate event fields end the stream",
+			body: strings.NewReader("data: {\"type\":\"session.idle\",\"type\":\"session.error\"}\n\ndata: 1\n\n"),
+			err:  `Invalid OpenCode event JSON: duplicate field "type"`,
+		},
+		{
+			name: "nested duplicate event fields end the stream",
+			body: strings.NewReader("data: {\"properties\":{\"sessionID\":\"first\",\"sessionID\":\"second\"}}\n\ndata: 1\n\n"),
+			err:  `Invalid OpenCode event JSON: duplicate field "sessionID"`,
+		},
+		{
 			name: "invalid UTF-8",
 			body: strings.NewReader("data: \"\xff\"\n\n"),
 			err:  "Invalid OpenCode event encoding",

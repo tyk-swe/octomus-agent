@@ -240,7 +240,7 @@ func readJSONBody(r io.Reader) (any, error) {
 	if len(data) > MaxMessage {
 		return nil, fmt.Errorf("OpenCode message exceeds 16 MB protocol limit")
 	}
-	v, err := decodeJSON(data)
+	v, err := wirejson.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("Invalid OpenCode JSON response: %w", err)
 	}

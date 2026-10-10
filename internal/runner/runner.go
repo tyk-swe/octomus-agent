@@ -1,14 +1,10 @@
 package runner
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
-	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -134,12 +130,7 @@ func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil
 	}
-	parsed, err := decodeJSON([]byte(answer))
-	if err == nil {
-		dec := json.NewDecoder(strings.NewReader(answer))
-		dec.UseNumber()
-		err = uniqueKeys(dec)
-	}
+	parsed, err := wirejson.Parse([]byte(answer))
 	if err != nil {
 		return "", fmt.Errorf("Runner returned invalid JSON: %w", err)
 	}
@@ -343,57 +334,6 @@ func asArray(v any) ([]any, bool) {
 func strAt(m map[string]any, key string) (string, bool) {
 	s, ok := m[key].(string)
 	return s, ok
-}
-
-func decodeJSON(data []byte) (any, error) {
-	if err := wirejson.ValidStrings(data); err != nil {
-		return nil, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, fmt.Errorf("trailing JSON data")
-	}
-	return v, nil
-}
-
-func uniqueKeys(dec *json.Decoder) error {
-	token, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	switch token {
-	case json.Delim('{'):
-		seen := map[string]struct{}{}
-		for dec.More() {
-			key, err := dec.Token()
-			if err != nil {
-				return err
-			}
-			name, _ := key.(string)
-			if _, ok := seen[name]; ok {
-				return fmt.Errorf("duplicate field %q", name)
-			}
-			seen[name] = struct{}{}
-			if err := uniqueKeys(dec); err != nil {
-				return err
-			}
-		}
-	case json.Delim('['):
-		for dec.More() {
-			if err := uniqueKeys(dec); err != nil {
-				return err
-			}
-		}
-	default:
-		return nil
-	}
-	_, err = dec.Token()
-	return err
 }
 
 func marshal(v any) (string, error) {

@@ -22,6 +22,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 const CodexVersion = "0.153.4"
@@ -251,7 +252,7 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 	if r.err != nil {
 		return nil, r.err
 	}
-	decoded, err := decodeJSON(r.line)
+	decoded, err := wirejson.Parse(r.line)
 	if err != nil {
 		return nil, fmt.Errorf("Invalid app-server JSON: %w", err)
 	}

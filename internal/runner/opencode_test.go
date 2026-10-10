@@ -12,6 +12,19 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
 )
 
+func TestOpenCodeRejectsDuplicateResponseFields(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"id":"first","id":"second"}`,
+		`{"info":{"model":{"modelID":"first","\u006dodelID":"second"}}}`,
+	} {
+		value, err := readJSONBody(strings.NewReader(raw))
+		if err == nil || value != nil || !strings.HasPrefix(err.Error(), "Invalid OpenCode JSON response: duplicate field ") {
+			t.Errorf("readJSONBody(%s) = %v, %v; want duplicate fields refused", raw, value, err)
+		}
+	}
+}
+
 func TestOpenCodeSessions(t *testing.T) {
 	t.Parallel()
 	f := opencodeFixture(t)

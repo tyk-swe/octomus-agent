@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // lineSplitter cuts a stream into lines for a reader that bounds each one.
@@ -130,7 +132,7 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 		if text == "" {
 			frameBytes = 0
 			if len(data) > 0 {
-				value, err := decodeJSON(data)
+				value, err := wirejson.Parse(data)
 				data = nil
 				if err != nil {
 					emit(valueResult{err: fmt.Errorf("Invalid OpenCode event JSON: %w", err)})
