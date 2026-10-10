@@ -10,6 +10,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -358,8 +359,10 @@ func externalContext(inventory model.OpenPRInventory) ([]model.ExternalPRContext
 		if len(result) >= maxExternalPRs {
 			break
 		}
-		title, titleCut := truncateRunes(pr.Title, maxPRTitleChars)
-		body, bodyCut := truncateRunes(pr.Body, maxPRBodyChars)
+		// Scrub complete source text before either the character or JSON byte
+		// bound can split a credential into a fragment no longer recognizable.
+		title, titleCut := truncateRunes(redact.Secrets(pr.Title), maxPRTitleChars)
+		body, bodyCut := truncateRunes(redact.Secrets(pr.Body), maxPRBodyChars)
 		entry := model.ExternalPRContext{Number: pr.Number, URL: pr.URL, Title: title, Body: body, Branch: pr.Branch, Head: pr.Head, Base: pr.Base, HeadRepository: pr.HeadRepository, BaseRepository: pr.BaseRepository, TitleTruncated: titleCut, BodyTruncated: bodyCut}
 		encoded, err := wirejson.Marshal(entry)
 		if err != nil {

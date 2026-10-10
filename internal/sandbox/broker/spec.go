@@ -43,6 +43,9 @@ func (c Config) container(p plan, extraEnv []string) ContainerConfig {
 	}
 	if p.kind == wire.KindRunner {
 		env = append(env, "GIT_CONFIG_GLOBAL="+toolsGitConfig)
+		if c.CAFile != "" {
+			env = append(env, "SSL_CERT_FILE="+toolsCAFile, "NODE_EXTRA_CA_CERTS="+toolsCAFile)
+		}
 	}
 	env = append(env, extraEnv...)
 	env = append(env, p.env...)

@@ -12,7 +12,12 @@
   import Proposals from '$lib/Proposals.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
-  import { controlEligibility, type ControlAction, type SetupStatus } from '$lib/setup';
+  import {
+    configurationEditable,
+    controlEligibility,
+    type ControlAction,
+    type SetupStatus
+  } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
@@ -114,6 +119,7 @@
           active_tasks: data.active_tasks,
           cycle_active: data.cycle_active,
           baseline_active: data.baseline_active,
+          auto_merge_active: data.auto_merge.active,
           baseline: data.baseline,
           notifications: data.notifications,
           active_cycle_mode: data.active_cycle_mode,
@@ -694,11 +700,7 @@
         {#if settingsVisited}<div hidden={view !== 'settings'}>
             <Settings
               active={view === 'settings'}
-              editable={data.control.paused &&
-                !data.active_tasks &&
-                !data.cycle_active &&
-                !data.active_cycle_mode &&
-                !data.baseline_active}
+              editable={configurationEditable(setupStatus)}
               status={setupStatus}
               onsaved={configSaved}
               onbaselinechanged={baselineChanged}

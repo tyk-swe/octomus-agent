@@ -236,6 +236,7 @@ async function controlFixture(page: Page) {
     auditing: false,
     outage: false,
     reads: 0,
+    completedReads: 0,
     writes: [] as string[],
     holds: [] as ReturnType<typeof deferred>[]
   };
@@ -257,6 +258,7 @@ async function controlFixture(page: Page) {
     if (outage)
       await route.fulfill({ status: 503, json: { error: 'Synthetic state refresh outage' } });
     else await route.fulfill({ json: snapshot });
+    state.completedReads++;
   });
   await page.route('**/api/control/*', async (route) => {
     const action = new URL(route.request().url()).pathname.split('/').at(-1)!;
@@ -549,12 +551,22 @@ test('slow proposal history cannot block state polling, controls, or navigation'
   try {
     await openNavigation(page, 'Proposals', false);
     await expect.poll(() => reads).toBe(1);
-    const before = state.reads;
     for (let i = 0; i < 3; i++) {
-      await page.clock.runFor(4000);
-      await expect.poll(() => state.reads).toBeGreaterThan(before + i);
+      const before = state.completedReads;
+      // Count only responses the page received, from inside the route handler:
+      // a poll issued by an earlier advancement can land its response inside
+      // this wait, and a tick that races an in-flight refresh is correctly
+      // skipped while that response is applied, so keep advancing until a
+      // completion lands.
+      await expect
+        .poll(async () => {
+          await page.clock.runFor(4000);
+          return state.completedReads;
+        })
+        .toBeGreaterThan(before);
     }
     expect(reads).toBe(1);
+    expect(canceled).toBe(0);
     await openNavigation(page, 'Overview', false);
     await expect.poll(() => canceled).toBe(1);
     const after = state.reads;

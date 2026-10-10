@@ -5,117 +5,149 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build
+        description: Existing release tag to build, update notes, or retry retained images
         required: true
       notes:
-        description: Optional release notes replacing generated notes
+        description: Optional release notes; an existing release receives only a notes update
         required: false
 permissions:
   contents: read
+# Queue retries for the same version. Cancelling an upload or promotion only creates more recovery work.
+concurrency:
+  group: release-${{ github.repository }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+env:
+  GH_REPO: ${{ github.repository }}
+  GH_HOST: github.com
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 jobs:
-  # The full checks build, smoke-test and upload both native archives; publish releases those.
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      # The list-releases API exposes drafts only to a push-capable identity. This job performs reads only.
+      contents: write
+    outputs:
+      mode: ${{ steps.operation.outputs.mode }}
+      source: ${{ steps.operation.outputs.source }}
+      version: ${{ steps.operation.outputs.version }}
+    steps:
+      # Use this workflow's scripts even for a historical tag that predates them. Build jobs check out source below.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Choose notes, first build, or recovery from retained inputs
+        id: operation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: python3 scripts/release.py prepare
+
+  # Nothing in the build/test graph runs for notes edits or an existing release's image/signing retry.
   verify:
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'build'
     uses: ./.github/workflows/ci.yml
     with:
-      ref: ${{ inputs.tag || github.ref_name }}
-  # Ordering: the release must exist before anything version-tagged is published. A run that
-  # fails at `publish` pushes no image, so no version tag can outlive a release that never shipped.
-  images:
-    needs: publish
+      ref: ${{ needs.prepare.outputs.source }}
+
+  notes:
+    needs: prepare
+    if: needs.prepare.outputs.mode == 'notes'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Update only the description and preserve the input receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: python3 scripts/release.py notes
+
+  # Draft creation atomically pins the accepted source, original run and all asset hashes. An interrupted
+  # upload resumes those same bytes; only a complete verified asset set becomes public.
+  publish:
+    needs: [prepare, verify]
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' &&
+          ((needs.prepare.outputs.mode == 'build' && needs.verify.result == 'success') ||
+           needs.prepare.outputs.mode == 'retry') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Publish or resume the original accepted inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ needs.prepare.outputs.mode }}
+          RELEASE_SOURCE: ${{ needs.prepare.outputs.source }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+        run: python3 scripts/release.py stage
+
+  # Release ordering is deliberate: version-tagged images can only come from permanent, published release
+  # assets. OCI archives already contain both native accepted manifests, SBOMs and provenance; never rebuild here.
+  images:
+    needs: [prepare, publish]
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' && needs.publish.result == 'success' &&
+          needs.prepare.outputs.mode != 'notes' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: octomus-agent
-            context: .
-            file: deploy/docker/Dockerfile
-          - image: octomus-sandbox
-            context: deploy/docker
-            file: deploy/docker/sandbox.Dockerfile
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Verify the permanent release inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SOURCE: ${{ needs.prepare.outputs.source }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: python3 scripts/release.py download --directory dist/release
+      - name: Install OCI transfer tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+      - uses: sigstore/cosign-installer@v3
+      # Both Skopeo and Cosign read the Docker credential file written by this action.
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Image name
-        id: name
+      - name: Promote and sign the accepted image digests
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_SOURCE: ${{ needs.prepare.outputs.source }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           OWNER: ${{ github.repository_owner }}
-        run: echo "ref=ghcr.io/${OWNER,,}/${{ matrix.image }}:${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-      - name: Build and push ${{ matrix.image }}
-        id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.name.outputs.ref }}
-          provenance: mode=max
-          sbom: true
-      - uses: sigstore/cosign-installer@v3
-      - name: Sign the pushed digest
-        env:
-          IMAGE_REF: ${{ steps.name.outputs.ref }}
-          DIGEST: ${{ steps.push.outputs.digest }}
-        run: cosign sign --yes "${IMAGE_REF%:*}@${DIGEST}"
-  publish:
-    needs: verify
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: package-*
-          merge-multiple: true
-          path: dist
-      - name: Publish verified packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-          RELEASE_NOTES: ${{ inputs.notes }}
-        run: |
-          cd dist
-          # Archive names carry v plus the VERSION file, so this also checks the tag.
-          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            test -f "octomus-agent-$RELEASE_TAG-$target.tar.gz" || { echo "No $target archive named for $RELEASE_TAG; the tag must be v plus VERSION" >&2; exit 1; }
-          done
-          sha256sum -- *.tar.gz > SHA256SUMS
-          printf '%s\n' "$RELEASE_NOTES" > /tmp/octomus-release-notes.md
-          options=(--verify-tag)
-          if [[ "$RELEASE_TAG" == *-* ]]; then options+=(--prerelease); fi
-          if [[ -n "$RELEASE_NOTES" ]]; then
-            options+=(--notes-file /tmp/octomus-release-notes.md)
-          else
-            options+=(--generate-notes)
-          fi
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if [[ -z "$RELEASE_NOTES" ]]; then
-              echo 'Release already exists; supply notes to update its description. Assets will not be replaced.' >&2
-              exit 1
-            fi
-            gh release edit "$RELEASE_TAG" --notes-file /tmp/octomus-release-notes.md
-          else
-            gh release create "$RELEASE_TAG" "${options[@]}" ./*.tar.gz SHA256SUMS
-          fi
-  # Installs the published release exactly as documented: the tagged installer, its release
-  # assets and checksums, on a fresh x86_64 and a native aarch64 Ubuntu 24.04 host.
+        run: >-
+          python3 scripts/release-images.py promote --directory dist/release/images
+          --source "$RELEASE_SOURCE" --version "$RELEASE_VERSION" --tag "$RELEASE_TAG"
+          --repository "ghcr.io/${OWNER,,}"
+
+  # Install published archives exactly as documented, including their release checksums, on both native hosts.
   install:
-    needs: publish
+    needs: [prepare, publish]
+    if: >-
+      ${{ !cancelled() && needs.prepare.result == 'success' && needs.publish.result == 'success' &&
+          needs.prepare.outputs.mode != 'notes' }}
     strategy:
       fail-fast: false
       matrix:
@@ -125,20 +157,20 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     steps:
       - name: Install the published release
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           EXPECT_ARCH: ${{ matrix.arch }}
         run: |
           test "$(uname -m)" = "$EXPECT_ARCH"
-          url="https://raw.githubusercontent.com/${{ github.repository }}/$RELEASE_TAG/install.sh"
+          url="https://raw.githubusercontent.com/$GH_REPO/$RELEASE_TAG/install.sh"
           for attempt in 1 2 3; do
             curl --proto '=https' --proto-redir '=https' -fsSL "$url" -o "$RUNNER_TEMP/install.sh" && break
             [ "$attempt" = 3 ] && exit 1
             sleep 5
           done
-          # Assets can lag the release record briefly; retry the whole install, which re-verifies checksums.
+          # Assets can lag the release record briefly; every retry re-verifies the package checksum.
           for attempt in 1 2 3; do
             if sh "$RUNNER_TEMP/install.sh" "$RELEASE_TAG"; then break; fi
             [ "$attempt" = 3 ] && exit 1

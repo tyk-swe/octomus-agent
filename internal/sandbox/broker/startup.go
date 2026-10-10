@@ -79,6 +79,9 @@ func New(ctx context.Context, cfg Config, executable string) (*Broker, error) {
 	if err := installTools(executable, cfg.ToolsDir); err != nil {
 		return nil, fmt.Errorf("Installing the sandbox helper: %w", err)
 	}
+	if err := installCA(cfg.CAFile, "/etc/ssl/certs/ca-certificates.crt", cfg.ToolsDir); err != nil {
+		return nil, fmt.Errorf("Installing sandbox certificate authorities: %w", err)
+	}
 	b.info = wire.BrokerInfo{
 		InstanceID:    b.info.InstanceID,
 		Version:       octomus.Version,

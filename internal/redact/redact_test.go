@@ -83,3 +83,28 @@ func TestFragmentScrubsCutBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONDiscardsAnnotatedCutFragments(t *testing.T) {
+	for _, fragment := range []string{
+		"ghp_abcdef",
+		"https://owner:partial-password",
+		"unknown-old-credential-prefix",
+		operatorToken[:12],
+	} {
+		value := map[string]any{"nested": []any{map[string]any{
+			"title": "Known context " + fragment, "title_truncated": true,
+			"body": "Retained paragraph.\n" + fragment, "body_truncated": true,
+		}}}
+		shown := redact.JSON(value).(map[string]any)["nested"].([]any)[0].(map[string]any)
+		if shown["title"] != "Known context" || shown["body"] != "Retained paragraph." {
+			t.Fatalf("cut fragment %q survived or useful complete text was lost: %v", fragment, shown)
+		}
+		if shown["title_truncated"] != true || shown["body_truncated"] != true {
+			t.Fatal("presentation lost its evidence that source text was omitted")
+		}
+	}
+	uncut := map[string]any{"title": "A complete title", "title_truncated": false, "body": "A complete body", "body_truncated": false}
+	if got := canonical(t, redact.JSON(uncut)); got != `{"body":"A complete body","body_truncated":false,"title":"A complete title","title_truncated":false}` {
+		t.Fatalf("uncut fields changed: %s", got)
+	}
+}

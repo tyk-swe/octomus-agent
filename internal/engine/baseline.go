@@ -247,7 +247,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	}
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {
-		_ = a.Store.Event(id, "cleanup_error", redact.Error(err))
+		_ = a.reportCleanupFailure(cleanupBaseline, id, err)
 	}
 }
 
@@ -406,14 +406,14 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 	check.CleanupError = cleanupError
 	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
 	if err != nil {
-		return err
+		return errors.Join(removeErr, err)
 	}
 	if current == nil {
-		return nil
+		return removeErr
 	}
 	if removeErr == nil {
 		current.WorkspaceRemoved = true
 	}
 	current.CleanupError = cleanupError
-	return a.Store.Put("baseline", check.ID, *current)
+	return errors.Join(removeErr, a.Store.Put("baseline", check.ID, *current))
 }

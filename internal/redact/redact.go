@@ -208,5 +208,31 @@ func DisplayJSON(object map[string]any) (map[string]any, []DisplayTransform) {
 }
 
 func JSON(value any) any {
+	trimJSONFragments(value)
 	return walk(value, nil, func(s string, _ []any) string { return Text(s) })
+}
+
+// PR context saved by older releases may already end inside a credential. Its
+// missing suffix cannot be recovered by matching the retained text, including
+// against a newly configured environment secret. Treat explicit title/body cut
+// flags as capture boundaries on every outward read. This changes the generic
+// presentation only; the saved evidence and its truncation flags stay intact.
+func trimJSONFragments(value any) {
+	switch v := value.(type) {
+	case []any:
+		for _, item := range v {
+			trimJSONFragments(item)
+		}
+	case map[string]any:
+		for _, field := range []string{"title", "body"} {
+			if cut, _ := v[field+"_truncated"].(bool); cut {
+				if text, ok := v[field].(string); ok {
+					v[field] = Fragment(text, HeadLineCut)
+				}
+			}
+		}
+		for _, item := range v {
+			trimJSONFragments(item)
+		}
+	}
 }

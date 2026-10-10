@@ -16,8 +16,10 @@ import (
 
 // The environment variables the operator sets for the service; children never see them.
 const (
-	TokenEnv   = "OCTOMUS_TOKEN"
-	WebhookEnv = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
+	TokenEnv        = "OCTOMUS_TOKEN"
+	WebhookEnv      = "OCTOMUS_NOTIFICATION_WEBHOOK_URL"
+	MergeTokenEnv   = "OCTOMUS_MERGE_TOKEN"
+	MergeRulesetEnv = "OCTOMUS_MERGE_RULESET_ID"
 )
 
 func Categories() []string {

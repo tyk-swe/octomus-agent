@@ -245,6 +245,7 @@ function setup(sandbox: SandboxPosture) {
     active_tasks: 0,
     cycle_active: false,
     baseline_active: false,
+    auto_merge_active: false,
     baseline: null,
     notifications: {
       state: 'disabled',

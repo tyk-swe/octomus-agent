@@ -11,6 +11,10 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 )
 
+// ErrMergeUnconfirmed identifies failures after the mutation returned successfully.
+// An HTTP error from a later read is not a refusal of the already-completed PUT.
+var ErrMergeUnconfirmed = errors.New("Merge request outcome is unconfirmed")
+
 type MergeStatus struct {
 	Number         uint64
 	URL            string
@@ -39,7 +43,7 @@ type MergeStatus struct {
 
 func MaintenanceMergeStatus(ctx context.Context, c config.Config, number uint64) (MergeStatus, error) {
 	owner, name, _ := strings.Cut(c.GitHubRepo, "/")
-	out, err := gh(ctx, c, []string{"api", "graphql", "-f", "query=" + maintenanceMergeStatusQuery,
+	out, err := gh(ctx, c, []string{"api", "--hostname", "github.com", "graphql", "-f", "query=" + maintenanceMergeStatusQuery,
 		"-f", "owner=" + owner, "-f", "name=" + name, "-F", fmt.Sprintf("number=%d", number)})
 	if err != nil {
 		return MergeStatus{}, err
@@ -204,7 +208,7 @@ func MergeBase(ctx context.Context, c config.Config, base, head string) (string,
 	return Git(ctx, c, c.Repository, []string{"merge-base", base, head})
 }
 
-func SquashMerge(ctx context.Context, c config.Config, number uint64, head string) (string, error) {
+func SquashMerge(ctx context.Context, c config.Config, number uint64, head, headBranch string) (string, error) {
 	if number == 0 {
 		return "", errors.New("Merge requires a pull request number")
 	}
@@ -214,8 +218,15 @@ func SquashMerge(ctx context.Context, c config.Config, number uint64, head strin
 	if !footprintRevision(head) {
 		return "", errors.New("Merge requires the exact hexadecimal reviewed head")
 	}
-	out, err := gh(ctx, c, []string{
-		"api", "--method", "PUT",
+	if !config.ValidBranch(headBranch) || headBranch == c.DefaultBranch {
+		return "", errors.New("Merge requires the reviewed source branch")
+	}
+	token, err := mergeDestinationToken(ctx, c)
+	if err != nil {
+		return "", err
+	}
+	out, err := mergeGH(ctx, c, token, []string{
+		"api", "--hostname", "github.com", "--method", "PUT",
 		fmt.Sprintf("repos/%s/pulls/%d/merge", c.GitHubRepo, number),
 		"-f", "sha=" + head,
 		"-f", "merge_method=squash",
@@ -229,10 +240,18 @@ func SquashMerge(ctx context.Context, c config.Config, number uint64, head strin
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
-		return "", fmt.Errorf("Merge acknowledgement is not readable: %w", err)
+		return "", fmt.Errorf("%w: acknowledgement is not readable: %w", ErrMergeUnconfirmed, err)
 	}
 	if !response.Merged || !footprintRevision(response.SHA) {
-		return "", fmt.Errorf("Merge acknowledgement did not confirm a merge commit: %s", redact.Text(response.Message))
+		return "", fmt.Errorf("%w: acknowledgement did not confirm a merge commit: %s", ErrMergeUnconfirmed, redact.Text(response.Message))
+	}
+	status, err := MaintenanceMergeStatus(ctx, c, number)
+	if err != nil {
+		return "", fmt.Errorf("%w: acknowledgement received but its destination is unconfirmed: %w", ErrMergeUnconfirmed, err)
+	}
+	if status.State != "merged" || status.Head != head || status.HeadBranch != headBranch ||
+		status.BaseBranch != c.DefaultBranch || status.MergeCommit == nil || *status.MergeCommit != response.SHA {
+		return "", fmt.Errorf("%w: acknowledgement does not match the reviewed pull request and destination", ErrMergeUnconfirmed)
 	}
 	return response.SHA, nil
 }

@@ -72,6 +72,10 @@ func apiPath(format string, args ...any) string {
 }
 
 func (c *dockerClient) do(ctx context.Context, method, target string, body any, out any) error {
+	return c.doLimit(ctx, method, target, body, out, 16<<20)
+}
+
+func (c *dockerClient) doLimit(ctx context.Context, method, target string, body any, out any, responseLimit int64) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -99,7 +103,7 @@ func (c *dockerClient) do(ctx context.Context, method, target string, body any, 
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, responseLimit)).Decode(out)
 }
 
 func readError(resp *http.Response) error {
@@ -316,27 +320,11 @@ func (c *dockerClient) containerWait(ctx context.Context, id string) (<-chan wai
 	results := make(chan waitResult, 1)
 	errs := make(chan error, 1)
 	target := apiPath("/containers/%s/wait", id) + "?condition=not-running"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://docker"+target, nil)
-	if err != nil {
-		errs <- err
-		return results, errs
-	}
-	// A wait holds its connection open for the container's whole life, so it gets a connection of its own.
-	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return c.dial(ctx) }}}
+	// An outstanding wait occupies its own transport connection; controls use other connections. Reuse the same
+	// bounded response decoder and context cancellation as the other Engine requests.
 	go func() {
-		resp, err := client.Do(req)
-		if err != nil {
-			errs <- err
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 300 {
-			errs <- readError(resp)
-			return
-		}
 		var result waitResult
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+		if err := c.doLimit(ctx, http.MethodPost, target, nil, &result, 1<<20); err != nil {
 			errs <- err
 			return
 		}
@@ -348,7 +336,10 @@ func (c *dockerClient) containerWait(ctx context.Context, id string) (<-chan wai
 // attachStream is a hijacked attach stream: reader yields the daemon's multiplexed stdout and stderr, conn takes
 // stdin.
 type attachStream struct {
-	conn   *net.UnixConn
+	conn interface {
+		io.WriteCloser
+		CloseWrite() error
+	}
 	reader *bufio.Reader
 }
 

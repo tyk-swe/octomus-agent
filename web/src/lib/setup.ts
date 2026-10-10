@@ -32,6 +32,7 @@ export type SetupStatus = {
   active_tasks: number;
   cycle_active: boolean;
   baseline_active: boolean;
+  auto_merge_active: boolean;
   baseline: BaselineSummary | null;
   notifications: NotificationHealth;
   active_cycle_mode: CycleMode | null;
@@ -313,18 +314,28 @@ export function planningBlocker(capacity: PlanningCapacity | null | undefined): 
   }`;
 }
 
+// Matches the server's runtime.idle: a merge worker keeps the service busy even after Pause.
+function activityIdle(status: SetupStatus): boolean {
+  return (
+    !status.cycle_active &&
+    !status.active_cycle_mode &&
+    !status.active_tasks &&
+    !status.baseline_active &&
+    !status.auto_merge_active
+  );
+}
+
+export function configurationEditable(status: SetupStatus | null): boolean {
+  return !!status && status.paused && activityIdle(status);
+}
+
 export function controlEligibility(status: SetupStatus | null): Record<ControlAction, boolean> {
   if (!status) return { resume: false, pause: false, cycle: false, audit: false };
-  // A planning preflight has no cycle yet; the service reports it only through active_cycle_mode.
-  const planningActive = !!status.cycle_active || !!status.active_cycle_mode;
   const canPlan =
     !status.recovery_error &&
     !status.control_state_pending &&
     !planningBlocker(status.planning_capacity) &&
-    status.paused &&
-    !planningActive &&
-    !status.active_tasks &&
-    !status.baseline_active;
+    configurationEditable(status);
   return {
     resume:
       status.configured &&
@@ -357,11 +368,13 @@ export function chooseStep(status: SetupStatus | null): SetupStep {
           ? `${plural(status.active_tasks, 'active task')} may still finish and publish.`
           : status.cycle_active || status.active_cycle_mode
             ? 'A cycle is planning.'
-            : !status.paused
-              ? status.mode === 'continuous'
-                ? 'Continuous operation is running; Pause stops new work first.'
-                : 'A run-once cycle is in progress.'
-              : '';
+            : status.auto_merge_active
+              ? 'An automatic merge check is still running.'
+              : !status.paused
+                ? status.mode === 'continuous'
+                  ? 'Continuous operation is running; Pause stops new work first.'
+                  : 'A run-once cycle is in progress.'
+                : '';
   const planning = planningBlocker(status.planning_capacity);
   const eligible = controlEligibility(status);
   const actionAvailability = (configured: boolean, action: 'audit' | 'cycle') =>

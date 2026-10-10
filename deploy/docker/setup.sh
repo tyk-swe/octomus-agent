@@ -26,7 +26,18 @@ set_env() {
 }
 set_env DOCKER_GID "$(stat -c %g "$socket")"
 
-repo=$(sed -n 's/^OCTOMUS_GITHUB_REPO=//p' .env)
+# Let Compose resolve shell precedence, .env quoting and interpolation before asking for a scoped token. This
+# config-only document permits an empty value so first-run setup can prompt before the real stack requires it.
+selection=$(docker compose --env-file .env -f - config --environment <<'COMPOSE'
+services:
+  repository-selection:
+    image: scratch
+    environment:
+      OCTOMUS_GITHUB_REPO: ${OCTOMUS_GITHUB_REPO-}
+COMPOSE
+) || fail 'Could not read the repository selection from Docker Compose'
+repo=$(printf '%s\n' "$selection" | sed -n 's/^OCTOMUS_GITHUB_REPO=//p')
+unset selection
 if [ -z "$repo" ] || [ "$repo" = OWNER/REPOSITORY ]; then
   printf 'GitHub repository to improve (OWNER/REPOSITORY): '
   read -r repo
@@ -37,6 +48,10 @@ case "$repo" in
   *) fail "Repository must be OWNER/REPOSITORY, not $repo";;
 esac
 set_env OCTOMUS_GITHUB_REPO "$repo"
+# Every subsequent Compose command must use the exact repository named in the credential prompt, including when
+# the operator entered a value after an empty exported variable. Save it in .env for later shells as well.
+OCTOMUS_GITHUB_REPO=$repo
+export OCTOMUS_GITHUB_REPO
 
 umask 077
 mkdir -p secrets

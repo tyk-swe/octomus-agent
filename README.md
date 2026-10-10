@@ -11,6 +11,10 @@ OpenCode. It can reject every proposal and do nothing. You decide what merges 鈥
 to maintenance mode, which can squash-merge a small reviewed maintenance PR itself only
 when GitHub checks and repository protections allow it.
 
+Automatic maintenance merging also requires a
+[restricted merger identity and enforced destination ruleset](docs/maintenance-merging.md).
+Without that protection, eligible deliveries remain available for manual merging.
+
 **Self-hosted preview 路 Sandboxed by default 路 One operator 路 One repository 路 Your Codex or OpenCode access**
 
 ![Octomus dashboard](docs/dashboard.png)

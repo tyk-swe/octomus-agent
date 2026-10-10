@@ -1,0 +1,119 @@
+name: Production image acceptance
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: octomus-agent
+            context: .
+            file: deploy/docker/Dockerfile
+          - image: octomus-sandbox
+            context: deploy/docker
+            file: deploy/docker/sandbox.Dockerfile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - id: identity
+        run: |
+          echo "source=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          mkdir -p dist/images
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      # Build once, with the production Dockerfiles and no fixture build tags. The OCI archive retains the complete
+      # two-platform index, SBOM and provenance; no registry or mutable version tag exists at this stage.
+      # BuildKit needs an image name to emit manifest-bound in-toto subjects. This source-specific local name
+      # supplies that identity to the OCI exporter; it does not push an image or create a release tag.
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64,linux/arm64
+          tags: octomus-acceptance/${{ matrix.image }}:${{ steps.identity.outputs.source }}
+          push: false
+          outputs: type=oci,dest=dist/images/${{ matrix.image }}.oci.tar
+          provenance: mode=max
+          sbom: true
+          labels: |
+            org.opencontainers.image.title=${{ matrix.image }}
+            org.opencontainers.image.revision=${{ steps.identity.outputs.source }}
+            org.opencontainers.image.version=${{ steps.identity.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - name: Bind the image index, platforms and attestations to the source
+        env:
+          IMAGE: ${{ matrix.image }}
+          SOURCE: ${{ steps.identity.outputs.source }}
+          VERSION: ${{ steps.identity.outputs.version }}
+        run: python3 scripts/release-images.py metadata --directory dist/images --image "$IMAGE" --source "$SOURCE" --version "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-image-${{ matrix.image }}
+          path: dist/images/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+  accept:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: production-image-*
+          merge-multiple: true
+          path: dist/images
+      - name: Install OCI transfer tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo openssl
+      - name: Test the retained images on native ${{ matrix.arch }}
+        run: make test-production-images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-acceptance-${{ matrix.arch }}
+          path: dist/images/production-acceptance-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-diagnostics-${{ matrix.arch }}
+          path: dist/images/production-diagnostics-${{ matrix.arch }}.log
+          retention-days: 7
+
+  verify:
+    name: Both native production images accepted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: always()
+    needs: [build, accept]
+    steps:
+      - run: test "${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}" = true

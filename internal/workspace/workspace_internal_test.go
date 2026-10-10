@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestMakeDirsWritableSymlinks(t *testing.T) {
+func TestRemoveOwnedDirLockedSymlinks(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "tasks")
 	tree := filepath.Join(root, "task-1")
@@ -58,22 +58,8 @@ func TestMakeDirsWritableSymlinks(t *testing.T) {
 		}
 	})
 
-	makeDirsWritable(root, "task-1")
-
-	for _, dir := range []string{
-		tree,
-		filepath.Join(tree, "mod"),
-		filepath.Join(tree, "mod", "pkg"),
-		filepath.Join(tree, "locked"),
-		filepath.Join(tree, "locked", "inner"),
-	} {
-		info, err := os.Lstat(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm()&0o700 != 0o700 {
-			t.Fatalf("%s mode = %v; want owner rwx", dir, info.Mode().Perm())
-		}
+	if err := RemoveOwnedDir(root, tree); err != nil {
+		t.Fatal(err)
 	}
 	for _, dir := range []string{outside, sibling} {
 		info, err := os.Lstat(dir)
@@ -85,9 +71,6 @@ func TestMakeDirsWritableSymlinks(t *testing.T) {
 		}
 	}
 
-	if err := RemoveOwnedDir(root, tree); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := os.Lstat(tree); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("owned tree still present: %v", err)
 	}

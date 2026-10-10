@@ -278,6 +278,7 @@ export type ExternalPRContext = {
   base_repository: string;
   title_truncated: boolean;
   body_truncated: boolean;
+  local_head_available?: boolean;
 };
 export type DecisionRecord = {
   kind?: string;

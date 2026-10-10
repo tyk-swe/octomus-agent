@@ -347,7 +347,7 @@ func (a *App) removeOwnedRoot(kind cleanupKind, id, parent, root string) error {
 	}
 	defer a.releaseCleanup(kind, id)
 	var err error
-	a.withoutGate(func() { err = workspace.RemoveOwnedDir(parent, root) })
+	a.withoutGate(func() { err = workspace.RemoveOwnedDirContext(a.ctx, parent, root) })
 	return err
 }
 

@@ -33,6 +33,12 @@ cd octomus-agent/deploy/docker
 - builds the control-plane and sandbox images;
 - runs `docker compose up -d`.
 
+Repository selection follows Docker Compose's effective environment, including an
+exported `OCTOMUS_GITHUB_REPO`, quoted `.env` values and interpolation. The setup
+prompt names the repository that the containers will use. When setup asks for a new
+value, it saves that value and exports it for the rest of the invocation, including
+when the calling shell had exported an empty value.
+
 On first start the control plane clones the repository into its data volume. That clone
 is the trusted checkout, and the dashboard cannot repoint it.
 
@@ -64,6 +70,12 @@ Add your project's build and test tools to the sandbox image, not to the host: s
 [extending the sandbox image](sandbox.md#extend-the-sandbox-image). Verification commands run
 in that image.
 
+For a provider that uses a private certificate authority, see the
+[host-owned runner CA bundle](sandbox.md#private-provider-certificates). This changes
+runner certificate trust while keeping the egress host and address checks in force.
+Automatic maintenance merging requires separate trusted credentials and server-side
+rules; follow [maintenance merge setup](maintenance-merging.md) before enabling that mode.
+
 ### Operating the stack
 
 | Task | Command |
@@ -83,7 +95,7 @@ containers carrying its own `octomus.sandbox.instance` label.
 State lives in named volumes:
 - `octomus-data`: the database, workspaces and the trusted checkout;
 - `octomus-runner`: runner logins and session transcripts;
-- `octomus-tools`: the broker's helper binary, recreated on start.
+- `octomus-tools`: the broker's helper binary and optional public CA bundle, recreated on start.
 
 Keep the secret files under `secrets/` with the deployment. `setup.sh` gives them to the
 container user (uid 10001) at mode 0600. The control plane reads them only when it starts,
@@ -304,7 +316,7 @@ The dashboard starts paused. Configure the repository, explicit role routes, ver
 - **Model or authentication errors:** correct the host's account setup or explicit routes. There is no hidden fallback. Existing task route snapshots remain unchanged. If a task needs a different route, pause, cancel it, save the new routes, then choose **Supersede and rediscover** on the cancelled task and start an execution cycle. This explicitly requests a fresh decision even when repository files are unchanged; any replacement uses the new routes and links back to the cancelled task. Cancellation alone does not request replacement work.
 - **Repair/verification limits:** unresolved work stays blocked and is never treated as clean. Review evidence and the workspace remain available for inspection.
 
-Repository identity and branch policy cannot change while unresolved tasks exist. Configuration edits require the service to be paused with no active tasks or cycle. Each write pins the canonical configuration revision it was made from and replaces only the supplied top-level fields; writes against a superseded revision conflict. Values served only as redacted or shortened display previews are never written back, so hidden settings survive unrelated edits unchanged. Operator API changes are the only application path for modifying policy; repository/model output is never parsed as configuration.
+Repository identity and branch policy cannot change while unresolved tasks exist. Configuration edits require the service to be paused with no active tasks, cycle, baseline check or automatic merge check. The dashboard disables editing, Run once and Run an audit while an automatic merge check is active. Each write pins the canonical configuration revision it was made from and replaces only the supplied top-level fields; writes against a superseded revision conflict. Values served only as redacted or shortened display previews are never written back, so hidden settings survive unrelated edits unchanged. Operator API changes are the only application path for modifying policy; repository/model output is never parsed as configuration.
 
 ## Limits and retention
 

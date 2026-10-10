@@ -26,6 +26,13 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Maintenance fixtures explicitly opt into the server-side destination rule
+	// modeled by gh.py. Ordinary deployments without it must remain manual.
+	for key, value := range map[string]string{config.MergeTokenEnv: "fixture-merge-token", config.MergeRulesetEnv: "17"} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
 	if err := testutil.IsolateGitEnvironment(); err != nil {
 		panic(err)
 	}

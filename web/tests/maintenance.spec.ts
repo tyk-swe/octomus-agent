@@ -2,6 +2,7 @@ import { expect } from '@playwright/test';
 import {
   configurationFixture,
   login,
+  nextPoll,
   now,
   openNavigation,
   patchState,
@@ -9,6 +10,65 @@ import {
   taskEvidence,
   test
 } from './synthetic';
+
+test('paused merge work disables planning and settings until the next idle snapshot', async ({
+  page
+}) => {
+  let merging = true;
+  const state = await configurationFixture(page, {
+    snapshot: (snapshot) => {
+      snapshot.configured = true;
+      snapshot.audit_configured = true;
+      snapshot.baseline_active = false;
+      snapshot.auto_merge.active = merging;
+    }
+  });
+  await page.clock.install();
+  await login(page);
+  await expect(page.locator('#run-once-control')).toBeDisabled();
+  await expect(page.locator('#run-audit-control')).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Start continuous', exact: true })).toBeEnabled();
+  await openNavigation(page, 'Configuration', false);
+  await expect(
+    page.getByText('An automatic merge check is still running.', { exact: false }).first()
+  ).toBeVisible();
+  await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  expect(state.writes).toHaveLength(0);
+
+  merging = false;
+  await nextPoll(page);
+  const branch = page.getByLabel('Default branch', { exact: true });
+  await expect(branch).toBeEnabled();
+  await branch.fill('after-merge');
+  await expect(page.getByRole('button', { name: 'Save configuration' })).toBeEnabled();
+  await openNavigation(page, 'Overview', false);
+  await expect(page.locator('#run-once-control')).toBeEnabled();
+  await expect(page.locator('#run-audit-control')).toBeEnabled();
+});
+
+for (const mode of ['standard', 'maintenance'] as const) {
+  test(`overview reports observed merges without assigning their actor in ${mode} mode`, async ({
+    page
+  }) => {
+    await patchState(page, (snapshot) => {
+      snapshot.delivery_mode = mode;
+      snapshot.merged_prs = 5;
+      snapshot.auto_merge.counts.merged = 2;
+    });
+    await login(page);
+    await expect(page.getByText('5 PRs observed merged', { exact: true })).toBeVisible();
+    await expect(page.getByText(/PRs merged by maintainers/)).toHaveCount(0);
+    const delivery = page.getByText('Published means a pull request was delivered.', {
+      exact: false
+    });
+    await expect(delivery).toContainText(
+      mode === 'maintenance'
+        ? 'Eligible maintenance PRs may be merged automatically after checks and protections allow it.'
+        : 'Merging stays with you.'
+    );
+  });
+}
 
 test('maintenance delivery mode warns, disables features and saves limits and exclusions @responsive', async ({
   page,

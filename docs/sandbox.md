@@ -69,7 +69,10 @@ filesystem, no capabilities and `no-new-privileges`. See
 3. The broker attaches to the container before starting it, so no output is lost. The
    control plane's stream to the broker is the sandbox's lifeline: if it closes, because the
    turn ended, the operator cancelled or the control plane crashed, the broker kills and
-   removes the container.
+   removes the container. The hard lifetime starts before the broker sends Docker's start
+   request. A delayed start response still consumes that lifetime, and cannot block kill
+   requests or a closed lifeline. A kill that arrived before Docker started the container
+   is applied again once its start is confirmed.
 4. The broker revokes the lease and removes the container, then reports the exit code,
    whether Docker reported an out-of-memory kill and whether a time limit stopped it. A
    sandbox it could not remove keeps its slot until a retry succeeds, and its report says so.
@@ -96,7 +99,10 @@ When the sandbox rather than the command fails (the broker refuses or loses the 
 or cannot confirm how it ended), the command has no result. The task is blocked as
 `runner_unavailable` for a retry, with no verification record and no repair round spent,
 and a baseline check ends interrupted rather than failed. If the command ran before the
-sandbox failed, the broker's sandbox record is kept as a `sandbox_evidence` event.
+sandbox failed, the broker's sandbox record is kept as a `sandbox_evidence` event. A start
+whose response was lost or exceeded the hard lifetime may also have run the command:
+the broker preserves an incomplete record, revokes its lease and force-removes its known
+container ID. It reports an infrastructure failure without inventing a command exit.
 
 OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
 (`octomus-agent --sandbox-init`) checks its readiness and relays its API as HTTP/2 over
@@ -123,8 +129,8 @@ names that host only where its per-minute budget allowed.
 
 When the broker could not read part of a sandbox's record, the record is marked
 **incomplete**: the gateway's count was unreachable or lost to a gateway restart, or
-Docker did not say whether the memory limit killed a process. Empty host lists in an
-incomplete record do not mean the sandbox made no connections; `docker compose logs
+Docker did not say whether the memory limit killed a process or confirm the start. Empty
+host lists in an incomplete record do not mean the sandbox made no connections; `docker compose logs
 egress` may still hold them.
 
 The OOM flag comes from Docker's `State.OOMKilled`. On systemd-managed cgroup v2 hosts,
@@ -214,6 +220,42 @@ visible outer name cannot establish the encrypted inner name. The inspection fol
 the [TLS record and handshake framing](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.1)
 without rewriting either.
 
+## Private provider certificates
+
+For a model endpoint signed by a private CA, the host operator can configure
+`OCTOMUS_SANDBOX_CA_FILE` on the broker. Mount a regular PEM file outside the data,
+runner and tools volumes; keep it under administrator control and readable by uid
+10001. For example, add this override alongside `compose.yaml`:
+
+```yaml
+services:
+  sandboxd:
+    environment:
+      OCTOMUS_SANDBOX_CA_FILE: /run/octomus-ca/provider.pem
+    volumes:
+      - type: bind
+        source: /etc/octomus/provider-ca.pem
+        target: /run/octomus-ca/provider.pem
+        read_only: true
+```
+
+The broker refuses symlinks in any path component, special files, bundles over
+1 MiB, malformed PEM, private keys and certificates without CA constraints. At
+startup it combines the supplied certificates with **the broker image's system
+roots** in `/opt/octomus/ca-certificates.pem`, on the tools volume that sandboxes
+mount read-only. Runner sessions receive `SSL_CERT_FILE` and
+`NODE_EXTRA_CA_CERTS` pointing to that bundle. A request cannot select another trust
+file or set those variables. Removing the setting and restarting the broker removes
+the generated bundle.
+
+This option configures runner sessions; it does not modify the login service or
+verification environment. A derived sandbox image may contain different system
+roots from the broker image; include any required additional anchors in the supplied
+bundle. Alternatively, leave this setting unset and manage client trust in the
+derived image. The gateway still enforces its existing
+allowlist, destination-address and SNI checks, and never terminates TLS. The file
+adds certificate trust, not network destinations.
+
 ## Signing in a runner
 
 `docker compose run --rm login …` runs Codex or OpenCode from the sandbox image to store a
@@ -272,6 +314,10 @@ task already in progress. A non-probe request above the limit is refused by the 
 shortened; internal diagnostic probes remain capped. Raise the host-owned value in
 `.env` and recreate `sandboxd`, or lower the saved timeout. Runner startup consumes part
 of a container's hard lifetime, so leave margin when choosing a session timeout.
+At expiry, the broker begins teardown under a separate 45-second budget. A daemon that
+cannot confirm removal leaves an infrastructure failure and keeps the sandbox's capacity
+reserved while removal is retried; cancellation of an HTTP request is not proof that the
+daemon stopped its process.
 The task timeout may span several containers and need not fit one container's limit.
 Host mode retains the application's ordinary timeout range without a broker cap.
 
@@ -280,6 +326,13 @@ Volumes have no disk quota. Octomus checks application storage before admitting 
 The storage walk keeps at most three directory descriptors open and bounds repeated
 ancestor traversal per owned workspace. An unreadable, excessively deep or expensive
 subtree blocks further admission for its owner without blocking unrelated workspaces.
+Owned-root cleanup has its own 30-second attempt deadline, checks cancellation between
+filesystem operations, and bounds entries, depth and repeated ancestor traversal. It
+uses at most three directory descriptors, repairs read-only directories without following
+symlinks, and removes long paths one component at a time. A bound, cancellation, changed
+directory or permission failure reports incomplete cleanup and leaves the remaining root
+for retry; a record is not marked discarded until its root is removed. Excessive depth
+may require the operator to simplify the tree before retrying.
 
 ## Trusted git metadata
 
@@ -415,7 +468,32 @@ Automated tests hold:
 - the broker against a real Docker daemon: containment from inside, runner stdio streams
   and the containment probe passing (`OCTOMUS_DOCKER_TEST=1`);
 - the shipped compose file end to end with fixture runners: the self-test and a full Run
-  once delivery through sandboxes (`make test-sandbox`).
+  once delivery through sandboxes (`make test-sandbox`);
+- required production image acceptance on native amd64 and arm64: the actual shipped
+  control-plane, broker, gateway and sandbox images, with both real pinned clients
+  (`make test-production-images`, given the retained `dist/images/*.oci.tar` inputs).
+
+The production image job builds each multi-platform OCI archive once with its SBOM
+and provenance. Each native runner imports the corresponding manifest without
+rebuilding, boots the embedded dashboard, and exercises real Codex and OpenCode
+completed turns, structured output, persisted-session resume in a fresh container,
+cancellation, verification and all eleven containment checks. A synthetic HTTPS
+provider supplies deterministic responses through the normal leased CONNECT gateway;
+no live provider account is used. The host inspects each of the four runner containers
+before allowing its turn to continue, verifies its exact image, network and mounts,
+and records its distinct container ID. Direct connections to the fixture's address
+must fail from both runner and verification containers. Complete broker evidence,
+provider CONNECT counts, and zero remaining sandboxes and leases are required.
+
+This acceptance needs a disposable Docker Engine 28+ host with Compose, Skopeo and
+OpenSSL. Its synthetic provider lives on a separate internal bridge using
+`11.255.254.0/24`, a globally numbered range reserved locally for the test; it does not
+contact the public owner of those addresses. The gateway is the only deployment
+service that also joins that bridge, and the provider publishes no host port. Using a globally classified address lets
+the test retain the production gateway's private-address denial. Temporary keys,
+provider state and volumes are removed at teardown. Release promotion verifies the
+retained native receipts and publishes the same index and manifest digests; see
+[releasing](releasing.md#container-images).
 
 Development checks on Docker Engine 29.8.1 found:
 - A plain internal network lets a container reach the host's SSH through its gateway, which

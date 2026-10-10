@@ -25,6 +25,15 @@ The dashboard polls authoritative service state and never schedules work itself.
 
 Each cycle records the remote default-branch revision, owned open PRs, their heads and accumulated scope, maintenance targets, task history, and separate read-only external PR summaries. The complete open inventory is paginated and fails explicitly if machine capture is incomplete. External context is ordered by PR number and limited to 100 entries, 200 title characters, 2,000 body characters, and 512 KiB serialized total; source/head references, omitted counts and truncation flags are recorded. External/fork PRs never become execution or maintenance targets. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
 
+External titles and bodies are secret-scrubbed before the character and serialized
+byte limits are applied. After fetching fork refs, the orchestrator checks that
+each external PR's exact recorded commit exists in the trusted checkout and saves
+`local_head_available` in the grounding supplied to every planning role. Fetching a
+newer head does not prove that an older recorded SHA is available. A false value,
+including the default on historical records without this observation, keeps the
+summary but marks its diff unavailable; it is not evidence of no overlap. Local
+object availability is separate from complete remote PR inventory coverage.
+
 Owned PRs also carry GitHub's aggregate `review_decision`, `check_status` and
 `mergeability`, with `status_source` (the source PR URL) and `status_observed_at`.
 One fixed-size GraphQL selection per owned PR reads the review decision and the
@@ -131,6 +140,9 @@ Cancellation, deadlines and restart interruption are terminal, never automatical
 replayed. Owned clones are cleaned up safely. A failed cleanup is retried on later
 housekeeping passes; the service records a new or changed failure at once and an
 unchanged one at most once a day per service process.
+The cleanup result is preserved both on the baseline record and in activity
+events, so starting a newer baseline does not erase the older failure's reporting.
+Successful removal clears the cleanup error without changing verification results.
 
 ## Runtime and trust
 
@@ -150,6 +162,13 @@ Unexpected interactive requests fail visibly. RPCs, turns, whole tasks, command 
 
 Repository content and agent outputs are never deserialized into operating configuration. API access requires the operator token, which is excluded from child-process environment variables. JSON is redacted before being returned to the dashboard, and rendered as text rather than trusted HTML.
 
+Private indexed summaries retain complete source titles and errors. Read paths
+scrub those fields using the current process's environment before bounding their
+presentation, so a saved prefix cannot defeat redaction after credentials change.
+Already truncated external PR context cannot recover missing source text: outward
+JSON conservatively drops its cut trailing line or word before redaction, retaining
+the truncation flags and leaving the original saved evidence unchanged.
+
 Codex's own sandbox stays off because the container is the boundary: in the Docker deployment each runner starts in a fresh [sandbox](sandbox.md) bound to one owned root, stopped after each turn, with no GitHub credential and egress only through the allowlisting gateway. Prompts and application policy are **not a security boundary** on their own. With `--sandbox off` a process with the service user's permissions can exercise those permissions; use the dedicated-host model described in [deployment](deployment.md#dedicated-vm-without-a-sandbox).
 
 SQLite uses full synchronous writes and WAL. Only one service may hold the state-directory lock. Restart recovery preserves workspace/session identities and retries initialized interrupted tasks within the retry limit. A graceful stop cancels running work but leaves initialized in-flight tasks to the same recovery as a crash. A deployment supervisor must terminate old processes before recovery: in the Docker deployment the broker kills and removes every sandbox whose stream closes and sweeps leftovers when it starts; the supplied systemd unit uses control-group termination.
@@ -163,8 +182,11 @@ only when no accepted first turn is recorded for a tracked session. Its failed
 evidence is retained and the replacement consumes a new admission. Legacy sessions
 with unknown lifecycle and established threads remain intact on resume failures.
 
-State starts at schema version 7 (v0.1.0); version 8 adds notification triggers and
-version 9 indexes exact decision identities. Releases upgrade it at startup through
+State starts at schema version 7 (v0.1.0); version 8 adds notification triggers,
+version 9 indexes exact decision identities, and version 10 restores complete
+summary text from raw records and replaces the summary projection triggers.
+Version 10 leaves raw records intact and does not replay notification transitions.
+Releases upgrade it at startup through
 ordered forward-only migrations after a verified backup. The version check runs
 before any schema or journal change, and pre-release or newer databases are refused
 untouched. Route snapshots record the selected backend, model, effort or variant.
