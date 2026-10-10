@@ -81,6 +81,10 @@ func (a *App) tick() error {
 	if baseline {
 		return nil
 	}
+	a.recoverMergePrechecks(a.ctx)
+	if a.ctx.Err() != nil {
+		return nil
+	}
 	a.checkMerges(cfg, control)
 	if a.recoveryConflict() != nil {
 		return nil

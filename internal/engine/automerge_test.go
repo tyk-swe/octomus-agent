@@ -205,6 +205,51 @@ func TestMaintenanceMergeControllerSquashMerges(t *testing.T) {
 	}
 }
 
+func TestArchivingPublishedTaskKeepsConfirmedMergeEvidence(t *testing.T) {
+	t.Parallel()
+	f := maintenanceFixture(t)
+	task := maintenanceTask(t, f, maintenanceReview(true, false), writeFile("feature.txt", "fixed\n"))
+	app := f.newApp(t)
+	saved := driveTask(t, f, app, task.ID)
+	if saved.Status != model.StatusPublished {
+		t.Fatalf("task did not publish: %s", saved.Status)
+	}
+	merged := driveMerge(t, f, app, *saved.PRNumber, model.AutoMergeMerged)
+	if merged.ResultSource == nil || *merged.ResultSource != store.MergeResultConfirmed || merged.MergeCommit == nil {
+		t.Fatalf("merge evidence = %+v", merged)
+	}
+	observedAt := merged.ObservedAt
+	commit := *merged.MergeCommit
+
+	must0(t, app.TaskAction(saved.ID, "archive"))
+	if archived := loadTask(t, f.state, saved.ID); archived.Lifecycle.ArchivedAt == nil {
+		t.Fatalf("the published task was not archived: %+v", archived)
+	}
+
+	recorded := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if recorded == nil || recorded.Status != model.AutoMergeMerged || recorded.Authorized ||
+		recorded.ResultSource == nil || *recorded.ResultSource != store.MergeResultConfirmed ||
+		recorded.MergeCommit == nil || *recorded.MergeCommit != commit ||
+		recorded.Reason != "Squash merged by Octomus" || recorded.ObservedAt != observedAt {
+		t.Fatalf("archival rewrote the confirmed merge: %+v", recorded)
+	}
+
+	observation := prObservation(t, f, *saved.PRNumber)
+	must0(t, f.state.RecordPRObservation(observation.Repository, observation.PR, false))
+	reobserved := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if reobserved == nil || reobserved.Status != model.AutoMergeMerged ||
+		reobserved.ResultSource == nil || *reobserved.ResultSource != store.MergeResultConfirmed ||
+		reobserved.Reason != "Squash merged by Octomus" ||
+		reobserved.MergeCommit == nil || *reobserved.MergeCommit != commit {
+		t.Fatalf("a same-head observation downgraded confirmed provenance: %+v", reobserved)
+	}
+	counts, err := f.state.MergeCounts(f.cfg.GitHubRepo)
+	must0(t, err)
+	if counts["merged"] != 1 || len(counts) != 1 {
+		t.Fatalf("merge counts after archival = %+v", counts)
+	}
+}
+
 func TestMaintenanceMergeWaitsForPendingChecks(t *testing.T) {
 	t.Parallel()
 	f := maintenanceFixture(t)
@@ -1484,6 +1529,178 @@ func TestMergeFinalGateRejectsLateBranchOwner(t *testing.T) {
 	app.runtimeMu.Lock()
 	delete(app.runtime.tasks, "late-sibling")
 	app.runtimeMu.Unlock()
+}
+
+// failWaitingSettlement injects one waiting-state settlement failure and returns
+// the restore, so a later pass can exercise the real store function.
+func failWaitingSettlement(t *testing.T) func() {
+	t.Helper()
+	original := settleMergeRecord
+	settleMergeRecord = func(s *store.Store, repo string, number uint64, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) (bool, error) {
+		if status == model.AutoMergeWaiting {
+			return false, fmt.Errorf("injected waiting settlement failure")
+		}
+		return s.SettleMerge(repo, number, expected, status, reason, source, commit, revoke)
+	}
+	return func() { settleMergeRecord = original }
+}
+
+func setContinuous(t *testing.T, app *App) {
+	t.Helper()
+	control, err := app.Control()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.SetMode(model.OperatingModeContinuous)
+	must0(t, app.Store.SaveControl(control))
+}
+
+// runMergePass runs one recovery and candidate pass, forcing the pacing gate.
+func runMergePass(t *testing.T, app *App) {
+	t.Helper()
+	forceMergeCheck(app)
+	if err := app.tick(); err != nil {
+		t.Fatalf("merge tick: %v", err)
+	}
+	app.wg.Wait()
+}
+
+func TestMergePrecheckFailureRecoversToMerge(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, _ := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	setContinuous(t, app)
+	patchPRs(t, f, map[string]any{"check_status": "EXPECTED"})
+
+	restore := failWaitingSettlement(t)
+	defer restore()
+	runMergePass(t, app)
+	restore()
+	if app.recoveryConflict() == nil {
+		t.Fatal("a failed precheck settlement did not raise a recovery barrier")
+	}
+	if merge := prObservation(t, f, *saved.PRNumber).AutoMerge; merge.Status != model.AutoMergeWaiting {
+		t.Fatalf("pending-check evidence = %+v", merge)
+	}
+
+	patchPRs(t, f, map[string]any{"check_status": "SUCCESS"})
+	runMergePass(t, app)
+	merged := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if merged.Status != model.AutoMergeMerged || merged.MergeCommit == nil {
+		t.Fatalf("the recovered precheck did not permit the merge: %+v", merged)
+	}
+	if app.recoveryConflict() != nil {
+		t.Fatal("the barrier survived the recovered precheck")
+	}
+	if attempts := mergeAttempts(t, f); len(attempts) != 1 {
+		t.Fatalf("attempts = %+v; want exactly one merge", attempts)
+	}
+}
+
+func TestMergePrecheckFailureArchivedLeavesNoBarrier(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, _ := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	setContinuous(t, app)
+	patchPRs(t, f, map[string]any{"check_status": "EXPECTED"})
+
+	restore := failWaitingSettlement(t)
+	defer restore()
+	runMergePass(t, app)
+	restore()
+	if app.recoveryConflict() == nil {
+		t.Fatal("a failed precheck settlement did not raise a recovery barrier")
+	}
+
+	must0(t, app.TaskAction(saved.ID, "archive"))
+	runMergePass(t, app)
+	if app.recoveryConflict() != nil {
+		t.Fatal("a resolved archival left a stale barrier")
+	}
+	if attempts := mergeAttempts(t, f); len(attempts) != 0 {
+		t.Fatalf("an archived delivery still merged: %+v", attempts)
+	}
+	merge := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if merge.Status != model.AutoMergeManual || merge.Authorized {
+		t.Fatalf("archived merge evidence = %+v", merge)
+	}
+	candidates, err := f.state.MergeCandidates(0, 10)
+	must0(t, err)
+	if len(candidates) != 0 {
+		t.Fatalf("the revoked delivery is still a merge candidate: %+v", candidates)
+	}
+}
+
+func TestMergePrecheckFailureTerminalObservationResolves(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, _ := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	setContinuous(t, app)
+	patchPRs(t, f, map[string]any{"check_status": "EXPECTED"})
+
+	restore := failWaitingSettlement(t)
+	defer restore()
+	runMergePass(t, app)
+	restore()
+	if app.recoveryConflict() == nil {
+		t.Fatal("a failed precheck settlement did not raise a recovery barrier")
+	}
+
+	patchPRs(t, f, map[string]any{"state": "merged", "merged_at": "2026-10-01T00:00:00Z", "merge_commit_sha": "c" + strings.Repeat("0", 39)})
+	runMergePass(t, app)
+	settled := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if settled.Status != model.AutoMergeMerged || settled.ResultSource == nil ||
+		*settled.ResultSource != store.MergeResultObserved {
+		t.Fatalf("terminal observation = %+v", settled)
+	}
+	if app.recoveryConflict() != nil {
+		t.Fatal("a terminal observation left the precheck barrier")
+	}
+	if attempts := mergeAttempts(t, f); len(attempts) != 0 {
+		t.Fatalf("a terminal delivery issued a merge request: %+v", attempts)
+	}
+}
+
+func TestMergePrecheckRecoveryPreservesUnresolvedBarriers(t *testing.T) {
+	f := maintenanceFixture(t)
+	_, observation := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+
+	pre := mergePrecheck{
+		message:    "injected precheck failure",
+		repository: observation.Repository,
+		number:     observation.PR.Number,
+		expected:   *observation.AutoMerge,
+		status:     model.AutoMergeWaiting,
+		reason:     "Waiting for checks to complete on the reviewed head",
+	}
+	app.setMergePrecheckError(mergeBarrierKey(pre.repository, pre.number), pre)
+	app.setMergeRecoveryError(mergeBarrierKey(observation.Repository, 9999), errors.New("unresolved mutation outcome"))
+	if app.recoveryConflict() == nil {
+		t.Fatal("the seeded barriers did not block")
+	}
+
+	if err := app.tick(); err != nil {
+		t.Fatalf("recovery tick: %v", err)
+	}
+	app.wg.Wait()
+
+	app.runtimeMu.Lock()
+	prechecks := len(app.runtime.mergePrecheckErrors)
+	mutations := len(app.runtime.mergeRecoveryErrors)
+	app.runtimeMu.Unlock()
+	if prechecks != 0 {
+		t.Fatalf("the recovered precheck survived: %d", prechecks)
+	}
+	if mutations != 1 {
+		t.Fatalf("recovery dropped an unrelated mutation barrier: %d", mutations)
+	}
+	if app.recoveryConflict() == nil {
+		t.Fatal("the unresolved mutation barrier no longer blocks")
+	}
+	if attempts := mergeAttempts(t, f); len(attempts) != 0 {
+		t.Fatalf("a mutation barrier did not block the merge: %+v", attempts)
+	}
 }
 
 func TestMergeRunOnceCancelledSiblingReleases(t *testing.T) {

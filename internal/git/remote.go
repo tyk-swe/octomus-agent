@@ -57,8 +57,16 @@ func originURL(ctx context.Context, c config.Config, repo string) (string, error
 	return Git(ctx, c, repo, []string{"remote", "get-url", "origin"})
 }
 
+// Fetch updates the trusted checkout's refs from origin. It holds the shared
+// checkout's mutation lock so concurrent tasks, merge checks and baseline
+// checks cannot race the same remote-tracking ref update; the wait honors ctx.
 func Fetch(ctx context.Context, c config.Config) error {
-	_, err := remoteGit(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
+	release, err := lockRepo(ctx, c.Repository)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = remoteGit(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
 	return err
 }
 
@@ -68,6 +76,11 @@ const forkHeadNamespace = "refs/octomus/pr/"
 // sandboxes can inspect them by SHA without any route to GitHub. Heads the remote no longer serves are reported, not
 // fatal: grounding records them as unavailable context rather than failing the cycle.
 func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]uint64, error) {
+	release, err := lockRepo(ctx, c.Repository)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	stale, err := Git(ctx, c, c.Repository, []string{"for-each-ref", "--format=%(refname)", forkHeadNamespace})
 	if err != nil {
 		return nil, err

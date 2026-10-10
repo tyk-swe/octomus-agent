@@ -624,6 +624,72 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 	}
 }
 
+func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
+	delivered := task("cycle-a", "p1")
+	delivered.Status = model.StatusPublished
+	delivered.Config.DeliveryMode = config.DeliveryModeMaintenance
+	output := "out00001"
+	delivered.OutputCommit = &output
+	number := uint64(9)
+	delivered.PRNumber = &number
+	url := "https://github.com/fixture/project/pull/9"
+	delivered.PRURL = &url
+	delivered.Reviews = []model.ReviewRound{review("out00001", true, "Reviewed the complete change set")}
+	delivered.Verification = []model.Verification{check("make check", true, "out00001")}
+	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
+	s, _ := fixture(t, []model.Cycle{c}, []model.Task{delivered})
+
+	pr := model.PullRequest{Number: 9, Title: "A", Branch: delivered.Branch, Head: output,
+		Base: "main", URL: url, State: "open", Owned: true,
+		HeadRepository: "fixture/project", BaseRepository: "fixture/project"}
+	merge := &model.AutoMergeState{
+		TaskID: delivered.ID, Head: output, ComparisonBase: delivered.ComparisonBase,
+		HeadBranch: delivered.Branch, BaseBranch: "main", PolicyRevision: "policy",
+		Authorized: true, Status: model.AutoMergeWaiting, Reason: "Waiting for checks",
+		ObservedAt: model.Now(),
+	}
+	checkpoint := delivered.Clone()
+	checkpoint.Status = model.StatusPublishing
+	must(t, s.Put("task", delivered.ID, checkpoint))
+	published := delivered.Clone()
+	published.Status = model.StatusPublished
+	must(t, s.CompletePublication(published, pr, merge))
+
+	intent := merge.Clone()
+	intent.Status = model.AutoMergeMerging
+	intent.AttemptID = new("attempt-1")
+	intent.AttemptedAt = new(model.Now())
+	claimed, err := s.ClaimMerge("fixture/project", 9, intent, false)
+	must(t, err)
+	if !claimed {
+		t.Fatal("the merge intent was not claimed")
+	}
+	commit := "d" + strings.Repeat("0", 39)
+	applied, err := s.SettleMerge("fixture/project", 9, intent, model.AutoMergeMerged, "Squash merged by Octomus", store.MergeResultConfirmed, &commit, false)
+	must(t, err)
+	if !applied {
+		t.Fatal("the confirmed merge did not settle")
+	}
+	must(t, s.RevokeTaskMerges(delivered.ID, "The authorizing task was archived"))
+
+	value := exported(t, s, "cycle-a")
+	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
+	evidence, ok := linked["auto_merge"].(map[string]any)
+	if !ok {
+		t.Fatalf("the archived terminal merge lost its exported evidence: %v", linked["auto_merge"])
+	}
+	if evidence["status"] != "merged" || evidence["result_source"] != "confirmed" ||
+		evidence["merge_commit"] != commit || evidence["reason"] != "Squash merged by Octomus" ||
+		evidence["head"] != output {
+		t.Fatalf("exported terminal evidence = %v", evidence)
+	}
+	counts, err := s.MergeCounts("fixture/project")
+	must(t, err)
+	if counts["merged"] != 1 || len(counts) != 1 {
+		t.Fatalf("merge counts after archival = %+v", counts)
+	}
+}
+
 func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	t.Parallel()
 	delivered := task("cycle-a", "p1")

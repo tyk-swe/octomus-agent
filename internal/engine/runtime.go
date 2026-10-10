@@ -63,6 +63,7 @@ type runtimeState struct {
 	mergeCursor         int64
 	lastMergeCheck      time.Time
 	mergeRecoveryErrors map[string]string
+	mergePrecheckErrors map[string]mergePrecheck
 	defaultObservation  *model.DefaultBranchObservation
 	cleanups            map[cleanupKey]struct{}
 	cleanupReports      map[cleanupKey]cleanupReport
@@ -143,7 +144,8 @@ func (a *App) setRecoveryError(err error) string {
 func (a *App) recoveryConflict() error {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
-	if a.runtime.activeRecoveryError != nil || len(a.runtime.mergeRecoveryErrors) != 0 {
+	if a.runtime.activeRecoveryError != nil || len(a.runtime.mergeRecoveryErrors) != 0 ||
+		len(a.runtime.mergePrecheckErrors) != 0 {
 		return errRecoveryBlocked
 	}
 	return nil

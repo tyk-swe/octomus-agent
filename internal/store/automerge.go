@@ -177,6 +177,19 @@ func (s *Store) MergeCandidates(afterSeq, limit int64) ([]MergeCandidate, error)
 	return candidates, rows.Err()
 }
 
+// MergeObservation loads the saved pull-request observation for one repository
+// and number. Merge recovery uses it to resolve a barrier whose candidate the
+// scheduling query no longer returns, such as a revoked or archived delivery.
+func (s *Store) MergeObservation(repository string, number uint64) (*model.PRObservation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, observation, err := prObservationAt(s.conn, repository, number)
+	if err != nil {
+		return nil, err
+	}
+	return observation, nil
+}
+
 func (s *Store) MergeCounts(repository string) (map[string]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -351,6 +364,16 @@ func (s *Store) RevokeTaskMerges(taskID, reason string) error {
 	for _, record := range records {
 		merge := record.observation.AutoMerge
 		merge.Authorized = false
+		if merge.Status == model.AutoMergeMerged || merge.Status == model.AutoMergeClosed {
+			// A recorded terminal outcome is history, not future authority. Archiving
+			// revokes the authorizing task's remaining authority, but the merged or
+			// closed result, its provenance and its terminal reason and time must
+			// survive so later observations cannot downgrade or relabel it.
+			if err := txPut(s.conn, "pr", record.id, record.observation); err != nil {
+				return err
+			}
+			continue
+		}
 		merge.Reason = reason
 		merge.ObservedAt = model.Now()
 		if merge.Status != model.AutoMergeMerging && merge.Status != model.AutoMergeUncertain {

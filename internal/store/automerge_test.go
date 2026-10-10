@@ -398,6 +398,29 @@ func TestRevokeTaskMergesAndCandidatePaging(t *testing.T) {
 	}
 }
 
+func TestMergeObservationLookupByRepositoryAndNumber(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	task, p, merge := mergeFixture(80, true)
+	publishAtCheckpoint(t, s, task, p, merge)
+
+	observation, err := s.MergeObservation("fixture/project", 80)
+	must(t, err)
+	if observation == nil || observation.AutoMerge == nil || observation.AutoMerge.TaskID != task.ID {
+		t.Fatalf("observation = %+v", observation)
+	}
+	missing, err := s.MergeObservation("fixture/project", 81)
+	must(t, err)
+	if missing != nil {
+		t.Fatalf("missing observation = %+v", missing)
+	}
+	foreign, err := s.MergeObservation("other/repo", 80)
+	must(t, err)
+	if foreign != nil {
+		t.Fatalf("foreign repository observation = %+v", foreign)
+	}
+}
+
 func TestBatchMergeWaitScopesToAuthorizingRun(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))
@@ -602,6 +625,135 @@ func TestRevokeTaskMergesRetainsInFlightIntent(t *testing.T) {
 	if recorded == nil || recorded.Authorized || recorded.Status != model.AutoMergeMerging ||
 		recorded.AttemptID == nil || *recorded.AttemptID != "attempt-1" {
 		t.Fatalf("revocation erased the recorded intent: %+v", recorded)
+	}
+}
+
+func TestRevokeTaskMergesPreservesTerminalOutcome(t *testing.T) {
+	t.Parallel()
+	commit := "d" + strings.Repeat("0", 39)
+	for _, test := range []struct {
+		name   string
+		number uint64
+		settle func(t *testing.T, s *store.Store, merge *model.AutoMergeState)
+		status model.AutoMergeStatus
+		source string
+		commit *string
+		reason string
+	}{
+		{
+			name: "confirmed-merged", number: 90,
+			settle: func(t *testing.T, s *store.Store, merge *model.AutoMergeState) {
+				intent := intentFrom(*merge, "attempt-1")
+				claimed, err := s.ClaimMerge("fixture/project", 90, intent, false)
+				must(t, err)
+				if !claimed {
+					t.Fatal("the merge intent was not claimed")
+				}
+				applied, err := s.SettleMerge("fixture/project", 90, intent, model.AutoMergeMerged, "Squash merged by Octomus", store.MergeResultConfirmed, &commit, false)
+				must(t, err)
+				if !applied {
+					t.Fatal("the confirmed merge did not settle")
+				}
+			},
+			status: model.AutoMergeMerged, source: store.MergeResultConfirmed, commit: &commit,
+			reason: "Squash merged by Octomus",
+		},
+		{
+			name: "observed-merged", number: 91,
+			settle: func(t *testing.T, s *store.Store, merge *model.AutoMergeState) {
+				intent := intentFrom(*merge, "attempt-1")
+				claimed, err := s.ClaimMerge("fixture/project", 91, intent, false)
+				must(t, err)
+				if !claimed {
+					t.Fatal("the merge intent was not claimed")
+				}
+				applied, err := s.SettleMerge("fixture/project", 91, intent, model.AutoMergeMerged, "The pull request is merged on the remote", store.MergeResultObserved, &commit, false)
+				must(t, err)
+				if !applied {
+					t.Fatal("the observed merge did not settle")
+				}
+			},
+			status: model.AutoMergeMerged, source: store.MergeResultObserved, commit: &commit,
+			reason: "The pull request is merged on the remote",
+		},
+		{
+			name: "observed-closed", number: 92,
+			settle: func(t *testing.T, s *store.Store, merge *model.AutoMergeState) {
+				applied, err := s.SettleMerge("fixture/project", 92, *merge, model.AutoMergeClosed, "The pull request was closed without merging", store.MergeResultObserved, nil, false)
+				must(t, err)
+				if !applied {
+					t.Fatal("the closed outcome did not settle")
+				}
+			},
+			status: model.AutoMergeClosed, source: store.MergeResultObserved,
+			reason: "The pull request was closed without merging",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			s := open(t, statePath(t))
+			task, p, merge := mergeFixture(test.number, true)
+			publishAtCheckpoint(t, s, task, p, merge)
+			test.settle(t, s, merge)
+
+			before := prMerge(t, s, test.number)
+			if before == nil || before.Status != test.status || !before.Authorized || before.ResultSource == nil {
+				t.Fatalf("terminal evidence before revocation = %+v", before)
+			}
+			observedAt := before.ObservedAt
+			attemptID := before.AttemptID
+			attemptedAt := before.AttemptedAt
+
+			must(t, s.RevokeTaskMerges(task.ID, "The authorizing task was archived"))
+
+			after := prMerge(t, s, test.number)
+			if after == nil {
+				t.Fatal("revocation removed the terminal record")
+			}
+			if after.Status != test.status || after.ResultSource == nil || *after.ResultSource != test.source ||
+				after.Reason != test.reason || after.ObservedAt != observedAt || after.Authorized {
+				t.Fatalf("revocation rewrote the terminal outcome: %+v", after)
+			}
+			if test.commit == nil {
+				if after.MergeCommit != nil {
+					t.Fatalf("a closed outcome gained a merge commit: %+v", after)
+				}
+			} else if after.MergeCommit == nil || *after.MergeCommit != *test.commit {
+				t.Fatalf("revocation lost the merge commit: %+v", after)
+			}
+			if (after.AttemptID == nil) != (attemptID == nil) ||
+				(after.AttemptID != nil && *after.AttemptID != *attemptID) ||
+				(after.AttemptedAt == nil) != (attemptedAt == nil) ||
+				(after.AttemptedAt != nil && *after.AttemptedAt != *attemptedAt) {
+				t.Fatalf("revocation lost the attempt evidence: %+v", after)
+			}
+			candidates, err := s.MergeCandidates(0, 10)
+			must(t, err)
+			if len(candidates) != 0 {
+				t.Fatalf("a terminal record is still a merge candidate: %+v", candidates)
+			}
+			counts, err := s.MergeCounts("fixture/project")
+			must(t, err)
+			if counts[test.status.String()] != 1 || len(counts) != 1 {
+				t.Fatalf("merge counts after revocation = %+v", counts)
+			}
+
+			observation, err := s.MergeObservation("fixture/project", test.number)
+			must(t, err)
+			if observation == nil || observation.AutoMerge == nil {
+				t.Fatal("the terminal observation is missing")
+			}
+			must(t, s.RecordPRObservation("fixture/project", observation.PR, false))
+			reobserved := prMerge(t, s, test.number)
+			if reobserved == nil || reobserved.Status != test.status ||
+				reobserved.ResultSource == nil || *reobserved.ResultSource != test.source ||
+				reobserved.Reason != test.reason || reobserved.ObservedAt != observedAt || reobserved.Authorized {
+				t.Fatalf("a same-head observation rewrote the terminal outcome: %+v", reobserved)
+			}
+			if test.commit != nil && (reobserved.MergeCommit == nil || *reobserved.MergeCommit != *test.commit) {
+				t.Fatalf("a same-head observation lost the merge commit: %+v", reobserved)
+			}
+		})
 	}
 }
 
