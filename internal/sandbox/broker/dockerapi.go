@@ -14,6 +14,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // This file is the small part of the Docker Engine API the broker uses, spoken over the daemon's unix socket without
@@ -115,7 +118,7 @@ func readError(resp *http.Response) error {
 	if json.Unmarshal(data, &doc) == nil && doc.Message != "" {
 		message = doc.Message
 	}
-	return &dockerError{Status: resp.StatusCode, Message: message}
+	return &dockerError{Status: resp.StatusCode, Message: redact.Text(message)}
 }
 
 type engineVersion struct {
@@ -239,6 +242,9 @@ func (c *dockerClient) containerCreate(ctx context.Context, name string, config 
 	if err := c.do(ctx, http.MethodPost, target, config, &created); err != nil {
 		return "", nil, err
 	}
+	if created.ID == "" {
+		return "", nil, errors.New("Docker Engine reported a created sandbox without an ID")
+	}
 	return created.ID, created.Warnings, nil
 }
 
@@ -276,9 +282,30 @@ type containerState struct {
 	OOMKilled bool `json:"OOMKilled"`
 }
 
+func (s *containerState) UnmarshalJSON(data []byte) error {
+	type document containerState
+	var decoded document
+	if err := wirejson.DecodeRecord(data, &decoded); err != nil {
+		return err
+	}
+	*s = containerState(decoded)
+	return nil
+}
+
 type containerDetails struct {
 	ID    string         `json:"Id"`
 	State containerState `json:"State"`
+}
+
+// Native Docker responses may add fields, but omitted status/evidence must never default to a successful result.
+func (c *containerDetails) UnmarshalJSON(data []byte) error {
+	type document containerDetails
+	var decoded document
+	if err := wirejson.DecodeRecord(data, &decoded); err != nil {
+		return err
+	}
+	*c = containerDetails(decoded)
+	return nil
 }
 
 func (c *dockerClient) containerInspect(ctx context.Context, id string) (containerDetails, error) {
@@ -289,6 +316,7 @@ func (c *dockerClient) containerInspect(ctx context.Context, id string) (contain
 
 type containerSummary struct {
 	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
 	Labels map[string]string `json:"Labels"`
 }
 
@@ -312,6 +340,16 @@ type waitResult struct {
 	Error      *struct {
 		Message string `json:"Message"`
 	} `json:"Error"`
+}
+
+func (w *waitResult) UnmarshalJSON(data []byte) error {
+	type document waitResult
+	var decoded document
+	if err := wirejson.DecodeRecord(data, &decoded); err != nil {
+		return err
+	}
+	*w = waitResult(decoded)
+	return nil
 }
 
 // containerWait asynchronously reports when a started container is no longer running, including one that has

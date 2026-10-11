@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -101,8 +99,7 @@ func runEgress(env func(string) (string, bool), stdout, stderr io.Writer) error 
 }
 
 // loginLease grants a runner login its egress lease, as the broker grants a runner sandbox's, and writes the proxy URL
-// the login reads. It first revokes the previous login's lease, whose credential is in the file it replaces, so only
-// the latest login can reach out.
+// the login reads. Lease metadata owns prior login authorization, including interrupted grants with no proxy file.
 func loginLease(env func(string) (string, bool)) error {
 	for _, key := range []string{"OCTOMUS_EGRESS_LEASES", "OCTOMUS_EGRESS_PROXY", "OCTOMUS_LOGIN_PROXY_FILE"} {
 		if envOr(env, key, "") == "" {
@@ -111,19 +108,18 @@ func loginLease(env func(string) (string, bool)) error {
 	}
 	leases := egress.Leases{Dir: envOr(env, "OCTOMUS_EGRESS_LEASES", "")}
 	file := envOr(env, "OCTOMUS_LOGIN_PROXY_FILE", "")
-	if previous, err := os.ReadFile(file); err == nil {
-		if address, err := url.Parse(strings.TrimSpace(string(previous))); err == nil {
-			if token, ok := address.User.Password(); ok {
-				leases.Revoke(token)
-			}
-		}
+	if err := leases.RevokeLogin(); err != nil {
+		return fmt.Errorf("Revoking the previous runner login egress leases: %w", err)
 	}
 	token, err := leases.Grant("login", wire.KindRunner)
 	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(file, []byte(egress.ProxyURL(envOr(env, "OCTOMUS_EGRESS_PROXY", ""), token)+"\n"), 0o600); err != nil {
-		leases.Revoke(token)
+		if revokeErr := leases.Revoke(token); revokeErr != nil {
+			// The next login's metadata revocation and the broker startup/shutdown sweep both retry this grant.
+			return errors.Join(err, fmt.Errorf("Revoking the unwritten runner login egress lease failed; retry login or restart the sandbox broker to clear remaining authorization: %w", revokeErr))
+		}
 		return err
 	}
 	return nil

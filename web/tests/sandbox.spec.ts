@@ -1,5 +1,14 @@
 import { expect } from '@playwright/test';
-import { login, nextPoll, openNavigation, patchState, test, unsandboxed } from './synthetic';
+import {
+  deferred,
+  token,
+  login,
+  nextPoll,
+  openNavigation,
+  patchState,
+  test,
+  unsandboxed
+} from './synthetic';
 
 test('the overview proves containment from inside a sandbox, names the deployment limits, then names a failed check', async ({
   page
@@ -49,4 +58,58 @@ test('an unsandboxed service carries a permanent warning and a failed setup step
   await expect(page.locator('[data-step="sandbox"] .badge')).toHaveText('Off');
   await expect(page.locator('[data-step="sandbox"]')).toContainText('--sandbox off');
   await expect(page.getByLabel('Codex executable')).toBeEditable();
+});
+
+test('a self-test completing after reconnect cannot release the current control command', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = (input, options) =>
+      original(
+        input,
+        String(input).endsWith('/sandbox/self-test') ? { ...options, signal: undefined } : options
+      );
+  });
+  const old = deferred(),
+    command = deferred();
+  let selfTests = 0,
+    controls = 0;
+  await patchState(page, (snapshot) => {
+    snapshot.capabilities.cycle = { allowed: true, reason: '' };
+  });
+  await page.route('**/api/sandbox/self-test', async (route) => {
+    selfTests++;
+    await old.promise;
+    await route.fulfill({ json: {} });
+  });
+  await page.route('**/api/control/cycle', async (route) => {
+    controls++;
+    await command.promise;
+    await route.fulfill({ json: { paused: false, mode: 'batch' } });
+  });
+  try {
+    await login(page);
+    await page
+      .getByRole('region', { name: 'Sandbox' })
+      .getByRole('button', { name: 'Run self-test' })
+      .click();
+    await expect.poll(() => selfTests).toBe(1);
+    await page.getByRole('button', { name: /Disconnect/ }).click();
+    await page.getByLabel('Operator access token').fill(token);
+    await page.getByRole('button', { name: 'Open dashboard' }).click();
+    await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+    await page.getByRole('button', { name: 'Run once', exact: true }).click();
+    await expect.poll(() => controls).toBe(1);
+    await expect(page.getByRole('button', { name: 'Starting run…' })).toBeDisabled();
+    const oldResponse = page.waitForResponse('**/api/sandbox/self-test');
+    old.resolve();
+    await (await oldResponse).finished();
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    await expect(page.getByRole('button', { name: 'Starting run…' })).toBeDisabled();
+    expect(controls).toBe(1);
+  } finally {
+    old.resolve();
+    command.resolve();
+  }
 });

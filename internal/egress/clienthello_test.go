@@ -309,7 +309,9 @@ func TestGatewayInspectionStopsWithLeaseOrGateway(t *testing.T) {
 			// An incomplete record keeps inspection pending until the ownership lifetime ends.
 			_, _ = conn.Write([]byte{22, 3, 1, 0, 64, 1})
 			if cause == "lease revoked" {
-				f.gateway.leases.Revoke(f.token)
+				if err := f.gateway.leases.Revoke(f.token); err != nil {
+					t.Fatal(err)
+				}
 				f.gateway.sweep()
 			} else {
 				f.gateway.stop()

@@ -46,6 +46,11 @@ func (f *authFailures) delay(now time.Time) time.Duration {
 	return delay
 }
 
+type HealthResponse struct {
+	OK      bool   `json:"ok"`
+	Version string `json:"version"`
+}
+
 type handlerFunc func(w http.ResponseWriter, r *http.Request) (int, any, error)
 
 func Router(app *engine.App, token, assetsOverride, version string) http.Handler {
@@ -73,7 +78,7 @@ func Router(app *engine.App, token, assetsOverride, version string) http.Handler
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			writeRawJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version})
+			writeRawJSON(w, http.StatusOK, HealthResponse{OK: true, Version: version})
 			return
 		}
 		if path, ok := strings.CutPrefix(r.URL.Path, "/api"); ok && (path == "" || strings.HasPrefix(path, "/")) {

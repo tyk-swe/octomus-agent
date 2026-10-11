@@ -4,3 +4,6 @@ build
 package-lock.json
 playwright-report
 test-results
+
+# Go owns formatting of the generated API contract.
+src/lib/types.ts

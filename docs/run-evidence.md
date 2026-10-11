@@ -37,9 +37,10 @@ The same nine caveats ship inside each export as `limitations`:
 | HTTP | `GET /api/cycles/{id}/evidence` with `Authorization: Bearer <operator token>` |
 | CLI | `octomus-agent --data-dir <dir> --export-run <cycle-id>` |
 
-Both share one snapshot reader, one assembler and one redaction pass in
-`internal/export` (`export.RunEvidence` for the HTTP route, `export.Run` for the
-CLI), so their output is identical apart from `generated_at`.
+Both share the typed `store.Snapshot` reader, one assembler and one redaction pass
+in `internal/export` (`export.RunEvidence` for the HTTP route, `export.Run` for the
+CLI), so their output is identical apart from `generated_at`. The store owns SQL,
+indexes and record selection; the export layer owns evidence interpretation.
 
 The HTTP route sits inside the existing authenticated API router, so it inherits the
 operator token check, the authentication backoff and the response-wide redaction pass.
@@ -96,7 +97,9 @@ after an error and retry with a new private filename.
 
 The cycle and its tasks are read inside **one** database transaction, so a cycle can
 never be paired with tasks from a later write. The dashboard's recent-task window is not
-used; task selection is a direct `kind='task'` scan filtered on the saved `cycle_id`.
+used; task selection uses the saved `cycle_id` index before decoding full records.
+Maintenance PR evidence uses the repository/PR-number identity index, is read in
+that same snapshot, and refuses duplicate identities rather than choosing one.
 
 Tasks are joined to proposals strictly on `(cycle_id, proposal_id)` — never by title,
 never by proposal ID alone, and never by "whichever task is newest". Proposal IDs repeat

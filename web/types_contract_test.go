@@ -13,20 +13,10 @@ import (
 	"testing"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/engine"
-	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
-	"github.com/tyk-swe/octomus-agent/internal/runner"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox"
-	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
-	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 var (
-	objectBlock = regexp.MustCompile(`(?m)^export type (\w+) = \{\n((?:  .*\n)*?)\};$`)
-	blockKey    = regexp.MustCompile(`(?m)^  ([a-z_]+)\??:`)
-	objectLine  = regexp.MustCompile(`(?m)^export type (\w+) = \{ (.*) \};$`)
-	lineKey     = regexp.MustCompile(`(?:^|; )([a-z_]+)\??:`)
 	stringUnion = regexp.MustCompile(`(?m)^export type (\w+) =((?:\s*\|?\s*'[a-z_]+')+);$`)
 	quoted      = regexp.MustCompile(`'([^']*)'`)
 	limitEntry  = regexp.MustCompile(`(?s)\{\s*key:\s*'([a-z_]+)'.*?min:\s*([\d_]+)(?:,\s*max:\s*([\d_]+))?\s*\}`)
@@ -39,46 +29,6 @@ func dashboardSource(t *testing.T, name string) string {
 		t.Fatalf("dashboard source: %v", err)
 	}
 	return string(data)
-}
-
-func objectTypes(source string) map[string][]string {
-	types := map[string][]string{}
-	for _, match := range objectBlock.FindAllStringSubmatch(source, -1) {
-		for _, key := range blockKey.FindAllStringSubmatch(match[2], -1) {
-			types[match[1]] = append(types[match[1]], key[1])
-		}
-	}
-	for _, match := range objectLine.FindAllStringSubmatch(source, -1) {
-		for _, key := range lineKey.FindAllStringSubmatch(match[2], -1) {
-			types[match[1]] = append(types[match[1]], key[1])
-		}
-	}
-	for _, keys := range types {
-		slices.Sort(keys)
-	}
-	return types
-}
-
-func jsonKeys(t *testing.T, value any) []string {
-	t.Helper()
-	record := reflect.TypeOf(value)
-	var keys []string
-	for i := range record.NumField() {
-		field := record.Field(i)
-		if field.Anonymous {
-			t.Fatalf("%s embeds %s; compare its flattened fields explicitly", record, field.Type)
-		}
-		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		if !field.IsExported() || name == "-" {
-			continue
-		}
-		if name == "" {
-			name = field.Name
-		}
-		keys = append(keys, name)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // quotedWords returns the quoted strings of the array that follows `marker` in source.
@@ -108,68 +58,6 @@ func enumNames[T interface {
 		names = append(names, value.String())
 	}
 	return names
-}
-
-func TestTypesMirrorGoJSON(t *testing.T) {
-	declared := objectTypes(dashboardSource(t, "types.ts"))
-	for name, record := range map[string]any{
-		"Config":                   config.Config{},
-		"Route":                    config.Route{},
-		"Proposal":                 model.Proposal{},
-		"Session":                  model.Session{},
-		"ReviewRound":              model.ReviewRound{},
-		"RepairProgress":           model.RepairProgress{},
-		"WorkspaceLifecycle":       model.WorkspaceLifecycle{},
-		"PR":                       model.PullRequest{},
-		"PRObservation":            model.PRObservation{},
-		"ExternalPRContext":        model.ExternalPRContext{},
-		"PRCoverage":               model.PRCoverage{},
-		"Cycle":                    model.Cycle{},
-		"DecisionRecord":           model.DecisionRecord{},
-		"PRCapacity":               model.PRCapacity{},
-		"PlanningCapacity":         model.PlanningCapacity{},
-		"BaselineCommand":          model.BaselineCommand{},
-		"BaselineCheck":            model.BaselineCheck{},
-		"DefaultBranchObservation": model.DefaultBranchObservation{},
-		"Event":                    model.Event{},
-		"NotificationHealth":       store.NotificationHealth{},
-		"Model":                    runner.Model{},
-		"RunEvidenceV1":            export.RunEvidenceV1{},
-		"CycleEvidence":            export.CycleEvidence{},
-		"PlanningOutcome":          export.PlanningOutcome{},
-		"ProposalEvidence":         export.ProposalEvidence{},
-		"ReviewerVerdict":          export.ReviewerVerdict{},
-		"TaskEvidence":             export.TaskEvidence{},
-		"EvidenceRevisions":        export.Revisions{},
-		"SessionRoute":             export.SessionRoute{},
-		"ReviewEvidence":           export.ReviewEvidence{},
-		"ReviewRoundEvidence":      export.ReviewRoundEvidence{},
-		"FindingEvidence":          export.FindingEvidence{},
-		"CommandEvidence":          export.CommandEvidence{},
-		"CommandResult":            export.CommandResult{},
-		"PRReference":              export.PRReference{},
-		"SandboxPosture":           engine.SandboxPosture{},
-		"SandboxRecord":            model.SandboxRecord{},
-		"MaintenanceAssessment":    model.MaintenanceAssessment{},
-		"MaintenanceFootprint":     model.MaintenanceFootprint{},
-		"AutoMergeState":           model.AutoMergeState{},
-		"AutoMergeSnapshot":        model.AutoMergeSnapshot{},
-		"SandboxEgress":            model.SandboxEgress{},
-		"SandboxSelfTest":          engine.SandboxSelfTest{},
-		"ProbeCheck":               sandbox.ProbeCheck{},
-		"BrokerInfo":               wire.BrokerInfo{},
-		"BrokerLimits":             wire.BrokerLimits{},
-		"BrokerNetworks":           wire.BrokerNetworks{},
-	} {
-		keys, found := declared[name]
-		if !found {
-			t.Errorf("types.ts declares no object type %s", name)
-			continue
-		}
-		if want := jsonKeys(t, record); !slices.Equal(keys, want) {
-			t.Errorf("types.ts %s keys = %q; want the %T JSON fields %q", name, keys, record, want)
-		}
-	}
 }
 
 func TestVocabulariesMirrorGo(t *testing.T) {

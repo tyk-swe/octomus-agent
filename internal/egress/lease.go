@@ -6,9 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // Lease tells the gateway which sandbox holds a proxy credential and which allowlist applies to it. The broker grants
@@ -70,9 +74,45 @@ func (l Leases) Grant(sandbox, kind string) (string, error) {
 	return token, nil
 }
 
-// Revoke deletes the lease of a proxy credential; the gateway ends its tunnels at its next sweep.
-func (l Leases) Revoke(token string) {
-	_ = os.Remove(filepath.Join(l.Dir, leaseFile(token)))
+// Revoke confirms that a proxy credential's lease is absent; the gateway ends its tunnels at its next sweep.
+// Its owner must retain failed revocations for retry. Diagnostics name only the digest file, never the credential.
+func (l Leases) Revoke(token string) error {
+	err := os.Remove(filepath.Join(l.Dir, leaseFile(token)))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// RevokeLogin confirms that every login authorization is gone before its replacement is granted. Lease metadata
+// owns that identity, including a grant interrupted before its proxy file was written; unrelated leases survive.
+// Unreadable or malformed metadata cannot prove it belongs to another sandbox, so it prevents a new login grant.
+func (l Leases) RevokeLogin() error {
+	entries, err := os.ReadDir(l.Dir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		file := filepath.Join(l.Dir, entry.Name())
+		lease, err := readLease(file)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("Inspecting egress lease metadata %s: %w", entry.Name(), err))
+			continue
+		}
+		if lease.Sandbox == "login" {
+			if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Clear deletes every lease, and any lease left half written.
@@ -101,15 +141,41 @@ func (l Leases) lookup(token string) (Lease, string, bool) {
 		return Lease{}, "", false
 	}
 	file := leaseFile(token)
-	data, err := os.ReadFile(filepath.Join(l.Dir, file))
-	if err != nil || len(data) > maxLeaseBytes {
-		return Lease{}, "", false
-	}
-	var lease Lease
-	if json.Unmarshal(data, &lease) != nil || lease.Sandbox == "" {
+	lease, err := readLease(filepath.Join(l.Dir, file))
+	if err != nil {
 		return Lease{}, "", false
 	}
 	return lease, file, true
+}
+
+func readLease(file string) (Lease, error) {
+	info, err := os.Lstat(file)
+	if err != nil {
+		return Lease{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return Lease{}, errors.New("Egress lease metadata is not a regular file")
+	}
+	input, err := os.Open(file)
+	if err != nil {
+		return Lease{}, err
+	}
+	defer input.Close()
+	data, err := io.ReadAll(io.LimitReader(input, maxLeaseBytes+1))
+	if err != nil {
+		return Lease{}, err
+	}
+	if len(data) > maxLeaseBytes {
+		return Lease{}, errors.New("Egress lease metadata exceeds its size limit")
+	}
+	var lease Lease
+	if err := wirejson.DecodeRecord(data, &lease); err != nil {
+		return Lease{}, err
+	}
+	if lease.Sandbox == "" || lease.Kind == "" {
+		return Lease{}, errors.New("Egress lease metadata is incomplete")
+	}
+	return lease, nil
 }
 
 // revoked reports whether the lease named file is gone.

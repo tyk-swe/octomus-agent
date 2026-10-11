@@ -161,3 +161,37 @@ func decodeMap(t *testing.T, data []byte) map[string]any {
 }
 
 func str(s string) *string { return &s }
+
+func marshaled(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	must(t, err)
+	return data
+}
+
+// summaryPage lets projection assertions share one JSON shape while exercising
+// each typed domain reader used by the API.
+func summaryPage(s *store.Store, kind string, query store.HistoryQuery) (store.Page[json.RawMessage], error) {
+	var value any
+	var err error
+	switch kind {
+	case "task":
+		value, err = s.TaskPage(query)
+	case "cycle":
+		value, err = s.CyclePage(query)
+	case "pr":
+		value, err = s.PRPage(query)
+	default:
+		panic("unsupported summary fixture")
+	}
+	if err != nil {
+		return store.Page[json.RawMessage]{}, err
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return store.Page[json.RawMessage]{}, err
+	}
+	var page store.Page[json.RawMessage]
+	err = json.Unmarshal(data, &page)
+	return page, err
+}

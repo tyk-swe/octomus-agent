@@ -18,24 +18,24 @@ import (
 )
 
 type invocation struct {
-	cycleID     string
-	task        *model.Task
-	role        string
-	route       config.Route
-	workspace   string
-	resume      *string
-	keep        func(session *string)
-	prompt      string
-	schema      schemas.Schema
-	reserved    bool
-	prepare     func() error
-	judge       func(session, answer string) (string, error)
-	completed   func()
-	ownsClients bool
+	cycleID   string
+	task      *model.Task
+	role      string
+	route     config.Route
+	workspace string
+	// session is the durable thread slot for persistent execution/repair.
+	// A nil slot denotes a fresh review or isolated planning turn.
+	session   **string
+	prompt    string
+	schema    schemas.Schema
+	reserved  bool
+	prepare   func() error
+	judge     func(session, answer string) (string, error)
+	completed func()
 }
 
 func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocation) (answer string, err error) {
-	if inv.ownsClients {
+	if inv.task == nil {
 		defer func() {
 			// A failed start still owns a runner whose exit can explain the failure.
 			if closeErr := clients.Close(); closeErr != nil && !errors.Is(err, closeErr) {
@@ -48,11 +48,11 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 	}
 
 	var resume *string
-	if inv.resume != nil {
+	if inv.session != nil && *inv.session != nil {
 		if inv.reserved {
 			return "", fmt.Errorf("A resumed %s turn cannot use a reserved admission", inv.role)
 		}
-		identity := *inv.resume
+		identity := **inv.session
 		resume = &identity
 		if _, err := findSession(inv.task, identity, inv.role); err != nil {
 			return "", err
@@ -94,7 +94,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 			answer, summary, turnErr = a.turn(clients, inv, session)
 		}()
 		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
-		if inv.ownsClients {
+		if inv.task == nil {
 			if closeErr := clients.Close(); turnErr == nil && closeErr != nil {
 				turnErr = closeErr
 			}
@@ -120,8 +120,8 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		record := model.NewSession(session, inv.role, inv.route)
 		record.FirstTurnStarted = new(false)
 		task.Sessions = append(task.Sessions, record)
-		if inv.keep != nil {
-			inv.keep(&session)
+		if inv.session != nil {
+			*inv.session = &session
 		}
 	} else {
 		record, err := findSession(task, session, inv.role)
@@ -132,7 +132,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		// A successful resume establishes that the runner retained this thread.
 		record.FirstTurnStarted = new(true)
 	}
-	if err := a.saveTask(task); err != nil {
+	if err := a.checkpointTask(task); err != nil {
 		return "", err
 	}
 	answer, summary, err := a.turn(clients, inv, session)
@@ -153,7 +153,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		inv.completed()
 	}
 	record.MarkCompleted(redact.Text(summary))
-	return answer, a.saveTask(task)
+	return answer, a.checkpointTask(task)
 }
 
 // A missing, never-started thread has no runner state to resume. Retain its failed
@@ -173,12 +173,12 @@ func (a *App) startInvocation(ctx context.Context, clients *runner.Runners, inv 
 	}
 	record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
 	if !errors.Is(err, runner.ErrSessionMissing) || inv.route.Backend != config.BackendCodex ||
-		record.FirstTurnStarted == nil || *record.FirstTurnStarted || record.Status == model.SessionCompleted || inv.keep == nil || released != nil || ctx.Err() != nil {
+		record.FirstTurnStarted == nil || *record.FirstTurnStarted || record.Status == model.SessionCompleted || inv.session == nil || released != nil || ctx.Err() != nil {
 		return "", false, errors.Join(err, released)
 	}
 	record.MarkFailed(redact.Text(strings.TrimSpace(record.Summary + "\nNever-started session is missing; a fresh session is required: " + err.Error())))
-	inv.keep(nil)
-	if saveErr := a.saveTask(inv.task); saveErr != nil {
+	*inv.session = nil
+	if saveErr := a.checkpointTask(inv.task); saveErr != nil {
 		return "", false, errors.Join(err, saveErr)
 	}
 	if err := a.admit(ctx, inv.cycleID, inv.task, inv.role, inv.route); err != nil {
@@ -206,7 +206,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 				return nil
 			}
 			record.FirstTurnStarted = new(true)
-			return a.saveTask(inv.task)
+			return a.checkpointTask(inv.task)
 		}
 	}
 	answer, err = clients.Turn(session, inv.route, inv.workspace, inv.prompt, inv.schema, started)
@@ -224,7 +224,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 			return "", "", err
 		}
 		record.Summary = redact.Text(answer)
-		if err := a.saveTask(inv.task); err != nil {
+		if err := a.checkpointTask(inv.task); err != nil {
 			return "", "", err
 		}
 	}

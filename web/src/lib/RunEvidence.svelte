@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, ApiError, fetchEvidence } from './api';
+  import { client } from './api';
+  import { Resource } from './resource';
   import Badge from './Badge.svelte';
   import DecisionCounts from './DecisionCounts.svelte';
   import { createCopyFeedback } from './copyFeedback.svelte';
@@ -50,8 +51,16 @@
     selectedProposalId = $state<string | null>(null),
     taskFocus = $state<{ proposal: string; task: string } | null>(null),
     rawOpen = $state(false);
-  let generation = 0;
-  let request: AbortController | null = null;
+  const evidenceResource = new Resource(client.evidence, (state) => {
+    run = state.value;
+    error = state.error;
+    stale = state.stale;
+    loading = state.loading;
+  });
+  const contextResource = new Resource(client.cycle, (state) => {
+    cycleDetail = state.value;
+    contextError = state.error;
+  });
   const feedback = createCopyFeedback();
   let proposals = $derived<ProposalEvidence[]>(run?.proposals ?? []);
   let focused = $derived<ProposalEvidence | null>(
@@ -71,73 +80,38 @@
   let external = $derived(grounding?.external_prs ?? []);
   let coverage = $derived(grounding?.pr_coverage);
   let planning = $derived(run ? planningVerdict(run.cycle) : null);
-  async function load(cycle: string) {
-    const current = ++generation;
-    request?.abort();
-    const controller = new AbortController();
-    request = controller;
-    try {
-      const [next, detail] = await Promise.all([
-        fetchEvidence(cycle, controller.signal),
-        get<Cycle>(`/cycles/${encodeURIComponent(cycle)}`, controller.signal)
-          .then((c) => ({ cycle: c, error: '' }))
-          .catch((e: unknown) => ({
-            cycle: null,
-            error: e instanceof Error ? e.message : String(e)
-          }))
-      ]);
-      if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
-      run = next;
-      cycleDetail = detail.cycle;
-      contextError = detail.error;
-      error = '';
-      stale = false;
-      if (selectedProposalId === null)
-        selectedProposalId = proposalId ?? next.proposals[0]?.id ?? null;
-    } catch (e) {
-      if (current !== generation || controller.signal.aborted || cycle !== cycleId) return;
-      error = (e as Error).message;
-      if (e instanceof ApiError && e.status === 401) {
-        run = null;
-        cycleDetail = null;
-      }
-      stale = run !== null;
-    } finally {
-      if (current === generation) {
-        loading = false;
-        request = null;
-      }
-    }
+  async function load(cycle: string, force = false) {
+    void contextResource.refresh(cycle, force);
+    const loaded = await evidenceResource.refresh(cycle, force);
+    if (loaded && run && selectedProposalId === null)
+      selectedProposalId = proposalId ?? run.proposals[0]?.id ?? null;
   }
   function retry() {
     loading = true;
-    void load(cycleId);
+    void load(cycleId, true);
   }
   $effect(() => {
     const cycle = cycleId;
-    run = null;
-    cycleDetail = null;
-    contextError = '';
-    error = '';
-    stale = false;
+    evidenceResource.clear();
+    contextResource.clear();
     loading = true;
     selectedProposalId = proposalId;
     taskFocus = null;
     void load(cycle);
     const timer = setInterval(() => {
-      if (!request) void load(cycle);
+      void load(cycle);
     }, 10000);
     return () => {
       clearInterval(timer);
-      generation++;
-      request?.abort();
+      evidenceResource.cancel();
+      contextResource.cancel();
     };
   });
   onMount(() => {
     return () => {
       feedback.dispose();
-      generation++;
-      request?.abort();
+      evidenceResource.cancel();
+      contextResource.cancel();
     };
   });
   function download() {

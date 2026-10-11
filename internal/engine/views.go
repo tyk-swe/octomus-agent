@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -17,10 +16,9 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-func (a *App) StateView() (map[string]any, error) {
+func (a *App) StateView() (*StateView, error) {
 	control, err := a.Control()
 	if err != nil {
 		return nil, err
@@ -61,6 +59,7 @@ func (a *App) StateView() (map[string]any, error) {
 		cycleMode = new(*a.runtime.preflight)
 	}
 	activeTasks := len(a.runtime.tasks)
+	idle := a.runtime.idle()
 	cycleActive := a.runtime.cycle != nil
 	baselineActive := a.runtime.baseline != nil
 	mergeActive := a.runtime.mergeWorker != nil
@@ -97,67 +96,43 @@ func (a *App) StateView() (map[string]any, error) {
 	case cycleActive || activeTasks > 0:
 		status = "running"
 	}
-	view, err := wirejson.GenericMap(snapshot)
-	if err != nil {
-		return nil, err
-	}
-	controlJSON, err := wirejson.GenericMap(control)
-	if err != nil {
-		return nil, err
-	}
-	var baselineView any
+	var baseline *BaselineSummary
 	if latest != nil {
 		summary := a.baselineSummary(latest, cfg)
-		maps.Copy(summary, map[string]any{
-			"id":           latest.ID,
-			"status":       latest.Status.String(),
-			"started_at":   latest.StartedAt,
-			"completed_at": latest.CompletedAt,
-			"error":        latest.Error,
-		})
-		baselineView = summary
+		baseline = &summary
 	}
-	storage, err := store.Get[any](a.Store, "settings", "storage")
+	storage, err := store.Get[storageUsage](a.Store, "settings", "storage")
 	if err != nil {
 		return nil, err
 	}
-	maps.Copy(view, map[string]any{
-		"status":            status,
-		"recovery_error":    recoveryError,
-		"control":           controlJSON,
-		"repository":        cfg.GitHubRepo,
-		"delivery_mode":     cfg.DeliveryMode,
-		"auto_merge":        map[string]any{"active": mergeActive, "counts": mergeCounts},
-		"configured":        cfg.Validate(true) == nil,
-		"audit_configured":  cfg.ValidateAudit() == nil,
-		"active_cycle_mode": cycleMode,
-		"active_tasks":      activeTasks,
-		"cycle_active":      cycleActive,
-		"baseline_active":   baselineActive,
-		"baseline":          baselineView,
-		"notifications":     notifications,
-		"session_limit":     cfg.MaxSessionsPerDay,
-		"storage_limit":     cfg.MaxWorkspaceBytes,
-		"storage":           storage,
-		"planning_capacity": planningCapacity,
-		"pr_capacity":       prCapacity,
-		"sandbox":           a.SandboxPosture(),
-	})
+	view := &StateView{
+		Dashboard: snapshot, Status: status, RecoveryError: recoveryError,
+		Capabilities: capabilities(control, cfg, operationActivity{idle: idle && !cycleActive, audit: cycleMode != nil && *cycleMode == model.CycleModeAudit, baseline: baselineActive}, recoveryError, planningCapacity),
+		Control:      control, Repository: cfg.GitHubRepo, DeliveryMode: cfg.DeliveryMode,
+		AutoMerge:  AutoMergeView{Active: mergeActive, Counts: mergeCounts},
+		Configured: cfg.Validate(true) == nil, AuditConfigured: cfg.ValidateAudit() == nil,
+		ActiveCycleMode: cycleMode, ActiveTasks: activeTasks, CycleActive: cycleActive,
+		BaselineActive: baselineActive, Baseline: baseline, Notifications: notifications,
+		SessionLimit: cfg.MaxSessionsPerDay, StorageLimit: cfg.MaxWorkspaceBytes,
+		Storage: storage, PlanningCapacity: planningCapacity, PRCapacity: prCapacity,
+		Sandbox: a.SandboxPosture(),
+	}
 	return view, nil
 }
 
 // baselineSummary is what the state and baseline views both report about a check against the live configuration.
-func (a *App) baselineSummary(check *model.BaselineCheck, live config.Config) map[string]any {
-	return map[string]any{
-		"config_revision": check.ConfigFingerprint,
-		"config_matches":  baselineConfigMatches(check, live),
-		"revision_status": a.baselineRevisionStatus(check, live),
+func (a *App) baselineSummary(check *model.BaselineCheck, live config.Config) BaselineSummary {
+	return BaselineSummary{
+		ID: check.ID, Status: check.Status, StartedAt: check.StartedAt,
+		CompletedAt: check.CompletedAt, Error: check.Error,
+		ConfigRevision: check.ConfigFingerprint, ConfigMatches: baselineConfigMatches(check, live),
+		RevisionStatus: a.baselineRevisionStatus(check, live),
 	}
 }
 
 const baselineCaveat = "A baseline check verifies the saved commands on a clone made at its start time; it does not prove later host, tool or remote health and is not publication evidence."
 
-func (a *App) BaselineView(id *string) (map[string]any, error) {
+func (a *App) BaselineView(id *string) (*BaselineView, error) {
 	var check *model.BaselineCheck
 	var err error
 	if id != nil {
@@ -187,27 +162,20 @@ func (a *App) BaselineView(id *string) (map[string]any, error) {
 	if observation != nil && (observation.Revision == "" || !observation.Describes(live)) {
 		observation = nil
 	}
-	var reasonValue any
-	if reason != nil {
-		reasonValue = *reason
-	}
-	view := map[string]any{
-		"check":               check,
-		"eligible":            reason == nil,
-		"reason":              reasonValue,
-		"config_matches":      nil,
-		"config_revision":     nil,
-		"revision_status":     "unknown",
-		"default_observation": observation,
-		"caveat":              baselineCaveat,
+	view := &BaselineView{
+		Check: check, Eligible: reason == nil, Reason: reason,
+		RevisionStatus: "unknown", DefaultObservation: observation, Caveat: baselineCaveat,
 	}
 	if check != nil {
-		maps.Copy(view, a.baselineSummary(check, live))
+		summary := a.baselineSummary(check, live)
+		view.ConfigMatches = &summary.ConfigMatches
+		view.ConfigRevision = &summary.ConfigRevision
+		view.RevisionStatus = summary.RevisionStatus
 	}
 	return view, nil
 }
 
-func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMode) (map[string]any, []string, error) {
+func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMode) (*DoctorResult, []string, error) {
 	ctx, done, err := a.beginDiagnostic(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -216,7 +184,7 @@ func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMod
 	// The containment self-test needs no configuration, so it runs first: a broken sandbox is reported even when the
 	// configuration or repository check fails too.
 	errs := []string{}
-	sandboxResult := map[string]any{"mode": a.sandbox.Mode().String()}
+	sandboxResult := DoctorSandbox{Mode: a.sandbox.Mode().String()}
 	if a.sandbox.Mode() == sandbox.ModeDocker {
 		selfTest, err := a.SelfTest(ctx)
 		if err != nil {
@@ -225,7 +193,7 @@ func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMod
 		if failure := selfTest.failure(); failure != nil {
 			errs = append(errs, failure.Error())
 		}
-		sandboxResult["self_test"] = selfTest
+		sandboxResult.SelfTest = &selfTest
 	}
 	withSelfTest := func(err error) error {
 		if len(errs) == 0 {
@@ -307,14 +275,14 @@ func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMod
 	if len(warnings) > 0 {
 		message += " Warning: " + strings.Join(warnings, " ")
 	}
-	result := map[string]any{
-		"ok": true, "mode": mode, "models": models, "backends": diagnostics,
-		"warnings": warnings, "message": message, "sandbox": sandboxResult,
+	result := &DoctorResult{
+		OK: true, Mode: mode, Models: models, Backends: diagnostics,
+		Warnings: warnings, Message: message, Sandbox: sandboxResult,
 	}
 	for _, diagnostic := range diagnostics {
 		if diagnostic.Backend == config.BackendCodex {
-			result["codex_version"] = diagnostic.Version
-			result["tested_codex_version"] = runner.CodexVersion
+			result.CodexVersion = diagnostic.Version
+			result.TestedCodexVersion = runner.CodexVersion
 			break
 		}
 	}

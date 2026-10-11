@@ -189,6 +189,12 @@ export async function configurationFixture(
     snapshot.active_tasks = 0;
     snapshot.cycle_active = false;
     snapshot.active_cycle_mode = null;
+    snapshot.capabilities.configure = { allowed: true, reason: '' };
+    if (options.unconfigured) {
+      snapshot.capabilities.resume.allowed = false;
+      snapshot.capabilities.cycle.allowed = false;
+      snapshot.capabilities.audit.allowed = false;
+    }
     options.snapshot?.(snapshot);
   });
   await page.route('**/api/config', async (route) => {
@@ -205,7 +211,10 @@ export async function configurationFixture(
       if (body.expected_revision !== state.revision) {
         await route.fulfill({
           status: 409,
-          json: { error: 'Synthetic save conflict; reload settings and check the current values.' }
+          json: {
+            error: 'Synthetic save conflict; saved values changed.',
+            code: 'config_revision_conflict'
+          }
         });
         return;
       }

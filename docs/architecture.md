@@ -91,6 +91,15 @@ Older version-7 tasks without the repair counter initialize it from their
 conservative review-based budget estimate, then count completed repairs directly.
 An explicit retry starts the counter at zero for the fresh attempt.
 
+Lifecycle transitions and publication settlement construct a proposed task and
+replace the caller's committed state only after the store accepts it. Ordinary
+status activity is ancillary; refusing it does not turn an accepted task checkpoint
+into a failed authorization. Working session and completed-repair evidence remains
+pending if its checkpoint is refused, so a supervisor can retain it in settlement.
+Retry commits its task, cancellation clearing and adopted attempt-policy evidence
+together. Archive commits its task and merge-authority revocation together.
+Publication settlement returns the committed task, including retained merge evidence.
+
 Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
 
 Code-dependent default-branch proposals must be consolidated into a cohesive task or deferred until the prerequisite PR has merged. Merely publishing a separate PR does not make its code available on the default branch. Octomus does not auto-merge or implicitly create stacked PRs.
@@ -231,6 +240,15 @@ even if its activity entry cannot be saved or further entries are suppressed.
 Likewise, a saved publication checkpoint whose worker has exited becomes blocked
 as `publication_uncertain` once storage accepts the update. This preserves its
 evidence and PR reservation for explicit reconciliation without replaying delivery.
+Recovery also settles ordinary workerless active tasks and baseline checks. Task
+execution and reconciliation use the same registration and settlement owner; their
+task and branch claims survive cancellation until all children join. A refused
+settlement establishes the recovery barrier before the claim is released. Recovery
+finishes all bounded pages of workerless active tasks before allowing admission.
+The scheduler reads broker readiness outside the admission gate, then rechecks
+operator intent, configuration and runtime ownership before starting work.
+Maintenance merging retains the gate across its bounded external mutation, so
+operator pause and merge authorization remain serialized.
 
 ## Bounded observation and storage
 
@@ -240,6 +258,18 @@ before JSON decoding, read counts and summaries in one transaction, and
 fetch full evidence only on demand. Attention queries use a dedicated partial
 index, including when no unresolved rows match. Scheduler/recovery queries select
 operational states and resolve dependencies by identity.
+
+The store exposes named task, cycle, PR and proposal read models and typed pages;
+callers do not select record kinds or decode projection JSON. `store.Snapshot`
+provides the canonical evidence and usage queries within one transaction, for
+both live and read-only exports. SQL connections and storage-layout queries stay
+inside the store. Historical proposal assessments remain raw on canonical cycles
+so malformed recorded evidence can still be exported and identified explicitly.
+
+`model.Task.VerificationFor` selects the latest saved command result and recorded
+count by append order. Publication, maintenance eligibility and exported evidence
+share that selection, then apply their own authorization or interpretation rules.
+A newer failed or wrong-revision result always supersedes an older success.
 
 Housekeeping runs independently of operation mode. Completed planning-role clones
 are disposable after evidence and source checks; unresolved work remains retained
@@ -331,3 +361,29 @@ opt-in maintenance delivery mode, whose trusted orchestrator may squash-merge a 
 clean-reviewed, verified maintenance delivery only after fresh remote checks, review
 state, identity and protections confirm the recorded head; every other delivery stays
 manual.
+
+The application owns named API response envelopes in `internal/engine/api_views.go`;
+the store owns bounded indexed summaries, and HTTP owns transport envelopes.
+`web/api_contract_test.go` derives the dashboard's checked-in TypeScript contract
+from these concrete types, including nested responses, optional fields, nullable
+pointers and actual text enum serialization. Dynamic settings transformations and
+malformed historical assessment slots retain their generic shapes. Regenerate with
+`OCTOMUS_UPDATE_API_CONTRACT=1 go test ./web -run TestAPIContractGenerated`; normal
+Go tests reject drift without requiring Node. Dashboard endpoint methods pair paths,
+request bodies and results centrally instead of accepting caller-selected assertions.
+
+State responses carry operation capabilities and blocker messages. Their runtime
+blockers share the server control checks; indexed cycle summaries derive
+`allowed_actions` from the same persisted lifecycle selector the server checks.
+These are current display hints. Action handlers still revalidate admission,
+cleanup ownership and durable state before acting. Pause remains available when
+configuration is incomplete or saved-state recovery is pending.
+
+The dashboard's `StateSession` owns coalesced live-state and confirming reads;
+accepted mutations invalidate preceding polls, and confirmation remains pending
+through read failures. Independent `Resource` owners handle task detail, activity,
+evidence, baseline and settings reads with retained stale content, cancellation
+and disposal. Evidence coalesces changed revisions while slow reads finish. Cycle
+history retains its focused pagination owner. Components retain focus/navigation
+and action diagnostics, while parent-owned commands publish shared mutation state.
+The settings draft owns display snapshots and patch rules in `configurationDraft`.

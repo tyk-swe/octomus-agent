@@ -33,7 +33,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 		return nil, err
 	}
 	if fingerprint != expectedRevision {
-		return nil, conflictError("The saved configuration changed; reload settings and check the current values")
+		return nil, codedConflict(ConfigRevisionConflict, "The saved configuration changed; reload settings and check the current values")
 	}
 	reason, err := a.baselineBlocker()
 	if err != nil {
@@ -176,10 +176,16 @@ var baselineLabels = map[model.BaselineStatus]string{
 
 func (a *App) baselineWorker(ctx context.Context, id string) {
 	defer func() {
-		if check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id); err == nil && check != nil && check.Status == model.BaselineStatusRunning {
-			_ = a.abandonBaseline(check,
+		a.gate.Lock()
+		defer a.gate.Unlock()
+		check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id)
+		if err == nil && check != nil && check.Status == model.BaselineStatusRunning {
+			err = a.abandonBaseline(check,
 				"Cancelled by the operator; the check worker exited unexpectedly",
 				"Baseline check worker exited unexpectedly")
+		}
+		if err != nil {
+			a.setRecoveryError(err)
 		}
 		a.runtimeMu.Lock()
 		if a.runtime.baseline != nil && a.runtime.baseline.id == id {

@@ -16,6 +16,11 @@ in one place only. A published version must start with a digit and use only lett
 digits, dots and hyphens, up to 128 characters: it is also an OCI tag. SemVer build
 metadata containing `+` cannot be used as an image tag.
 
+Local packaging, release tags and OCI metadata use one bounded version validator in
+`scripts/release-images.py`. `scripts/package.sh` runs its offline preflight through
+`scripts/release.py version --tag` before writing an archive; no account or GitHub
+request is needed to validate a local version.
+
 ## Build and package
 
 ```bash

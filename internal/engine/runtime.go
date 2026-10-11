@@ -10,8 +10,10 @@ import (
 )
 
 // App lock protocol:
-//   - gate: operator and scheduler admission. Hold it across a tick or control
-//     action; never across a runner turn (releaseGate / withoutGate).
+//   - gate: operator and scheduler admission and durable worker settlement.
+//     Release it around readiness, preflight and runner work, then revalidate
+//     intent. Maintenance merge deliberately retains it across its bounded
+//     external mutation to serialize merging with pause.
 //   - runtimeMu: in-memory jobs only. Copy what you need, then unlock before any
 //     store I/O, filesystem work, or acquiring gate.
 //   - fsLock: planning clones versus the storage walk. Never hold it across a
@@ -28,7 +30,15 @@ type cycleJob struct {
 type taskJob struct {
 	branch string
 	cancel context.CancelFunc
+	kind   taskWorkerKind
 }
+
+type taskWorkerKind uint8
+
+const (
+	executionWorker taskWorkerKind = iota
+	reconciliationWorker
+)
 
 type baselineJob struct {
 	id     string
@@ -56,7 +66,6 @@ type runtimeState struct {
 	housekeeping        bool
 	lastRetention       time.Time
 	lastObserve         time.Time
-	reconciling         bool
 	baseline            *baselineJob
 	merges              map[string]struct{}
 	mergeWorker         *mergeJob
@@ -77,6 +86,15 @@ func (r *runtimeState) idle() bool {
 }
 
 func (r *runtimeState) planning() bool { return r.cycle != nil || r.preflight != nil }
+
+func (r *runtimeState) reconciling() bool {
+	for _, job := range r.tasks {
+		if job.kind == reconciliationWorker {
+			return true
+		}
+	}
+	return false
+}
 
 func (r *runtimeState) auditActive() bool {
 	return r.cycle != nil && r.cycle.mode == model.CycleModeAudit ||

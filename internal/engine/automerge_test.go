@@ -1398,21 +1398,21 @@ func TestMergeRecoveryErrorShownInStateView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view["status"] != "unhealthy" {
-		t.Fatalf("merge-only barrier status = %v", view["status"])
+	if view.Status != "unhealthy" {
+		t.Fatalf("merge-only barrier status = %v", view.Status)
 	}
-	if view["recovery_error"] == nil || view["recovery_error"] == "" {
-		t.Fatalf("the view hid the merge barrier: %+v", view["recovery_error"])
+	if view.RecoveryError == nil || *view.RecoveryError == "" {
+		t.Fatalf("the view hid the merge barrier: %+v", view.RecoveryError)
 	}
 	app.clearMergeRecoveryError("fixture/project:7")
 	view, err = app.StateView()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprint(view["recovery_error"]); got != "<nil>" && got != "" {
-		t.Fatalf("a settled key still reports: %v", got)
+	if view.RecoveryError != nil {
+		t.Fatalf("a settled key still reports: %v", *view.RecoveryError)
 	}
-	if view["status"] == "unhealthy" {
+	if view.Status == "unhealthy" {
 		t.Fatal("a settled key still reports unhealthy")
 	}
 }

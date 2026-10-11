@@ -56,7 +56,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
 			Sandbox: outcome.sandbox,
 		})
-		if err := a.saveTask(task); err != nil {
+		if err := a.checkpointTask(task); err != nil {
 			return nil, err
 		}
 		if outcome.intactErr != nil {

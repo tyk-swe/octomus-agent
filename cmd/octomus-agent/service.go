@@ -91,12 +91,6 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		<-serveDone
 	}
 	stopWorker()
-	for range 100 {
-		if c.app.Drained() {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
 	return cause
 }
 

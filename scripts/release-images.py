@@ -21,6 +21,13 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def validate_version(version):
+    # The same version names local archives, public release assets and OCI images.
+    require(isinstance(version, str) and re.fullmatch(r'[0-9][a-zA-Z0-9.-]{0,127}', version),
+            'Invalid release version: use 1–128 OCI-compatible digits, letters, dots and hyphens, starting with a digit')
+    return version
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with path.open('rb') as file:
@@ -112,7 +119,7 @@ def inspect_archive(path):
 def metadata(directory, image, source, version):
     require(image in IMAGES, 'Unknown production image')
     require(re.fullmatch(r'[0-9a-f]{40}', source), 'Source commit must be a full Git SHA')
-    require(re.fullmatch(r'[0-9][a-zA-Z0-9.+-]*', version), 'Invalid release version')
+    validate_version(version)
     archive = image + '.oci.tar'
     inspected = inspect_archive(directory / archive)
     require(inspected['image'] == image and inspected['source_commit'] == source and inspected['version'] == version,

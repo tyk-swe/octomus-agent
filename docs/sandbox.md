@@ -73,9 +73,36 @@ filesystem, no capabilities and `no-new-privileges`. See
    request. A delayed start response still consumes that lifetime, and cannot block kill
    requests or a closed lifeline. A kill that arrived before Docker started the container
    is applied again once its start is confirmed.
-4. The broker revokes the lease and removes the container, then reports the exit code,
+4. The broker confirms lease revocation and container removal independently, then reports the exit code,
    whether Docker reported an out-of-memory kill and whether a time limit stopped it. A
    sandbox it could not remove keeps its slot until a retry succeeds, and its report says so.
+   A failed lease deletion is also an infrastructure failure, never an assumed revocation;
+   it cannot prevent the independent container-removal attempt. The broker retries both
+   remaining resources, including a lease whose container is already gone. Shutdown hands
+   unresolved cleanup to its final sweep; startup repeats that sweep before admitting work.
+   Logs distinguish failed attempts from confirmed cleanup without exposing proxy credentials.
+   An unanswered create also keeps its admission slot: an initial 404 by reserved name
+   cannot prove the daemon will not finish creating that container later. Cleanup first
+   observes its ID and then confirms removal; elapsed time never becomes evidence of
+   absence. If the daemon never settles that request, restart the broker after resolving
+   the daemon problem. The next startup sweeps every container carrying this instance's label.
+
+Exit reports carry a machine-readable outcome (`command`, `time_limit`, or `failure`)
+separate from their diagnostic text. Unknown outcomes and malformed time-limit reports
+fail closed. Missing/null exit-status fields and missing native Docker wait or OOM
+inspection evidence also fail closed, rather than defaulting to zero/false. Older
+complete error-free reports remain readable, but an older broker's unclassified
+time-limit error is conservatively an infrastructure failure: upgrade the broker and
+control plane together. Their shared wire contract owns the broker's 45-second teardown
+budget and the control plane's 60-second report wait, rather than relying on matching comments.
+
+Login lease rotation likewise requires confirmed removal of every previous login authorization
+before granting another. Typed lease metadata owns login identity, including a grant interrupted
+before its proxy file was written; the proxy file only delivers the current credential. Rotation
+leaves other sandbox leases intact. Unreadable, malformed or oversized lease metadata prevents
+a replacement grant. A failed new proxy-file write revokes its new lease; if that also fails,
+retry login after correcting the removal failure, or restart the broker for its sweep to clear
+remaining authorization. Missing or malformed proxy files cannot hide prior login leases.
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
 threads resume from the runner session store (below), not from a live process. These turns

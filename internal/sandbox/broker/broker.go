@@ -11,6 +11,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/egress"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
@@ -31,7 +32,7 @@ type Broker struct {
 	failed imageFailure
 	// mu guards info and live, the sandboxes whose removal is not yet confirmed.
 	mu   sync.Mutex
-	live map[string]struct{}
+	live map[*prepared]struct{}
 }
 
 // newBroker is a broker for cfg that has checked nothing yet.
@@ -43,7 +44,7 @@ func newBroker(cfg Config) *Broker {
 		slots:   make(chan struct{}, cfg.Max),
 		closing: make(chan struct{}),
 		refresh: make(chan struct{}, 1),
-		live:    map[string]struct{}{},
+		live:    map[*prepared]struct{}{},
 	}
 	if cfg.LeaseDir != "" {
 		b.leases = &egress.Leases{Dir: cfg.LeaseDir}
@@ -94,5 +95,5 @@ func (b *Broker) logf(format string, args ...any) {
 	if w == nil {
 		w = os.Stderr
 	}
-	fmt.Fprintf(w, "Octomus sandbox broker: "+format+"\n", args...)
+	fmt.Fprintln(w, "Octomus sandbox broker: "+redact.Text(fmt.Sprintf(format, args...)))
 }
