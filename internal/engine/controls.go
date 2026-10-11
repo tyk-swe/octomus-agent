@@ -20,11 +20,39 @@ type NotFound string
 
 func (e NotFound) Error() string { return string(e) }
 
-type actionConflict struct{ msg string }
+// ActionErrorCode is stable machine identity; operator messages remain editable.
+type ActionErrorCode string
+
+const (
+	ActionConflict          ActionErrorCode = "action_conflict"
+	ConfigRevisionConflict  ActionErrorCode = "config_revision_conflict"
+	ActiveWorkConflict      ActionErrorCode = "active_work"
+	UnresolvedWorkConflict  ActionErrorCode = "unresolved_work"
+	RecoveryPendingConflict ActionErrorCode = "recovery_pending"
+)
+
+type actionConflict struct {
+	msg  string
+	code ActionErrorCode
+}
 
 func (e *actionConflict) Error() string { return e.msg }
 
-func conflictError(message string) error { return &actionConflict{message} }
+func conflictError(message string) error { return codedConflict(ActionConflict, message) }
+func codedConflict(code ActionErrorCode, message string) error {
+	return &actionConflict{msg: message, code: code}
+}
+
+func ActionCode(err error) ActionErrorCode {
+	var conflict *actionConflict
+	if errors.As(err, &conflict) {
+		return conflict.code
+	}
+	if model.BlockedReasonFromError(err) != model.BlockedUnknown {
+		return ActionConflict
+	}
+	return ""
+}
 
 func IsActionConflict(err error) bool {
 	var c *actionConflict
@@ -33,8 +61,8 @@ func IsActionConflict(err error) bool {
 
 var (
 	errNotPaused       = conflictError("Octomus must be paused for this operation")
-	errBusy            = conflictError("Octomus has active work")
-	errRecoveryBlocked = conflictError("Wait for saved-state recovery to finish before starting new work.")
+	errBusy            = codedConflict(ActiveWorkConflict, "Octomus has active work")
+	errRecoveryBlocked = codedConflict(RecoveryPendingConflict, "Wait for saved-state recovery to finish before starting new work.")
 )
 
 type capacityError struct {
@@ -44,7 +72,7 @@ type capacityError struct {
 func (e *capacityError) Error() string { return e.capacity.Message() }
 func (e *capacityError) Unwrap() error { return model.BlockedBudgetExhausted }
 
-func (a *App) ControlAction(action string) (map[string]any, error) {
+func (a *App) ControlAction(action string) (*ControlResult, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	control, err := a.Control()
@@ -53,6 +81,16 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	}
 	if err := a.controlConflict(action, control); err != nil {
 		return nil, err
+	}
+	// Read ancillary reply data before changing operation mode: a response-query
+	// failure must not report a successfully committed Resume as refused.
+	var planningCapacity *model.PlanningCapacity
+	if action == "resume" {
+		capacity, err := a.Store.PlanningCapacity(time.Now())
+		if err != nil {
+			return nil, err
+		}
+		planningCapacity = &capacity
 	}
 	switch action {
 	case "audit":
@@ -64,7 +102,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return wirejson.GenericMap(control)
+		return &ControlResult{Control: control}, nil
 	case "pause":
 		if err := a.pauseLocked(&control, nil); err != nil {
 			return nil, err
@@ -90,17 +128,7 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	}
 	// Activity is best-effort after the operator change has committed.
 	_ = a.Store.Event("system", "operator", action)
-	body, err := wirejson.GenericMap(control)
-	if err != nil {
-		return nil, err
-	}
-	if action == "resume" {
-		capacity, err := a.Store.PlanningCapacity(time.Now())
-		if err != nil {
-			return nil, err
-		}
-		body["planning_capacity"] = capacity
-	}
+	body := &ControlResult{Control: control, PlanningCapacity: planningCapacity}
 	return body, nil
 }
 
@@ -110,26 +138,7 @@ func (a *App) controlConflict(action string, control model.Control) error {
 			return err
 		}
 	}
-	a.runtimeMu.Lock()
-	baselineActive := a.runtime.baseline != nil
-	idle := a.runtime.idle()
-	auditActive := a.runtime.auditActive()
-	a.runtimeMu.Unlock()
-	refused := (action == "audit" || action == "cycle") && (!control.Paused || !idle) ||
-		(action == "resume" || action == "cycle") && auditActive ||
-		action == "resume" && baselineActive
-	switch {
-	case !refused:
-		return nil
-	case baselineActive:
-		return conflictError("Wait for the baseline check to finish.")
-	case action == "audit":
-		return conflictError("Audits require paused operation with no active work. Pause the service and wait for active work to finish.")
-	case action == "cycle":
-		return conflictError("Run once requires paused operation with no active work. Pause the service and wait for active work to finish.")
-	default:
-		return conflictError("Wait for the audit to finish before starting continuous operation.")
-	}
+	return controlBlocker(action, control, a.operationActivity())
 }
 
 func (a *App) enterContinuous(control *model.Control) error {
@@ -420,7 +429,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	idle := a.runtime.idle()
 	a.runtimeMu.Unlock()
 	if !control.Paused || !idle {
-		return nil, conflictError("Pause and wait for active work to finish before changing configuration.")
+		return nil, codedConflict(ActiveWorkConflict, "Pause and wait for active work to finish before changing configuration.")
 	}
 	old, err := a.Config()
 	if err != nil {
@@ -431,7 +440,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if revision != expectedRevision {
-		return nil, conflictError("The saved configuration changed; reload settings and check the current values.")
+		return nil, codedConflict(ConfigRevisionConflict, "The saved configuration changed; reload settings and check the current values.")
 	}
 	c, err := mergeConfigPatch(old, patch)
 	if err != nil {
@@ -453,7 +462,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 			return nil, err
 		}
 		if unresolved {
-			return nil, conflictError("Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
+			return nil, codedConflict(UnresolvedWorkConflict, "Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
 	if err := a.Store.Put("settings", "config", c); err != nil {

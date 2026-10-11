@@ -86,13 +86,10 @@ func (a *App) Recover() error {
 			task.BlockedReason = &reason
 			task.Error = new(message)
 		}
-		task.UpdatedAt = model.Now()
-		if err := a.Store.Put("task", task.ID, task); err != nil {
+		if err := a.checkpointTask(&task); err != nil {
 			return err
 		}
-		if err := a.Store.Event(task.ID, "recovery", *task.Error); err != nil {
-			return err
-		}
+		_ = a.Store.Event(task.ID, "recovery", *task.Error)
 	}
 
 	if err := a.settleCancelledSessions(); err != nil {
@@ -138,26 +135,34 @@ func (a *App) interruptOrphanedCycles() error {
 	return nil
 }
 
-// Caller holds the gate so a publication cannot acquire or release its worker
-// claim while recovery checks ownership and preserves its checkpoint.
-func (a *App) blockOrphanedPublications() error {
+// Caller holds the gate so a task cannot acquire or release its worker claim
+// while recovery settles an active checkpoint left behind by a failed write.
+func (a *App) blockOrphanedTasks() error {
 	a.runtimeMu.Lock()
 	excluded := a.ownedTaskIDs()
 	a.runtimeMu.Unlock()
-	tasks, err := a.Store.PublishingTasksExcept(excluded)
-	if err != nil {
-		return err
-	}
-	for i := range tasks {
-		if a.ctx.Err() != nil {
-			return nil
-		}
-		err := fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedPublicationUncertain)
-		if err := a.setTaskError(&tasks[i], err); err != nil {
+	for {
+		tasks, err := a.Store.ActiveTasksExcept(excluded)
+		if err != nil {
 			return err
 		}
+		for i := range tasks {
+			if a.ctx.Err() != nil {
+				return nil
+			}
+			cause := fmt.Errorf("Task worker exited unexpectedly; inspect the preserved workspace")
+			if tasks[i].Status == model.StatusPublishing && tasks[i].OutputCommit != nil {
+				cause = fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedPublicationUncertain)
+			}
+			model.FailRunning(tasks[i].Sessions, cause.Error())
+			if err := a.setTaskError(&tasks[i], cause); err != nil {
+				return err
+			}
+		}
+		if len(tasks) < store.PageLimit {
+			return nil
+		}
 	}
-	return nil
 }
 
 // Cancellation commits its terminal status before the worker joins and saves its
@@ -178,7 +183,7 @@ func (a *App) settleCancelledSessions() error {
 	}
 	for i := range tasks {
 		model.InterruptRunning(tasks[i].Sessions)
-		if err := a.saveTask(&tasks[i]); err != nil {
+		if err := a.checkpointTask(&tasks[i]); err != nil {
 			return err
 		}
 	}
@@ -194,11 +199,17 @@ func (a *App) settleCancelledSessions() error {
 }
 
 func (a *App) recoverBaselines() error {
+	a.runtimeMu.Lock()
+	active := a.runtime.baseline
+	a.runtimeMu.Unlock()
 	checks, err := a.Store.RunningBaselines()
 	if err != nil {
 		return err
 	}
 	for i := range checks {
+		if active != nil && active.id == checks[i].ID {
+			continue
+		}
 		if err := a.abandonBaseline(&checks[i],
 			"The operator cancelled this check before the service stopped",
 			"The service stopped while the baseline check was running"); err != nil {

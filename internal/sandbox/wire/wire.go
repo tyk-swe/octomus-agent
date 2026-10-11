@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 )
@@ -79,9 +80,15 @@ const (
 // the OpenCode bridge and the probes.
 const InitFlag = "--sandbox-init"
 
-// TimeLimitReason is the broker's report of a sandbox it killed at its time limit. Running too long is the program's
-// own result, as a timeout is; any other error an exit report carries means the broker failed the sandbox.
+// TimeLimitReason is the display text for a sandbox the broker killed at its time limit.
 const TimeLimitReason = "Sandbox time limit reached"
+
+// TeardownBudget bounds broker settlement after a sandbox ends. KillReportWait gives that settlement time to reach
+// the control plane before it cuts an unresponsive stream. Keep their relationship in this shared contract.
+const (
+	TeardownBudget = 45 * time.Second
+	KillReportWait = TeardownBudget + 15*time.Second
+)
 
 // Request.Kind names what a sandbox runs.
 const (
@@ -135,12 +142,23 @@ const (
 	ProbeContainment   = "containment"
 )
 
-// ExitReport is the broker's account of how a sandbox ended.
+// ExitOutcome separates command results from broker failures and the broker-enforced lifetime. Missing outcomes
+// retain old error-free command reports; missing or unknown classifications never turn an error into a result.
+type ExitOutcome string
+
+const (
+	ExitCommand   ExitOutcome = "command"
+	ExitTimeLimit ExitOutcome = "time_limit"
+	ExitFailure   ExitOutcome = "failure"
+)
+
+// ExitReport is the broker's account of how a sandbox ended. Outcome, not Error wording, classifies the report.
 type ExitReport struct {
+	Outcome ExitOutcome          `json:"outcome,omitempty" wire:"default"`
 	Code    int                  `json:"code"`
 	OOM     bool                 `json:"oom"`
 	Killed  bool                 `json:"killed"`
-	Error   string               `json:"error,omitempty"`
+	Error   string               `json:"error,omitempty" wire:"default"`
 	Sandbox *model.SandboxRecord `json:"sandbox,omitempty"`
 }
 

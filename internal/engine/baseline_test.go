@@ -136,13 +136,13 @@ func TestBaselineViewStaleness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := view["check"].(*model.BaselineCheck); !ok || got.ID != check.ID {
-		t.Fatalf("view check: %v", view["check"])
+	if got := view.Check; got == nil || got.ID != check.ID {
+		t.Fatalf("view check: %v", view.Check)
 	}
-	if view["config_matches"] != true || view["revision_status"] != "unknown" {
+	if view.ConfigMatches == nil || !*view.ConfigMatches || view.RevisionStatus != "unknown" {
 		t.Fatalf("view: %v", view)
 	}
-	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs != nil {
+	if obs := view.DefaultObservation; obs != nil {
 		t.Fatalf("observation should be empty: %v", obs)
 	}
 	observation := &model.DefaultBranchObservation{
@@ -152,8 +152,8 @@ func TestBaselineViewStaleness(t *testing.T) {
 	status := func(label string, want string) {
 		t.Helper()
 		setObservation(app, observation)
-		if view, _ := app.BaselineView(nil); view["revision_status"] != want {
-			t.Fatalf("%s: revision_status = %v; want %s", label, view["revision_status"], want)
+		if view, _ := app.BaselineView(nil); view.RevisionStatus != want {
+			t.Fatalf("%s: revision_status = %v; want %s", label, view.RevisionStatus, want)
 		}
 	}
 	status("fresh match", "matches_last_observation")
@@ -178,8 +178,8 @@ func TestBaselineViewStaleness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs == nil || obs.Revision != observation.Revision {
-		t.Fatalf("observation of the live target was not shown: %v", view["default_observation"])
+	if obs := view.DefaultObservation; obs == nil || obs.Revision != observation.Revision {
+		t.Fatalf("observation of the live target was not shown: %v", view.DefaultObservation)
 	}
 	changed := cfg.Clone()
 	changed.DefaultBranch = "moved"
@@ -190,13 +190,13 @@ func TestBaselineViewStaleness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view["config_matches"] != false || view["revision_status"] != "unknown" {
-		t.Fatalf("changed config: %v %v", view["config_matches"], view["revision_status"])
+	if view.ConfigMatches == nil || *view.ConfigMatches || view.RevisionStatus != "unknown" {
+		t.Fatalf("changed config: %v %v", view.ConfigMatches, view.RevisionStatus)
 	}
-	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs != nil {
+	if obs := view.DefaultObservation; obs != nil {
 		t.Fatalf("observation of another target was shown as the live one: %v", obs)
 	}
-	if encoded, err := json.Marshal(view["default_observation"]); err != nil || string(encoded) != "null" {
+	if encoded, err := json.Marshal(view.DefaultObservation); err != nil || string(encoded) != "null" {
 		t.Fatalf("hidden observation must encode as null: %s, %v", encoded, err)
 	}
 	noCommands := changed.Clone()
@@ -208,10 +208,13 @@ func TestBaselineViewStaleness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view["eligible"] != false {
+	if view.Eligible != false {
 		t.Fatal("invalid config must report ineligible")
 	}
-	reason, _ := view["reason"].(string)
+	reason := ""
+	if view.Reason != nil {
+		reason = *view.Reason
+	}
 	if !strings.Contains(reason, "verification") {
 		t.Fatalf("reason %q must name the verification problem", reason)
 	}

@@ -110,9 +110,9 @@ func TestStateViewStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if view["status"] != check.wantStatus || view["active_tasks"] != check.wantActive || view["cycle_active"] != check.wantCycleRun {
+			if view.Status != check.wantStatus || view.ActiveTasks != check.wantActive || view.CycleActive != check.wantCycleRun {
 				t.Fatalf("status = %v, active_tasks = %v, cycle_active = %v; want %s, %d, %v",
-					view["status"], view["active_tasks"], view["cycle_active"], check.wantStatus, check.wantActive, check.wantCycleRun)
+					view.Status, view.ActiveTasks, view.CycleActive, check.wantStatus, check.wantActive, check.wantCycleRun)
 			}
 		})
 	}
@@ -145,14 +145,17 @@ func TestDoctorDiagnostics(t *testing.T) {
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("doctor = %v, warnings %q", err, warnings)
 	}
-	backends, err := wirejson.Marshal(result["backends"])
+	backends, err := wirejson.Marshal(result.Backends)
 	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":null}]`; err != nil || string(backends) != want {
 		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
 	}
-	if result["codex_version"] != "scripted" || result["tested_codex_version"] != runner.CodexVersion {
-		t.Fatalf("codex versions = %v, %v", result["codex_version"], result["tested_codex_version"])
+	if result.Sandbox.Mode != "off" {
+		t.Fatalf("sandbox mode=%q", result.Sandbox.Mode)
 	}
-	if message := result["message"]; message != "Repository, GitHub authentication, and all model routes are available." {
+	if result.CodexVersion != "scripted" || result.TestedCodexVersion != runner.CodexVersion {
+		t.Fatalf("codex versions = %v, %v", result.CodexVersion, result.TestedCodexVersion)
+	}
+	if message := result.Message; message != "Repository, GitHub authentication, and all model routes are available." {
 		t.Fatalf("message = %v", message)
 	}
 
@@ -170,12 +173,12 @@ func TestDoctorDiagnostics(t *testing.T) {
 	if err != nil || len(warnings) != 1 || warnings[0] != warning {
 		t.Fatalf("doctor = %v, warnings %q; want %q", err, warnings, warning)
 	}
-	backends, err = wirejson.Marshal(result["backends"])
+	backends, err = wirejson.Marshal(result.Backends)
 	quoted, _ := json.Marshal(warning)
 	if want := `[{"backend":"codex","protocol_version":"scripted","version":"scripted","warning":` + string(quoted) + `}]`; err != nil || string(backends) != want {
 		t.Fatalf("backends = %s, %v; want %s", backends, err, want)
 	}
-	if message := result["message"]; message != "Repository, GitHub authentication, and planning model routes are available. Warning: "+warning {
+	if message := result.Message; message != "Repository, GitHub authentication, and planning model routes are available. Warning: "+warning {
 		t.Fatalf("message = %v", message)
 	}
 	f.script.SetCatalog()

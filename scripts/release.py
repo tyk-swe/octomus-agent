@@ -27,9 +27,9 @@ def require(condition, message):
 
 def version_for(tag):
     # A version is also an OCI tag and a release asset filename. '+' is valid SemVer but not an OCI tag.
-    require(isinstance(tag, str) and re.fullmatch(r'v[0-9][a-zA-Z0-9.-]{0,127}', tag),
+    require(isinstance(tag, str) and tag.startswith('v'),
             'Release tag must be v plus an OCI-compatible VERSION (digits, letters, dots and hyphens)')
-    return tag[1:]
+    return IMAGES.validate_version(tag[1:])
 
 
 def packages(tag):
@@ -323,9 +323,18 @@ def edit_notes(github, tag, notes):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'stage', 'download', 'notes'))
+    parser.add_argument('command', choices=('version', 'prepare', 'stage', 'download', 'notes'))
+    parser.add_argument('--tag')
     parser.add_argument('--directory', type=Path, default=Path('dist/release'))
     args = parser.parse_args()
+    if args.command == 'version':
+        if args.tag is None:
+            parser.error('version requires --tag')
+        try:
+            print(version_for(args.tag))
+        except ValueError as error:
+            parser.exit(1, str(error) + '\n')
+        return
     github = GitHub(os.environ['GH_REPO'])
     tag, notes = os.environ['RELEASE_TAG'], os.environ.get('RELEASE_NOTES', '')
     if args.command == 'prepare':

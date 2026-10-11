@@ -93,7 +93,7 @@ func TestIndexedViews(t *testing.T) {
 	}
 
 	for _, selected := range []string{"cycle-running", "missing", "all"} {
-		result, err := s.HistoryPage("cycle", store.HistoryQuery{Cycle: &selected})
+		result, err := summaryPage(s, "cycle", store.HistoryQuery{Cycle: &selected})
 		must(t, err)
 		want := map[string]int{"cycle-running": 1, "missing": 0, "all": 2}[selected]
 		if len(result.Items) != want || result.NextCursor != nil {
@@ -149,16 +149,16 @@ func TestIndexedViews(t *testing.T) {
 	}
 	detail, err := s.ProposalDetail("cycle-done", "b")
 	must(t, err)
-	view := decodeMap(t, detail)
+	view := decodeMap(t, marshaled(t, detail))
 	if view["prompt"] != "Implement the documented behavior" || view["content_revision"] != float64(1) {
 		t.Fatalf("proposal detail: %v", view)
 	}
-	page := decodeMap(t, filtered.Items[0])
+	page := decodeMap(t, marshaled(t, filtered.Items[0]))
 	if page["cycle_id"] != "cycle-done" || page["prompt"] != "" || page["decision"] != "rejected" {
 		t.Fatalf("proposal page item: %v", page)
 	}
 	if missing, err := s.ProposalDetail("cycle-done", "missing"); err != nil || missing != nil {
-		t.Fatalf("missing proposal: %s %v", missing, err)
+		t.Fatalf("missing proposal: %v %v", missing, err)
 	}
 
 	candidates, err := s.ReservableTasks()

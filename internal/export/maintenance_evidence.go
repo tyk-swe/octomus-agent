@@ -1,31 +1,35 @@
 package export
 
 import (
-	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-const maintenanceEvidenceQuery = `SELECT r.data
-    FROM record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id
-    WHERE m.kind='pr' AND m.repository=?1 COLLATE NOCASE
-        AND json_extract(r.data,'$.pr.number')=?2
-    ORDER BY m.seq ASC LIMIT 2`
-
-func maintenanceEvidenceAt(c *sql.Conn, tasks []model.Task) (map[string]*model.AutoMergeState, error) {
+func maintenanceEvidenceAt(c *store.Snapshot, tasks []model.Task) (map[string]*model.AutoMergeState, error) {
 	saved := map[string]*model.AutoMergeState{}
+	type identity struct {
+		repository string
+		number     uint64
+	}
+	observed := map[identity][]model.PRObservation{}
 	for _, task := range tasks {
 		if task.Config.DeliveryMode != config.DeliveryModeMaintenance ||
 			task.PRNumber == nil || task.OutputCommit == nil {
 			continue
 		}
-		observations, err := store.QueryRecords[model.PRObservation](c, maintenanceEvidenceQuery,
-			task.Config.GitHubRepo, *task.PRNumber)
-		if err != nil {
-			return nil, err
+		key := identity{strings.ToLower(task.Config.GitHubRepo), *task.PRNumber}
+		observations, read := observed[key]
+		if !read {
+			var err error
+			observations, err = c.PRObservations(task.Config.GitHubRepo, *task.PRNumber)
+			if err != nil {
+				return nil, err
+			}
+			observed[key] = observations
 		}
 		if len(observations) > 1 {
 			return nil, fmt.Errorf("Multiple saved observations identify maintenance pull request %d", *task.PRNumber)

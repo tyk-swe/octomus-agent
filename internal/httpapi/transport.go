@@ -37,7 +37,7 @@ func (a *api) route(method, pattern string, handle handlerFunc) {
 			if errors.As(err, &be) {
 				writeBodyError(w, be)
 			} else {
-				writeAPIError(w, apiStatus(err), redact.Error(err))
+				writeJSON(w, apiStatus(err), ErrorResponse{Error: redact.Error(err), Code: engine.ActionCode(err)})
 			}
 			return
 		}
@@ -136,8 +136,16 @@ func apiStatus(err error) int {
 	}
 }
 
+type Acknowledgement struct {
+	OK bool `json:"ok"`
+}
+type ErrorResponse struct {
+	Error string                 `json:"error"`
+	Code  engine.ActionErrorCode `json:"code,omitempty"`
+}
+
 func writeAPIError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]any{"error": message})
+	writeJSON(w, status, ErrorResponse{Error: message})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -158,7 +166,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 		out, err = wirejson.Marshal(generic)
 	}
 	if err != nil {
-		writeRawJSON(w, http.StatusInternalServerError, map[string]any{"error": "The response could not be encoded"})
+		writeRawJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "The response could not be encoded"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

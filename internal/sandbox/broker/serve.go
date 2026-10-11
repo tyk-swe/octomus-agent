@@ -202,9 +202,9 @@ func (b *Broker) stream(ctx context.Context, s *prepared, p plan, conn net.Conn,
 	report, err := s.execute(lifeline, p.timeout, output{stdout: forward(wire.FrameStdout), stderr: forward(wire.FrameStderr),
 		interrupt: func() { _ = conn.SetWriteDeadline(time.Now()) }}, controls)
 	if err != nil {
-		report = wire.ExitReport{Error: err.Error(), Sandbox: report.Sandbox}
+		report = wire.ExitReport{Outcome: wire.ExitFailure, Error: err.Error(), Sandbox: report.Sandbox}
 	}
-	if lifeline.Err() != nil && report.Error == streamClosed || written.failed.Load() {
+	if lifeline.Err() != nil || written.failed.Load() {
 		return
 	}
 	payload, _ := json.Marshal(report)

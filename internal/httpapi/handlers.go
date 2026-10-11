@@ -22,7 +22,7 @@ func acknowledged(err error) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, map[string]any{"ok": true}, nil
+	return http.StatusOK, Acknowledgement{OK: true}, nil
 }
 
 func (a *api) stateView(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
@@ -72,8 +72,19 @@ func (a *api) history(kind string) handlerFunc {
 		if err != nil {
 			return 0, nil, err
 		}
-		page, err := a.app.Store.HistoryPage(kind, query)
-		return http.StatusOK, page, err
+		switch kind {
+		case "task":
+			page, err := a.app.Store.TaskPage(query)
+			return http.StatusOK, page, err
+		case "cycle":
+			page, err := a.app.Store.CyclePage(query)
+			return http.StatusOK, page, err
+		case "pr":
+			page, err := a.app.Store.PRPage(query)
+			return http.StatusOK, page, err
+		default:
+			return 0, nil, fmt.Errorf("Unknown history kind %q", kind)
+		}
 	}
 }
 
@@ -131,19 +142,14 @@ func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, erro
 	if task == nil {
 		return 0, nil, engine.NotFound("Task not found")
 	}
-	value, err := wirejson.GenericMap(*task)
-	if err != nil {
-		return 0, nil, err
-	}
-	value["allowed_actions"] = task.AllowedActions()
-	value["effective_attempt_policy"] = model.PolicyOf(task.ExecutionConfig())
 	live, err := a.app.Config()
 	if err != nil {
 		return 0, nil, err
 	}
-	value["operating_policy"] = map[string]any{
-		"max_sessions_per_day": live.MaxSessionsPerDay,
-		"max_workspace_bytes":  live.MaxWorkspaceBytes,
+	value := engine.TaskDetail{
+		Task: *task, AllowedActions: task.AllowedActions(),
+		EffectiveAttemptPolicy: model.PolicyOf(task.ExecutionConfig()),
+		OperatingPolicy:        engine.OperatingPolicy{MaxSessionsPerDay: live.MaxSessionsPerDay, MaxWorkspaceBytes: live.MaxWorkspaceBytes},
 	}
 	return http.StatusOK, value, nil
 }
@@ -246,25 +252,29 @@ func (a *api) doctor(w http.ResponseWriter, r *http.Request) (int, any, error) {
 		return 0, nil, err
 	}
 	result, _, err := a.app.Doctor(r.Context(), cfg, mode)
-	status := http.StatusOK
-	var body map[string]any
-	if err != nil {
-		status = apiStatus(err)
-		body = map[string]any{"error": redact.Error(err)}
-	} else {
-		body = result
+	revision, fingerprintErr := cfg.Fingerprint()
+	if fingerprintErr != nil {
+		return 0, nil, fingerprintErr
 	}
-	checked, err := wirejson.Generic(cfg)
 	if err != nil {
-		return 0, nil, err
+		return apiStatus(err), DoctorFailure{
+			ErrorResponse: ErrorResponse{Error: redact.Error(err), Code: engine.ActionCode(err)},
+			CheckedConfig: cfg, CheckedRevision: revision,
+		}, nil
 	}
-	body["checked_config"] = checked
-	revision, err := cfg.Fingerprint()
-	if err != nil {
-		return 0, nil, err
-	}
-	body["checked_revision"] = revision
-	return status, body, nil
+	return http.StatusOK, DoctorResponse{DoctorResult: *result, CheckedConfig: cfg, CheckedRevision: revision}, nil
+}
+
+type DoctorResponse struct {
+	engine.DoctorResult
+	CheckedConfig   config.Config `json:"checked_config"`
+	CheckedRevision string        `json:"checked_revision"`
+}
+
+type DoctorFailure struct {
+	ErrorResponse
+	CheckedConfig   config.Config `json:"checked_config"`
+	CheckedRevision string        `json:"checked_revision"`
 }
 
 // sandboxSelfTest proves the sandbox from inside a real one; with the sandbox off there is nothing to prove.

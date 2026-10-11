@@ -7,8 +7,15 @@ import {
   type SetupStatus
 } from '../src/lib/setup';
 
-test('controls and the checklist agree across configuration, activity and recovery states', () => {
+test('controls consume server capabilities while the checklist explains configuration, activity and recovery', () => {
   const idle: SetupStatus = {
+    capabilities: {
+      pause: { allowed: true, reason: '' },
+      resume: { allowed: true, reason: '' },
+      cycle: { allowed: true, reason: '' },
+      audit: { allowed: true, reason: '' },
+      configure: { allowed: true, reason: '' }
+    },
     configured: true,
     audit_configured: true,
     paused: true,
@@ -162,13 +169,45 @@ test('controls and the checklist agree across configuration, activity and recove
   expect(chooseStep(null).detail).toContain('Connect to the service first.');
   expect(configurationEditable(null)).toBe(false);
   expect(configurationEditable(idle)).toBe(true);
-  expect(configurationEditable({ ...idle, auto_merge_active: true })).toBe(false);
+  expect(
+    configurationEditable({
+      ...idle,
+      capabilities: { ...idle.capabilities, configure: { allowed: false, reason: 'Active work' } }
+    })
+  ).toBe(false);
   for (const [name, patch, actions, explanation] of cases) {
-    const status = { ...idle, ...patch };
-    const available = Object.entries(controlEligibility(status))
-      .filter(([, eligible]) => eligible)
-      .map(([action]) => action);
-    expect(available, name).toEqual(actions);
+    const status = { ...idle, ...patch, capabilities: { ...idle.capabilities } };
+    for (const action of ['resume', 'pause', 'cycle', 'audit'] as const)
+      status.capabilities[action] = { allowed: actions.includes(action), reason: '' };
     expect(chooseStep(status).detail, name).toContain(explanation);
   }
+});
+
+test('server capability choices are authoritative while pending confirmation only blocks new work', () => {
+  const status = {
+    configured: false,
+    audit_configured: false,
+    paused: false,
+    active_tasks: 99,
+    capabilities: {
+      resume: { allowed: true, reason: '' },
+      pause: { allowed: true, reason: '' },
+      cycle: { allowed: false, reason: 'Planning capacity' },
+      audit: { allowed: false, reason: 'Active work' },
+      configure: { allowed: true, reason: '' }
+    }
+  } as SetupStatus;
+  expect(controlEligibility(status)).toEqual({
+    resume: true,
+    pause: true,
+    cycle: false,
+    audit: false
+  });
+  expect(configurationEditable(status)).toBe(true);
+  expect(controlEligibility({ ...status, control_state_pending: true })).toEqual({
+    resume: false,
+    pause: true,
+    cycle: false,
+    audit: false
+  });
 });

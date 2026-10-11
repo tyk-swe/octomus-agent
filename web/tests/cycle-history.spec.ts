@@ -12,8 +12,9 @@ function cycle(number: number): CycleSummary {
     completed_at: '2026-09-10T00:01:00Z',
     error: null,
     session_count: 0,
-    decisions: {},
-    lifecycle: {}
+    decisions: { accepted: 0, rejected: 0, deferred: 0, candidate: 0 },
+    allowed_actions: ['archive'],
+    lifecycle: { archived_at: null, discarded_at: null }
   };
 }
 
@@ -163,6 +164,7 @@ test('an uncached selected cycle is visible without skipping intervening history
   expect(state().rows.map((row) => row.number)).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1]);
   expect(state().rows.filter((row) => row.number === 2)).toHaveLength(1);
   expect(state().rows.find((row) => row.number === 2)?.lifecycle).toEqual({
+    archived_at: null,
     discarded_at: '2026-09-10T00:03:00Z'
   });
   expect(state().cursor).toBeNull();

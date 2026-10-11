@@ -1,7 +1,6 @@
 package export
 
 import (
-	"database/sql"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -72,16 +71,16 @@ func Usage(stateDB string) (map[string]any, error) {
 	return export(stateDB, "usage reporting", usage)
 }
 
-func usage(c *sql.Conn) (Report, error) {
-	admissions, err := store.Admissions(c)
+func usage(c *store.Snapshot) (Report, error) {
+	admissions, err := c.Admissions()
 	if err != nil {
 		return Report{}, err
 	}
-	cycles, err := records[model.Cycle](c, "cycle")
+	cycles, err := c.Cycles()
 	if err != nil {
 		return Report{}, err
 	}
-	tasks, err := records[model.Task](c, "task")
+	tasks, err := c.Tasks()
 	if err != nil {
 		return Report{}, err
 	}
@@ -166,8 +165,8 @@ func usage(c *sql.Conn) (Report, error) {
 	}, nil
 }
 
-func dailyUsage(c *sql.Conn, attributed map[string]uint64) ([]Daily, error) {
-	days, err := store.DailySessions(c)
+func dailyUsage(c *store.Snapshot, attributed map[string]uint64) ([]Daily, error) {
+	days, err := c.DailySessions()
 	if err != nil {
 		return nil, err
 	}

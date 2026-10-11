@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -102,21 +101,15 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	limit := 100
 	closed := []model.PullRequest{}
 	for {
-		page, err := a.Store.HistoryPage("pr", store.HistoryQuery{Before: before, Status: &status, Limit: &limit})
+		page, err := a.Store.PRPage(store.HistoryQuery{Before: before, Status: &status, Limit: &limit})
 		if err != nil {
 			return err
 		}
-		for _, raw := range page.Items {
+		for _, summary := range page.Items {
 			if ctx.Err() != nil {
 				return nil
 			}
-			var summary struct {
-				Repository string `json:"repository"`
-				PR         struct {
-					Number uint64 `json:"number"`
-				} `json:"pr"`
-			}
-			if json.Unmarshal(raw, &summary) != nil || !config.EqualASCII(summary.Repository, cfg.GitHubRepo) {
+			if !config.EqualASCII(summary.Repository, cfg.GitHubRepo) {
 				continue
 			}
 			if _, present := open[summary.PR.Number]; !present {

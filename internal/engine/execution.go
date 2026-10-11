@@ -64,10 +64,12 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	shuttingDown := a.ctx.Err() != nil
 	operatorCancelled, _ := a.Store.Marked("cancel", task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
-		if err := a.saveTask(&task); err != nil {
+		if err := a.checkpointTask(&task); err != nil {
 			_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
+			return err
 		}
-		return a.Store.Event(task.ID, "interrupted", message)
+		_ = a.Store.Event(task.ID, "interrupted", message)
+		return nil
 	}
 	status := model.StatusBlocked
 	if workCtx.Err() != nil && !timedOut && task.OutputCommit == nil && (operatorCancelled || a.ctx.Err() == nil) {
@@ -85,8 +87,10 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {
 		_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
+		return err
 	}
-	return a.Store.Event(task.ID, "error", message)
+	_ = a.Store.Event(task.ID, "error", message)
+	return nil
 }
 
 func runJoined(ctx context.Context, cancel context.CancelFunc, limit time.Duration, panicked string, fn func() error) (process.Deadline[error], error) {
@@ -115,7 +119,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		// that conservative allowance, then count completed repairs directly.
 		task.RepairRounds = new(task.AttemptReviews())
 	}
-	if err := a.saveTask(task); err != nil {
+	if err := a.checkpointTask(task); err != nil {
 		return err
 	}
 	if task.OutputCommit != nil {
@@ -197,7 +201,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			progress.AwaitingReview = false
 			// Consume the completed repair before another turn can start. Recovery may review this same revision
 			// again after a shutdown here, but must not count that repair a second time.
-			if err := a.saveTask(task); err != nil {
+			if err := a.checkpointTask(task); err != nil {
 				return err
 			}
 			if progress.NoProgressRounds >= cfg.MaxNoProgressRounds {
@@ -244,26 +248,22 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 			!slices.Contains(task.Config.EffectiveCategories(), task.Proposal.Category) {
 			return fmt.Errorf("Task %s was planned under an incompatible delivery mode or category: %w", task.ID, model.BlockedInvalidPlan)
 		}
+		next := task.Clone()
 		if task.Config.DeliveryMode == config.DeliveryModeMaintenance {
 			if footprintErr != nil {
 				_ = a.Store.Event(task.ID, "maintenance", "Footprint measurement is incomplete; the delivery can publish but stays manual: "+redact.Error(footprintErr))
 			}
-			task.MaintenanceFootprint = footprint
+			next.MaintenanceFootprint = footprint
 		}
 		if !task.ReviewAuthorizes(revision) {
 			return fmt.Errorf("Publication requires a clean maintenance-qualified review at the output revision: %w", model.BlockedInvalidReview)
 		}
-		previousStatus, previousOutput, previousUpdated := task.Status, task.OutputCommit, task.UpdatedAt
-		task.OutputCommit = &revision
-		task.Status = model.StatusPublishing
-		if err := a.saveTask(task); err != nil {
-			// A failed write cannot authorize later publication or override a
-			// cancellation accepted after this gate is released.
-			task.Status, task.OutputCommit, task.UpdatedAt = previousStatus, previousOutput, previousUpdated
+		next.OutputCommit = &revision
+		if err := a.transition(&next, model.StatusPublishing); err != nil {
 			return err
 		}
-		// The checkpoint is durable even if its separate status event fails.
-		return a.Store.Event(task.ID, "status", statusLabel(model.StatusPublishing))
+		*task = next
+		return nil
 	}()
 	if err != nil {
 		return err
@@ -398,7 +398,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return model.BlockedStaleBase
 		}
 		task.SourceRevision = current
-		if err := a.saveTask(task); err != nil {
+		if err := a.checkpointTask(task); err != nil {
 			return err
 		}
 	}
@@ -423,7 +423,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	if task.Workspace == "" {
 		ws := a.taskWorkspace(task.ID)
 		task.Workspace = ws
-		if err := a.saveTask(task); err != nil {
+		if err := a.checkpointTask(task); err != nil {
 			return err
 		}
 		if err := gitops.CloneAt(ctx, cfg, ws, task.SourceRevision); err != nil {
@@ -437,7 +437,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		} else {
 			task.ComparisonBase = task.SourceRevision
 		}
-		return a.saveTask(task)
+		return a.checkpointTask(task)
 	}
 	return a.checkWorkspace(ctx, task)
 }
@@ -451,8 +451,8 @@ func (a *App) runExecutor(ctx context.Context, task *model.Task, client *runner.
 	}
 	_, err := a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "executor", route: task.Route, workspace: task.Workspace,
-		resume: task.ExecutionSession, keep: func(session *string) { task.ExecutionSession = session },
-		prompt: executorPrompt(task, cfg), reserved: admissionReserved,
+		session: &task.ExecutionSession,
+		prompt:  executorPrompt(task, cfg), reserved: admissionReserved,
 	})
 	return err
 }
@@ -482,8 +482,8 @@ func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runne
 	}
 	_, err = a.invoke(ctx, client, invocation{
 		cycleID: task.CycleID, task: task, role: "repair", route: cfg.RepairRoute, workspace: task.Workspace,
-		resume: task.RepairSession, keep: func(session *string) { task.RepairSession = session },
-		prompt: prompt,
+		session: &task.RepairSession,
+		prompt:  prompt,
 		completed: func() {
 			*task.RepairRounds++
 			if task.RepairProgress == nil {
@@ -515,19 +515,22 @@ func repairPrompt(task *model.Task, cfg config.Config, review model.Review, veri
 }
 
 func (a *App) published(task *model.Task, p model.PullRequest) error {
-	task.PRNumber = &p.Number
-	task.PRURL = &p.URL
-	task.Error = nil
-	task.BlockedReason = nil
-	task.Status = model.StatusPublished
-	task.UpdatedAt = model.Now()
-	merge, err := a.initialMergeState(task)
+	next := task.Clone()
+	next.PRNumber = &p.Number
+	next.PRURL = &p.URL
+	next.Error = nil
+	next.BlockedReason = nil
+	next.Status = model.StatusPublished
+	next.UpdatedAt = model.Now()
+	merge, err := a.initialMergeState(&next)
 	if err != nil {
 		return err
 	}
-	if err := a.Store.CompletePublication(*task, p, merge); err != nil {
+	committed, err := a.Store.CompletePublication(next, p, merge)
+	if err != nil {
 		return err
 	}
+	*task = committed
 	a.runtimeMu.Lock()
 	a.runtime.lastMergeCheck = time.Time{}
 	a.runtimeMu.Unlock()
@@ -535,17 +538,31 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 	return nil
 }
 
-func (a *App) saveTask(task *model.Task) error {
-	task.UpdatedAt = model.Now()
-	return a.Store.Put("task", task.ID, *task)
-}
-
-func (a *App) transition(task *model.Task, status model.Status) error {
-	task.Status = status
-	if err := a.saveTask(task); err != nil {
+// checkpointTask persists working evidence. Pending observations (including a
+// completed repair) stay available to the supervisor if storage refuses them;
+// only the successful write advances the checkpoint timestamp.
+func (a *App) checkpointTask(task *model.Task) error {
+	next := *task
+	next.UpdatedAt = model.Now()
+	if err := a.Store.SaveTask(next); err != nil {
 		return err
 	}
-	return a.Store.Event(task.ID, "status", statusLabel(status))
+	*task = next
+	return nil
+}
+
+// transition changes caller-owned lifecycle state only after it commits. Status
+// activity is ancillary: its failure must never report a committed operation as
+// refused, nor keep an admitted task from acquiring its worker.
+func (a *App) transition(task *model.Task, status model.Status) error {
+	next := task.Clone()
+	next.Status = status
+	if err := a.checkpointTask(&next); err != nil {
+		return err
+	}
+	*task = next
+	_ = a.Store.Event(task.ID, "status", statusLabel(status))
+	return nil
 }
 
 func statusLabel(status model.Status) string {
@@ -561,21 +578,31 @@ func (a *App) taskWorkspace(taskID string) string {
 }
 
 func (a *App) setTaskError(task *model.Task, err error) error {
-	recordTaskError(task, err)
-	return a.transition(task, model.StatusBlocked)
+	next := task.Clone()
+	recordTaskError(&next, err)
+	if err := a.transition(&next, model.StatusBlocked); err != nil {
+		return err
+	}
+	*task = next
+	return nil
 }
 
 func recordTaskError(task *model.Task, err error) {
-	task.BlockedReason = new(model.BlockedReasonFromError(err))
+	reason := model.BlockedReasonFromError(err)
+	if reason == model.BlockedUnknown && task.Status == model.StatusPublishing && task.OutputCommit != nil {
+		// External publication may have succeeded before its durable settlement
+		// failed. Keep known preflight refusals and the original diagnostic.
+		reason = model.BlockedPublicationUncertain
+	}
+	task.BlockedReason = &reason
 	task.Error = new(redact.Error(err))
 }
 
 // Caller holds the gate until the exited worker releases its runtime claim.
 // Keep new work blocked when a publication checkpoint cannot be settled yet.
 func (a *App) settleExitedTask(task *model.Task, cause error) {
-	publishing := task.Status == model.StatusPublishing && task.OutputCommit != nil
 	model.FailRunning(task.Sessions, redact.Error(cause))
-	if err := a.setTaskError(task, cause); err != nil && publishing {
+	if err := a.setTaskError(task, cause); err != nil {
 		a.setRecoveryError(err)
 	}
 }

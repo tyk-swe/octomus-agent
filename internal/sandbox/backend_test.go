@@ -82,6 +82,60 @@ func exitFrame(out *wire.FrameWriter, report wire.ExitReport) {
 	_ = out.Frame(wire.FrameExit, payload)
 }
 
+func TestExitOutcomeDoesNotDependOnDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		report  wire.ExitReport
+		failure bool
+		killed  bool
+	}{
+		{"legacy command", wire.ExitReport{Code: 0}, false, false},
+		{"command", wire.ExitReport{Outcome: wire.ExitCommand, Code: 3}, false, false},
+		{"changed timeout wording", wire.ExitReport{Outcome: wire.ExitTimeLimit, Code: 137, Killed: true, Error: "Lifetime elapsed"}, false, true},
+		{"timeout without exit status", wire.ExitReport{Outcome: wire.ExitTimeLimit, Killed: true}, false, true},
+		{"invalid timeout", wire.ExitReport{Outcome: wire.ExitTimeLimit, Code: 0}, true, false},
+		{"legacy unclassified error", wire.ExitReport{Code: 137, Killed: true, Error: wire.TimeLimitReason}, true, false},
+		{"error not a timeout", wire.ExitReport{Outcome: wire.ExitCommand, Code: 137, Killed: true, Error: wire.TimeLimitReason}, true, false},
+		{"failure without message", wire.ExitReport{Outcome: wire.ExitFailure}, true, false},
+		{"unknown outcome", wire.ExitReport{Outcome: "future_outcome", Code: 0}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan struct{})
+			close(done)
+			child := &remoteChild{done: done, report: tc.report}
+			status, err := child.Wait()
+			if Infrastructure(err) != tc.failure {
+				t.Fatalf("report %+v: status=%v, err=%v", tc.report, status, err)
+			}
+			if tc.killed && (status.Success() || status.Err() == nil || errors.Is(status.Err(), process.ErrKilled)) {
+				t.Fatalf("broker lifetime must not become success or an intentional caller kill: %v", status)
+			}
+		})
+	}
+}
+
+func TestIncompleteExitFramesCannotDefaultToSuccess(t *testing.T) {
+	for _, payload := range []string{
+		`{}`, `null`, `{"code":0}`, `{"code":null,"oom":false,"killed":false,"error":""}`,
+		`{"code":0,"oom":null,"killed":false,"error":""}`, `{"code":0,"oom":false,"error":""}`,
+		`{"code":0,"oom":false,"killed":false,"error":"","code":0}`,
+		`{"code":0,"oom":false,"killed":false,"error":"","outcome":null}`,
+	} {
+		t.Run(payload, func(t *testing.T) {
+			client, broker := net.Pipe()
+			defer client.Close()
+			defer broker.Close()
+			child := newRemoteChild(client, bufio.NewReader(client), nil, false, time.Second, func() {})
+			if err := wire.NewFrameWriter(broker).Frame(wire.FrameExit, []byte(payload)); err != nil {
+				t.Fatal(err)
+			}
+			if status, err := child.Wait(); !Infrastructure(err) || status.Success() {
+				t.Fatalf("incomplete frame became a command result: %v, %v", status, err)
+			}
+		})
+	}
+}
+
 // startFailure is how the broker reports a container it created but could not start, after the upgrade.
 const startFailure = "Starting the sandbox: Error response from daemon: unknown or invalid runtime name: runsc"
 
@@ -138,7 +192,7 @@ func (f *fakeBroker) serve(req wire.Request, conn net.Conn, reader *bufio.Reader
 		exitFrame(out, wire.ExitReport{Code: 137, OOM: true, Sandbox: &model.SandboxRecord{ImageID: "sha256:sandbox", Runs: 1, OOM: true,
 			Egress: model.SandboxEgress{Allowed: map[string]uint64{}, Denied: map[string]uint64{"example.com:443": 2}}}})
 	case "limit":
-		exitFrame(out, wire.ExitReport{Code: 137, Killed: true, Error: wire.TimeLimitReason})
+		exitFrame(out, wire.ExitReport{Outcome: wire.ExitTimeLimit, Code: 137, Killed: true, Error: "Fixture lifetime elapsed"})
 	case "bad-report":
 		_ = out.Frame(wire.FrameExit, []byte("{"))
 	case "flood":

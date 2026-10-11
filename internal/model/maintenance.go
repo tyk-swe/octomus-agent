@@ -71,15 +71,8 @@ func (t Task) MaintenanceMergeAuthorized(live config.Config) bool {
 		return false
 	}
 	for _, command := range commands {
-		passed := false
-		for i := len(t.Verification) - 1; i >= 0; i-- {
-			result := t.Verification[i]
-			if result.Command == command {
-				passed = result.Success && result.Revision == *t.OutputCommit
-				break
-			}
-		}
-		if !passed {
+		result := t.VerificationFor(command).Latest
+		if result == nil || !result.Success || result.Revision != *t.OutputCommit {
 			return false
 		}
 	}

@@ -124,8 +124,9 @@ test('a refused cycle archive remains retryable and distinct from history recove
     completed_at: '2026-09-10T00:01:00Z',
     error: null,
     session_count: 0,
-    decisions: {},
-    lifecycle: {}
+    decisions: { accepted: 0, rejected: 0, deferred: 0, candidate: 0 },
+    allowed_actions: ['archive'],
+    lifecycle: { archived_at: null, discarded_at: null }
   }));
   await page.route('**/api/cycles?*', async (route) => {
     if (state.outage)
@@ -142,6 +143,7 @@ test('a refused cycle archive remains retryable and distinct from history recove
       return;
     }
     cycles[1].lifecycle.archived_at = '2026-09-10T00:02:00Z';
+    cycles[1].allowed_actions = ['discard'];
     state.outage = true;
     await route.fulfill({ json: { ok: true } });
   });
@@ -228,5 +230,49 @@ test('a refused task action remains visible across polling until the next action
     expect(writes).toBe(2);
   } finally {
     retry.resolve();
+  }
+});
+
+test('updated task details mark retained evidence stale while its replacement is pending', async ({
+  page,
+  isMobile
+}) => {
+  const taskPath = '**/api/tasks/task-reviewed';
+  const replacement = deferred();
+  let updated = false;
+  let evidenceReads = 0;
+  await page.route(taskPath, async (route) => {
+    const task = await (await route.fetch()).json();
+    if (updated) {
+      task.proposal.title = 'Updated task awaiting replacement evidence';
+      task.updated_at = '2026-10-11T00:00:00Z';
+    }
+    await route.fulfill({ json: task });
+  });
+  await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+    if (++evidenceReads > 1) await replacement.promise;
+    await route.continue();
+  });
+  await page.clock.install();
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  const dialog = page.getByRole('dialog');
+  const stale = dialog.getByText('Retained · stale', { exact: true });
+  await expect(dialog.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+  await expect(stale).toHaveCount(0);
+  try {
+    updated = true;
+    await nextPoll(page, taskPath);
+    await expect(
+      dialog.getByRole('heading', { name: 'Updated task awaiting replacement evidence' })
+    ).toBeVisible();
+    await expect.poll(() => evidenceReads).toBe(2);
+    await expect(dialog.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+    await expect(stale).toBeVisible();
+    replacement.resolve();
+    await expect(stale).toHaveCount(0);
+  } finally {
+    replacement.resolve();
   }
 });

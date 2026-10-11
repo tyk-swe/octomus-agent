@@ -14,10 +14,13 @@ const (
 	MergeResultObserved  = "observed"
 )
 
-func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge *model.AutoMergeState) error {
+// CompletePublication returns the committed task, including any preserved merge snapshot.
+// An error leaves its input and every coupled publication record unchanged.
+func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge *model.AutoMergeState) (model.Task, error) {
+	task = task.Clone()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.transaction(true, func(c *sql.Conn) error {
+	err := s.transaction(true, func(c *sql.Conn) error {
 		repository := task.Config.GitHubRepo
 		var stored model.Task
 		found, err := txGet(c, "task", task.ID, &stored)
@@ -84,6 +87,10 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 		}
 		return txEvent(c, task.ID, "status", "Published")
 	})
+	if err != nil {
+		return model.Task{}, err
+	}
+	return task, nil
 }
 
 func preserveAutoMerge(previous *model.PRObservation, p model.PullRequest) *model.AutoMergeState {
@@ -318,10 +325,8 @@ func (s *Store) SettleMerge(repository string, number uint64, expected model.Aut
 	})
 }
 
-func (s *Store) RevokeTaskMerges(taskID, reason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rows, err := s.conn.QueryContext(background, maintenanceRevokeQuery, taskID)
+func txRevokeTaskMerges(c *sql.Conn, taskID, reason string) error {
+	rows, err := c.QueryContext(background, maintenanceRevokeQuery, taskID)
 	if err != nil {
 		return err
 	}
@@ -356,7 +361,7 @@ func (s *Store) RevokeTaskMerges(taskID, reason string) error {
 		if merge.Status != model.AutoMergeMerging && merge.Status != model.AutoMergeUncertain {
 			merge.Status = model.AutoMergeManual
 		}
-		if err := txPut(s.conn, "pr", record.id, record.observation); err != nil {
+		if err := txPut(c, "pr", record.id, record.observation); err != nil {
 			return err
 		}
 	}

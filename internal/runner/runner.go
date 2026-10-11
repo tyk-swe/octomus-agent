@@ -180,8 +180,7 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 		if config.SamePath(client.cwd, cwd) {
 			return client.adapter, nil
 		}
-		delete(r.clients, backend)
-		if err := client.adapter.Close(); err != nil {
+		if err := r.release(backend); err != nil {
 			return nil, err
 		}
 	}
@@ -198,18 +197,25 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 // broker could not confirm, makes the runner unavailable, as one that failed to start does.
 func (r *Runners) Release() error {
 	errs := []error{}
-	for backend, client := range r.clients {
-		delete(r.clients, backend)
-		err := client.adapter.Close()
-		if sandbox.Infrastructure(err) {
-			err = unavailable(err)
-		}
-		errs = append(errs, err)
-		if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
-			r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())
-		}
+	for backend := range r.clients {
+		errs = append(errs, r.release(backend))
 	}
 	return errors.Join(errs...)
+}
+
+// release settles one owned adapter, whether the turn ended or a different root replaces it. Both paths retain
+// sandbox evidence and classify an unconfirmed child end as infrastructure failure before starting another child.
+func (r *Runners) release(backend config.Backend) error {
+	client := r.clients[backend]
+	delete(r.clients, backend)
+	err := client.adapter.Close()
+	if sandbox.Infrastructure(err) {
+		err = unavailable(err)
+	}
+	if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
+		r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())
+	}
+	return err
 }
 
 // TakeEvidence returns what the sandboxes of released runners recorded since the last call.

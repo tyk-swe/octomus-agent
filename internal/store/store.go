@@ -125,7 +125,7 @@ func (s *Store) Close() error {
 }
 
 type ReadOnly struct {
-	Conn *sql.Conn
+	conn *sql.Conn
 	db   *sql.DB
 }
 
@@ -159,19 +159,19 @@ func openReadOnly(path, what string, plan schemaPlan) (*ReadOnly, error) {
 		db.Close()
 		return nil, err
 	}
-	return &ReadOnly{Conn: conn, db: db}, nil
+	return &ReadOnly{conn: conn, db: db}, nil
 }
 
 func (r *ReadOnly) Close() error {
-	err := r.Conn.Close()
+	err := r.conn.Close()
 	if closeErr := r.db.Close(); err == nil {
 		err = closeErr
 	}
 	return err
 }
 
-func (r *ReadOnly) Snapshot(fn func(c *sql.Conn) error) error {
-	return runTx(r.Conn, "BEGIN", fn)
+func (r *ReadOnly) snapshot(fn func(c *sql.Conn) error) error {
+	return runTx(r.conn, "BEGIN", fn)
 }
 
 func (s *Store) transaction(immediate bool, fn func(c *sql.Conn) error) error {
@@ -337,14 +337,14 @@ func (s *Store) AppendCycleSession(cycleID string, session model.Session) error 
 func Get[T any](s *Store, kind, id string) (*T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return RecordAt[T](s.conn, kind, id)
+	return recordAt[T](s.conn, kind, id)
 }
 
 func List[T any](s *Store, kind string) ([]T, error) {
 	return listRecords[T](s, "SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC", kind)
 }
 
-func RecordAt[T any](c *sql.Conn, kind, id string) (*T, error) {
+func recordAt[T any](c *sql.Conn, kind, id string) (*T, error) {
 	var value T
 	found, err := txGet(c, kind, id, &value)
 	if err != nil || !found {
@@ -353,7 +353,7 @@ func RecordAt[T any](c *sql.Conn, kind, id string) (*T, error) {
 	return &value, nil
 }
 
-func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
+func queryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
 	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
@@ -395,7 +395,7 @@ func scanAll[T any](rows *sql.Rows, fields func(*T) []any) ([]T, error) {
 func listRecords[T any](s *Store, query string, args ...any) ([]T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return QueryRecords[T](s.conn, query, args...)
+	return queryRecords[T](s.conn, query, args...)
 }
 
 func (s *Store) Event(entity, kind, message string) error {
@@ -472,24 +472,10 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 	})
 }
 
-// Admissions is the whole admission ledger in order, for the usage report.
-func Admissions(c *sql.Conn) ([]Admission, error) {
-	return QueryRecords[Admission](c, "SELECT data FROM admissions ORDER BY at,id")
-}
-
 // DaySessions is one day's durable session counter.
 type DaySessions struct {
 	Day      string
 	Sessions uint64
-}
-
-// DailySessions is every day's session counter in day order, for the usage report.
-func DailySessions(c *sql.Conn) ([]DaySessions, error) {
-	rows, err := c.QueryContext(background, "SELECT day,sessions FROM usage ORDER BY day")
-	if err != nil {
-		return nil, err
-	}
-	return scanAll(rows, func(day *DaySessions) []any { return []any{&day.Day, &day.Sessions} })
 }
 
 func sessionsOn(c *sql.Conn, day string) (int64, error) {

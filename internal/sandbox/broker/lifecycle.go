@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +16,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 )
 
-// prepared is a created container with its attach stream already registered, not yet started.
+// prepared owns a sandbox's admission, lease and container cleanup. An empty id means creation is unconfirmed;
+// cleanup must first observe its reserved name, then remove the resulting ID before releasing capacity.
 type prepared struct {
 	b     *Broker
 	id    string
@@ -28,7 +30,7 @@ type prepared struct {
 	// release gives the sandbox's admission slot back, once its removal is confirmed.
 	release func()
 	once    sync.Once
-	removed error
+	cleanup cleanupOutcome
 }
 
 const (
@@ -82,42 +84,56 @@ func (b *Broker) prepare(ctx, base context.Context, p plan, release func()) (*pr
 	id, warnings, err := b.engine.containerCreate(createCtx, name, spec)
 	cancel()
 	if err != nil {
-		if lease != "" {
-			b.leases.Revoke(lease)
-		}
-		// A create cut short can still finish in the daemon; removing by name finds the container if it already has.
-		removeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := b.engine.containerRemove(removeCtx, name); err != nil {
-			b.logf("Removing sandbox %s after its create failed did not succeed; the next sweep removes it: %v", name, err)
-		}
-		cancel()
 		var refused *dockerError
-		if !errors.As(err, &refused) {
-			// The daemon never answered, so the create may still be running, and it cannot be found until it ends.
-			b.removeLate(name)
+		if errors.As(err, &refused) && (refused.Status == http.StatusBadRequest || refused.Status == http.StatusConflict) {
+			// A rejected create owns no container. Never delete a conflicting container belonging to another request.
+			if lease != "" {
+				if revokeErr := b.leases.Revoke(lease); revokeErr != nil {
+					b.logf("Revoking the egress lease of rejected sandbox %s failed; the broker retries it: %v", name, revokeErr)
+					b.reap(&prepared{b: b, name: name, lease: lease}, cleanupOutcome{lease: revokeErr})
+					err = errors.Join(err, fmt.Errorf("Revoking the sandbox egress lease: %w", revokeErr))
+				}
+			}
+			release()
+			return nil, fmt.Errorf("Creating the sandbox: %w", err)
 		}
-		release()
+		s := &prepared{b: b, name: name, lease: lease, release: release}
+		if refused != nil {
+			// The daemon finished the request with a failure; a remove-by-name can confirm any partial container absent.
+			s.id = name
+		}
+		b.mu.Lock()
+		b.live[s] = struct{}{}
+		b.mu.Unlock()
+		cleanupWait := 10 * time.Second
+		if base.Err() != nil {
+			// Shutdown's independent final sweep owns remaining cleanup; preparation must not hold HTTP shutdown open.
+			cleanupWait = 0
+		}
+		removeCtx, cancel := context.WithTimeout(context.Background(), cleanupWait)
+		cleanupErr := s.remove(removeCtx)
+		cancel()
+		if cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
 		return nil, fmt.Errorf("Creating the sandbox: %w", err)
 	}
-	b.mu.Lock()
-	b.live[id] = struct{}{}
-	b.mu.Unlock()
 	s := &prepared{b: b, id: id, name: name, image: spec.Image, lease: lease, granted: granted, release: release}
+	b.mu.Lock()
+	b.live[s] = struct{}{}
+	b.mu.Unlock()
 	if len(warnings) > 0 {
 		// Docker drops a limit the host cannot enforce and only warns; every limit in the spec is part of the boundary.
-		s.discard()
-		return nil, fmt.Errorf("Docker Engine would not enforce the sandbox spec: %s", strings.Join(warnings, " "))
+		return nil, errors.Join(fmt.Errorf("Docker Engine would not enforce the sandbox spec: %s", strings.Join(warnings, " ")), s.discard())
 	}
 	if err := ctx.Err(); err != nil {
-		s.discard()
-		return nil, fmt.Errorf("Creating the sandbox: %w", err)
+		return nil, errors.Join(fmt.Errorf("Creating the sandbox: %w", err), s.discard())
 	}
 	attachCtx, cancel := context.WithTimeout(ctx, attachTimeout)
 	attach, err := b.engine.containerAttach(attachCtx, id, p.stdin)
 	cancel()
 	if err != nil {
-		s.discard()
-		return nil, fmt.Errorf("Attaching to the sandbox: %w", err)
+		return nil, errors.Join(fmt.Errorf("Attaching to the sandbox: %w", err), s.discard())
 	}
 	s.attach = attach
 	return s, nil
@@ -146,8 +162,9 @@ type ending struct {
 	// result is the exit the daemon reported, if it did.
 	result *waitResult
 	// killed is set when a SIGKILL the daemon delivered, or the removal by force, stopped the sandbox.
-	killed bool
-	reason string
+	killed  bool
+	reason  string
+	outcome wire.ExitOutcome
 	// cut is set when the control stream closed, leaving nobody to report to.
 	cut bool
 	// err is a failure before the sandbox could report an exit.
@@ -187,10 +204,14 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 		attached <- demux(s.attach.reader, out.stdout, out.stderr)
 	}()
 	end := s.run(ctx, timeout, controls, input)
+	var earlyRevoke error
 	if end.startAttempted && !end.started && s.lease != "" {
 		// Cancelling the start request does not establish that Docker never started it. Cut its egress before
 		// collecting evidence and force-removing the known container ID, even if the daemon is still busy starting it.
-		s.b.leases.Revoke(s.lease)
+		earlyRevoke = s.b.leases.Revoke(s.lease)
+		if earlyRevoke != nil {
+			s.b.logf("Revoking the egress lease of sandbox %s before evidence collection failed; teardown retries it: %v", s.name, earlyRevoke)
+		}
 	}
 	if end.deadline.IsZero() {
 		end.deadline = time.Now().Add(teardownBudget)
@@ -207,13 +228,14 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 	var failure error
 	switch {
 	case end.cut:
-		report = wire.ExitReport{Killed: true, Error: streamClosed}
+		report = wire.ExitReport{Outcome: wire.ExitFailure, Killed: true, Error: streamClosed}
 		if end.startAttempted {
 			// The caller may already be gone, but a local caller can still retain the record of an uncertain run.
 			report.Sandbox = s.evidence(false, false)
 		}
 	case end.err != nil:
 		failure = end.err
+		report.Outcome = wire.ExitFailure
 		if end.startAttempted {
 			// A failed or unanswered start may still have run the program; preserve its evidence too.
 			report.Sandbox = s.evidence(s.oomKilled(within(5 * time.Second)))
@@ -222,7 +244,10 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 			}
 		}
 	default:
-		report = wire.ExitReport{Killed: end.killed, Error: end.reason}
+		report = wire.ExitReport{Outcome: wire.ExitCommand, Killed: end.killed, Error: end.reason}
+		if end.killed {
+			report.Outcome = end.outcome
+		}
 		// A sandbox that never reported its exit after a kill was removed by force without its state being read, so
 		// nothing says whether the memory limit killed a process in it.
 		oom, known := false, false
@@ -237,20 +262,30 @@ func (s *prepared) execute(ctx context.Context, timeout time.Duration, out outpu
 		switch {
 		case end.killed:
 		case truncated:
+			report.Outcome = wire.ExitFailure
 			report.Error = "Sandbox output was cut short after the sandbox ended"
 		case outErr != nil:
+			report.Outcome = wire.ExitFailure
 			report.Error = "Sandbox output failed: " + outErr.Error()
 		}
+	}
+	if earlyRevoke != nil && report.Sandbox != nil {
+		// Collection may have happened while an uncertain start still had authorization to reach the gateway.
+		report.Sandbox.Incomplete = true
 	}
 	removeCtx, cancel := context.WithDeadline(context.Background(), end.deadline)
 	removed := s.remove(removeCtx)
 	cancel()
+	if earlyRevoke != nil && s.cleanup.lease == nil {
+		s.b.logf("Revoked the egress lease of sandbox %s during teardown after the earlier failure", s.name)
+	}
 	switch {
 	case removed == nil || end.cut:
 	case failure != nil:
-		failure = fmt.Errorf("%w; removing the sandbox also failed: %v", failure, removed)
+		failure = fmt.Errorf("%w; sandbox cleanup also failed: %v", failure, removed)
 	default:
-		report.Killed, report.Error = false, "Removing the sandbox failed: "+removed.Error()
+		report.Outcome = wire.ExitFailure
+		report.Killed, report.Error = false, "Sandbox cleanup failed: "+removed.Error()
 	}
 	return report, failure
 }
@@ -290,11 +325,13 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 	defer retry.Stop()
 	var stopped <-chan time.Time
 	asked := ""
+	askedOutcome := wire.ExitCommand
 	// unanswered is set when a SIGKILL request failed without a refusal: the daemon may have delivered it.
 	unanswered := false
-	kill := func(reason string) {
+	kill := func(reason string, outcome wire.ExitOutcome) {
 		if end.deadline.IsZero() {
 			end.deadline, stopped, asked = time.Now().Add(teardownBudget), time.After(stopWait), reason
+			askedOutcome = outcome
 		}
 		killCtx, cancel := context.WithTimeout(context.Background(), killWait)
 		err := b.engine.containerKill(killCtx, s.id, "SIGKILL")
@@ -302,7 +339,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 		switch {
 		case err == nil:
 			if !end.killed {
-				end.killed, end.reason = true, reason
+				end.killed, end.reason, end.outcome = true, reason, outcome
 			}
 		case conflict(err) || notFound(err):
 			// It is no longer running: it ended on its own, or by an unanswered kill, and the wait reports how.
@@ -346,7 +383,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			if !end.deadline.IsZero() && !end.killed {
 				// A kill sent during startup may have found a merely created container. Starting later must not
 				// let it escape that request; its original teardown deadline still applies.
-				kill(asked)
+				kill(asked, askedOutcome)
 			} else if terminatePending {
 				terminate()
 			}
@@ -364,7 +401,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			// Docker answers a SIGKILL only once the container has stopped, so a busy daemon can deliver one after the
 			// request gave up: a SIGKILL's exit status after it was sent is that kill's.
 			if unanswered && !end.killed && result.StatusCode == sigkillStatus {
-				end.killed, end.reason = true, asked
+				end.killed, end.reason, end.outcome = true, asked, askedOutcome
 			}
 			return end
 		case err := <-errs:
@@ -374,16 +411,16 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 			if !end.started {
 				return startFailed(fmt.Errorf("%s: %w", wire.TimeLimitReason, context.DeadlineExceeded))
 			}
-			kill(wire.TimeLimitReason)
+			kill(wire.TimeLimitReason, wire.ExitTimeLimit)
 		case <-retry.C:
-			kill(asked)
+			kill(asked, askedOutcome)
 		case <-stopped:
 			if !end.started {
 				return startFailed(errors.New("Docker did not confirm the start after a kill request"))
 			}
 			b.logf("Sandbox %s did not report its exit after a kill; removing it by force", s.name)
 			if !end.killed {
-				end.killed, end.reason = true, asked
+				end.killed, end.reason, end.outcome = true, asked, askedOutcome
 			}
 			return end
 		case <-ctx.Done():
@@ -406,7 +443,7 @@ func (s *prepared) run(ctx context.Context, timeout time.Duration, controls <-ch
 				terminatePending = !end.started
 				terminate()
 			case msg.signal == wire.SignalKill:
-				kill("")
+				kill("", wire.ExitCommand)
 			}
 		}
 	}

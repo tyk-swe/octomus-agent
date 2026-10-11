@@ -39,7 +39,7 @@ func TestReviewPRSummaryDoesNotExposeCutToken(t *testing.T) {
 	cycle.Error = task.Error
 	must(t, s.Put("cycle", cycle.ID, cycle))
 	for _, kind := range []string{"pr", "task", "cycle"} {
-		page, err := s.HistoryPage(kind, store.HistoryQuery{})
+		page, err := summaryPage(s, kind, store.HistoryQuery{})
 		must(t, err)
 		if len(page.Items) != 1 {
 			t.Fatalf("%s history has %d records", kind, len(page.Items))
@@ -60,8 +60,8 @@ func TestReviewPRSummaryDoesNotExposeCutToken(t *testing.T) {
 	}
 	dashboard, err := s.Dashboard()
 	must(t, err)
-	for _, raw := range append(append(dashboard.Tasks, dashboard.Cycles...), dashboard.PRs...) {
-		if strings.Contains(string(raw), "ghp_abcdef") {
+	for _, summary := range []any{dashboard.Tasks, dashboard.Cycles, dashboard.PRs} {
+		if strings.Contains(string(marshaled(t, summary)), "ghp_abcdef") {
 			t.Fatal("dashboard bypassed the safe summary projection")
 		}
 	}
@@ -101,7 +101,7 @@ func TestSummaryMigrationRestoresCompleteText(t *testing.T) {
 		t.Fatal("summary migration replayed notification triggers")
 	}
 	for _, kind := range []string{"pr", "task", "cycle"} {
-		page, err := s.HistoryPage(kind, store.HistoryQuery{})
+		page, err := summaryPage(s, kind, store.HistoryQuery{})
 		must(t, err)
 		if len(page.Items) == 0 {
 			t.Fatalf("golden has no %s records", kind)
@@ -129,7 +129,7 @@ func TestSummaryUsesReadTimeEnvironment(t *testing.T) {
 	const probePath = "OCTOMUS_SUMMARY_PROBE_PATH"
 	if path := os.Getenv(probePath); path != "" {
 		s := open(t, path)
-		page, err := s.HistoryPage("pr", store.HistoryQuery{})
+		page, err := summaryPage(s, "pr", store.HistoryQuery{})
 		must(t, err)
 		title := decodeMap(t, page.Items[0])["pr"].(map[string]any)["title"].(string)
 		assertSummaryText(t, title, "rotated-cu", 200)

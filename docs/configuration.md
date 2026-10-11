@@ -183,3 +183,16 @@ For command-line options, environment variables, the optional attention webhook 
 planning context, see [deployment and operations](deployment.md#cli) and
 [architecture](architecture.md#planning). Keep account credentials in the service user's
 protected environment and runner settings, never in the repository.
+
+Configuration responses are display snapshots with a saved revision and transformation
+metadata. The dashboard's configuration draft owns that snapshot, editable values,
+line editors and explicit replacements. Unchanged multiline commands keep their
+original arrays; redacted or shortened previews cannot enter a patch until the
+operator explicitly replaces the field. Local discard restores the tab's snapshot;
+server reload accepts a newer snapshot only if no edits were made during the read.
+
+HTTP conflicts carry stable action codes alongside the operator message:
+`config_revision_conflict` offers a reload, `active_work` waits for operation to
+settle, and `unresolved_work` requires task resolution before changing repository,
+branch or delivery policy. The dashboard selects recovery actions from these codes,
+so editing diagnostics cannot change behavior.

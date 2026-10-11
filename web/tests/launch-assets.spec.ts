@@ -19,6 +19,9 @@ test('dashboard screenshot', async ({ page, baseURL }) => {
     snapshot.repository = 'synthetic-example/field-notes';
     snapshot.configured = true;
     snapshot.audit_configured = true;
+    snapshot.capabilities.resume = { allowed: true, reason: '' };
+    snapshot.capabilities.cycle = { allowed: true, reason: '' };
+    snapshot.capabilities.audit = { allowed: true, reason: '' };
     snapshot.pr_capacity = {
       limit: 5,
       owned_open: 1,

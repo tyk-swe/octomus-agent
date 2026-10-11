@@ -238,6 +238,13 @@ function posture(over: Partial<SandboxSelfTest> = {}): SandboxPosture {
 
 function setup(sandbox: SandboxPosture) {
   const status: SetupStatus = {
+    capabilities: {
+      pause: { allowed: true, reason: '' },
+      resume: { allowed: false, reason: '' },
+      cycle: { allowed: false, reason: '' },
+      audit: { allowed: false, reason: '' },
+      configure: { allowed: true, reason: '' }
+    },
     configured: false,
     audit_configured: false,
     paused: true,

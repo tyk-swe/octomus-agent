@@ -3,6 +3,7 @@ import { plural, relative } from './format';
 import { sandboxVerdict } from './sandbox';
 import type {
   Backend,
+  Capabilities,
   BaselineSummary,
   Config,
   CycleMode,
@@ -25,6 +26,7 @@ export type Preflight = {
   at: string;
 };
 export type SetupStatus = {
+  capabilities: Capabilities;
   configured: boolean;
   audit_configured: boolean;
   paused: boolean;
@@ -315,37 +317,17 @@ export function planningBlocker(capacity: PlanningCapacity | null | undefined): 
 }
 
 // Matches the server's runtime.idle: a merge worker keeps the service busy even after Pause.
-function activityIdle(status: SetupStatus): boolean {
-  return (
-    !status.cycle_active &&
-    !status.active_cycle_mode &&
-    !status.active_tasks &&
-    !status.baseline_active &&
-    !status.auto_merge_active
-  );
-}
-
 export function configurationEditable(status: SetupStatus | null): boolean {
-  return !!status && status.paused && activityIdle(status);
+  return !!status?.capabilities.configure.allowed;
 }
 
 export function controlEligibility(status: SetupStatus | null): Record<ControlAction, boolean> {
-  if (!status) return { resume: false, pause: false, cycle: false, audit: false };
-  const canPlan =
-    !status.recovery_error &&
-    !status.control_state_pending &&
-    !planningBlocker(status.planning_capacity) &&
-    configurationEditable(status);
+  const confirmed = !!status && !status.control_state_pending;
   return {
-    resume:
-      status.configured &&
-      !status.recovery_error &&
-      !status.control_state_pending &&
-      status.active_cycle_mode !== 'audit' &&
-      !status.baseline_active,
-    pause: status.configured && (!!status.recovery_error || status.active_cycle_mode !== 'audit'),
-    cycle: status.configured && canPlan,
-    audit: status.audit_configured && canPlan
+    resume: confirmed && !!status?.capabilities.resume.allowed,
+    pause: !!status?.capabilities.pause.allowed,
+    cycle: confirmed && !!status?.capabilities.cycle.allowed,
+    audit: confirmed && !!status?.capabilities.audit.allowed
   };
 }
 

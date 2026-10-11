@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -12,7 +11,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
-	"github.com/tyk-swe/octomus-agent/internal/workspace"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func idleDelay(base uint64, streak uint32) uint64 {
@@ -47,10 +46,13 @@ func (a *App) tick() error {
 	if err := a.interruptOrphanedCycles(); err != nil {
 		return a.blockRecovery(err)
 	}
-	if err := a.blockOrphanedPublications(); err != nil {
+	if err := a.blockOrphanedTasks(); err != nil {
 		return a.blockRecovery(err)
 	}
 	if err := a.settleCancelledSessions(); err != nil {
+		return a.blockRecovery(err)
+	}
+	if err := a.recoverBaselines(); err != nil {
 		return a.blockRecovery(err)
 	}
 	// Reset only after every maintenance recovery step succeeds.
@@ -71,7 +73,7 @@ func (a *App) tick() error {
 	}
 	a.startHousekeeping(cfg)
 	a.runtimeMu.Lock()
-	reconciling := a.runtime.reconciling
+	reconciling := a.runtime.reconciling()
 	baseline := a.runtime.baseline != nil
 	a.runtimeMu.Unlock()
 	if reconciling {
@@ -88,11 +90,36 @@ func (a *App) tick() error {
 	if control.Mode == model.OperatingModePaused {
 		return nil
 	}
-	if err := a.sandboxReady(); err != nil {
-		return err
-	}
+	// Readiness can refresh broker HTTP state. Operator controls must remain
+	// available while it waits; no admission is authorized by this snapshot.
+	var readyErr error
+	a.withoutGate(func() { readyErr = a.sandboxReady() })
 	if a.ctx.Err() != nil {
 		return nil
+	}
+	liveControl, err := a.Control()
+	if err != nil {
+		return err
+	}
+	liveConfig, err := a.Config()
+	if err != nil {
+		return err
+	}
+	if !sameOperatorControl(control, liveControl) || !wirejson.Equal(cfg, liveConfig) {
+		a.notify()
+		return nil
+	}
+	a.runtimeMu.Lock()
+	blocked := a.runtime.reconciling() || a.runtime.baseline != nil || a.runtime.planning()
+	a.runtimeMu.Unlock()
+	if blocked || a.recoveryConflict() != nil {
+		return nil
+	}
+	// Observation/backoff fields may change without changing operator intent.
+	// Continue with their latest values after accepting the intent check.
+	control, cfg = liveControl, liveConfig
+	if readyErr != nil {
+		return readyErr
 	}
 	if err := cfg.Validate(true); err != nil {
 		return err
@@ -206,7 +233,8 @@ func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	if err := a.pauseLocked(&control, nil); err != nil {
 		return err
 	}
-	return a.Store.Event("system", "run_complete", message)
+	_ = a.Store.Event("system", "run_complete", message)
+	return nil
 }
 
 func (a *App) startPlanning(cfg config.Config, control model.Control) error {
@@ -289,7 +317,8 @@ func (a *App) waitForCapacity(control model.Control, capacity model.PlanningCapa
 	if err := a.pauseLocked(&control, &message); err != nil {
 		return err
 	}
-	return a.Store.Event("system", "planning_capacity", message)
+	_ = a.Store.Event("system", "planning_capacity", message)
+	return nil
 }
 
 func (a *App) validateQueuedCycles(cfg config.Config, tasks []model.Task) (bool, error) {
@@ -394,9 +423,7 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if cancelled {
 			changed = true
 			task.Status = model.StatusCancelled
-			if err := a.Store.Event(task.ID, "operator", "cancel"); err != nil {
-				return changed, err
-			}
+			_ = a.Store.Event(task.ID, "operator", "cancel")
 		}
 	}
 	return changed, nil
@@ -545,10 +572,7 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 }
 
 func (a *App) runTask(task model.Task) {
-	ctx, cancel := context.WithCancel(a.ctx)
-	a.runtimeMu.Lock()
-	a.runtime.tasks[task.ID] = taskJob{branch: task.Branch, cancel: cancel}
-	a.runtimeMu.Unlock()
+	ctx, cancel := a.registerTaskWorker(task, executionWorker)
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
@@ -563,24 +587,7 @@ func (a *App) runTask(task model.Task) {
 			runErr = a.supervise(ctx, task.Clone())
 		}()
 		a.gate.Lock()
-		current, loadErr := store.Get[model.Task](a.Store, "task", task.ID)
-		interrupted := a.ctx.Err() != nil && current != nil && workspace.Initialized(*current)
-		if loadErr == nil && current != nil && current.Status.Active() && !interrupted {
-			if runErr == nil || errors.Is(runErr, context.Canceled) {
-				runErr = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
-			}
-			a.settleExitedTask(current, runErr)
-		} else if loadErr != nil {
-			// The final read could not establish whether a checkpoint remains.
-			// A successful recovery pass can safely clear this barrier.
-			a.setRecoveryError(loadErr)
-		}
-		a.runtimeMu.Lock()
-		delete(a.runtime.tasks, task.ID)
-		if loadErr != nil || (current != nil && current.Status == model.StatusCancelled) {
-			a.runtime.cancelScanDone = false
-		}
-		a.runtimeMu.Unlock()
+		a.finishTaskWorker(task.ID, runErr)
 		a.gate.Unlock()
 		a.notify()
 	}()

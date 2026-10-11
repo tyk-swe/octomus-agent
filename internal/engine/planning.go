@@ -243,7 +243,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		_ = a.Store.Event(cycle.ID, "grounding", fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))
 	}
 	limit := 100
-	history, err := a.Store.HistoryPage("task", store.HistoryQuery{Limit: &limit})
+	history, err := a.Store.TaskPage(store.HistoryQuery{Limit: &limit})
 	if err != nil {
 		return model.OpenPRInventory{}, err
 	}
@@ -443,7 +443,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	roleWorkspace := filepath.Join(roleRoot, "workspace")
 	outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
 		cycleID: cycleID, role: label, route: route, workspace: roleWorkspace,
-		prompt: prompt, schema: schema, ownsClients: true,
+		prompt: prompt, schema: schema,
 		prepare: func() error {
 			return a.withPlanningWorkspace(ctx, func() error {
 				return gitops.CloneAt(ctx, cfg, roleWorkspace, revision)

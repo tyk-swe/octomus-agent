@@ -5,6 +5,7 @@ package broker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -110,7 +111,7 @@ func TestKillReport(t *testing.T) {
 	t.Run("time limit before a kill", func(t *testing.T) {
 		e := newFakeEngine(t)
 		e.run = func(*fakeContainer) {}
-		if report := run(t, e, 100*time.Millisecond); !report.Killed || report.Error != wire.TimeLimitReason {
+		if report := run(t, e, 100*time.Millisecond); !report.Killed || report.Error != wire.TimeLimitReason || report.Outcome != wire.ExitTimeLimit {
 			t.Fatalf("kill after the time limit stopped it = %+v; want the time limit named", report)
 		}
 	})
@@ -131,16 +132,18 @@ func TestWaitErrorFailsSandbox(t *testing.T) {
 func TestServeShutdown(t *testing.T) {
 	creating, cancelled := make(chan struct{}), make(chan struct{})
 	var removed atomic.Bool
+	var reservedName atomic.Value
 	prefix := "/v" + engineAPIVersion + "/containers/"
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+prefix+"create", func(_ http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
+		reservedName.Store(r.URL.Query().Get("name"))
 		close(creating)
 		<-r.Context().Done()
 		close(cancelled)
 	})
 	mux.HandleFunc("GET "+prefix+"json", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `[{"Id":"leftover","Labels":{"octomus.sandbox.instance":"octomus"}}]`)
+		_ = json.NewEncoder(w).Encode([]containerSummary{{ID: "leftover", Names: []string{"/" + reservedName.Load().(string)}, Labels: map[string]string{instanceLabel: "octomus"}}})
 	})
 	mux.HandleFunc("DELETE "+prefix+"leftover", func(w http.ResponseWriter, _ *http.Request) {
 		removed.Store(true)
@@ -181,7 +184,7 @@ func TestServeShutdown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("shutdown did not cancel preparation")
 	}
 	<-requestDone

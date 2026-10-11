@@ -373,7 +373,9 @@ func TestLeases(t *testing.T) {
 	if other, _ := leases.Grant("octomus-test-verify", "verify"); other == token {
 		t.Fatal("two grants share a credential")
 	}
-	leases.Revoke(token)
+	if err := leases.Revoke(token); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, ok := leases.lookup(token); ok {
 		t.Fatal("a revoked lease is still live")
 	}

@@ -276,6 +276,13 @@ func Record(value any) ([]byte, error) {
 }
 
 func record(value any) ([]byte, error) {
+	return json.Marshal(NormalizeRecord(value))
+}
+
+// NormalizeRecord copies a record's top-level nil collections to empty JSON
+// collections. Composed serializers use it to retain a durable record's wire
+// semantics when flattening through an alias without its MarshalJSON method.
+func NormalizeRecord[T any](value T) T {
 	v := reflect.ValueOf(value)
 	copy := reflect.New(v.Type()).Elem()
 	copy.Set(v)
@@ -292,7 +299,7 @@ func record(value any) ([]byte, error) {
 			}
 		}
 	}
-	return json.Marshal(copy.Interface())
+	return copy.Interface().(T)
 }
 
 func Clone[T any](value T) T { return clone(reflect.ValueOf(value)).Interface().(T) }

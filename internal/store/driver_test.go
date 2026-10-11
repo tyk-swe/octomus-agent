@@ -19,7 +19,7 @@ func TestConnectionSettings(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
-	must(t, s.Snapshot(func(c *sql.Conn) error {
+	must(t, s.RawSnapshot(func(c *sql.Conn) error {
 		var mode string
 		var synchronous, busy, queryOnly int64
 		if err := c.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -43,7 +43,7 @@ func TestConnectionSettings(t *testing.T) {
 	must(t, err)
 	defer r.Close()
 	var busy int64
-	must(t, r.Conn.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy))
+	must(t, r.RawConn().QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy))
 	if busy != 5000 {
 		t.Fatalf("read-only busy_timeout %d", busy)
 	}
@@ -67,15 +67,15 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 	}
 	path := statePath(t)
 	s := open(t, path)
-	panics(s.Snapshot, "INSERT INTO records VALUES ('x','inside','1')")
+	panics(s.RawSnapshot, "INSERT INTO records VALUES ('x','inside','1')")
 	must(t, s.Put("x", "after", 1))
 	startBatch(t, s)
 
 	r, err := store.OpenReadOnly(path, "probe")
 	must(t, err)
 	defer r.Close()
-	panics(r.Snapshot, "SELECT count(*) FROM records")
-	must(t, r.Snapshot(func(*sql.Conn) error { return nil }))
+	panics(r.RawSnapshot, "SELECT count(*) FROM records")
+	must(t, r.RawSnapshot(func(*sql.Conn) error { return nil }))
 
 	must(t, s.Close())
 	s = open(t, path)
@@ -99,11 +99,11 @@ func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
 	must(t, err)
 	defer r.Close()
 	var seen int64
-	must(t, r.Conn.QueryRowContext(context.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
+	must(t, r.RawConn().QueryRowContext(context.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
 	if seen != 1 {
 		t.Fatalf("read-only handle sees %d records; it opened a different database", seen)
 	}
-	_, err = r.Conn.ExecContext(context.Background(), "INSERT INTO records VALUES ('x','ro','1')")
+	_, err = r.RawConn().ExecContext(context.Background(), "INSERT INTO records VALUES ('x','ro','1')")
 	if err == nil || !strings.Contains(err.Error(), "readonly") {
 		t.Fatalf("read-only write error = %v", err)
 	}

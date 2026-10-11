@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte';
-  import { api, get } from './api';
+  import { client } from './api';
+  import { Resource } from './resource';
   import Badge from './Badge.svelte';
   import { baselineStatusLabel, type Tone } from './evidence';
   import { relative } from './format';
@@ -35,9 +36,15 @@
     confirming = $state(false);
   let recoveryButton = $state<HTMLButtonElement>();
   let disposed = false;
-  let generation = 0;
   let lastSaved = untrack(() => savedRevision);
-  let request: AbortController | null = null;
+  const resource = new Resource(
+    (_key: string, signal) => client.baseline(signal),
+    (state) => {
+      view = state.value;
+      error = state.error;
+      loading = state.loading;
+    }
+  );
   const check = $derived(view?.check ?? acknowledgedCheck);
   const running = $derived(check?.status === 'running');
   const canStart = $derived(
@@ -60,50 +67,27 @@
   const statusTone = (status: BaselineCheck['status']): Tone =>
     status === 'passed' ? 'clean' : status === 'running' ? 'running' : 'failed';
   function stopRead() {
-    generation += 1;
-    request?.abort();
-    request = null;
-    loading = false;
+    resource.cancel();
   }
   async function load(force = false) {
-    if (disposed || !active || pending || (request && !force)) return;
-    request?.abort();
-    const controller = new AbortController();
-    const gen = ++generation;
-    request = controller;
-    loading = true;
-    try {
-      const next = await get<BaselineView>('/baseline-checks/latest', controller.signal);
-      if (gen === generation && !controller.signal.aborted) {
-        view = next;
-        error = '';
-        if (recoveryButton && document.activeElement === recoveryButton)
-          document.getElementById('baseline-heading')?.focus();
-        // Cancellation is acknowledged before the worker has necessarily stopped.
-        const awaitingCancellation =
-          cancellingId !== '' && next.check?.id === cancellingId && next.check.status === 'running';
-        // Keep the last known running resource when navigation clears the detail view.
-        acknowledgedCheck = next.check?.status === 'running' ? next.check : null;
-        if (!awaitingCancellation) {
-          actionRecovery = '';
-          cancellingId = '';
-        }
-      }
-    } catch (e) {
-      if (gen === generation && !controller.signal.aborted) error = (e as Error).message;
-    } finally {
-      if (gen === generation) {
-        request = null;
-        loading = false;
-      }
+    if (disposed || !active || pending) return;
+    const loaded = await resource.refresh(savedRevision, force);
+    if (!loaded || disposed || !view) return;
+    if (recoveryButton && document.activeElement === recoveryButton)
+      document.getElementById('baseline-heading')?.focus();
+    const awaitingCancellation =
+      cancellingId !== '' && view.check?.id === cancellingId && view.check.status === 'running';
+    acknowledgedCheck = view.check?.status === 'running' ? view.check : null;
+    if (!awaitingCancellation) {
+      actionRecovery = '';
+      cancellingId = '';
     }
   }
   $effect(() => {
     stopRead();
     confirming = false;
     if (!active) {
-      view = null;
-      error = '';
+      resource.clear();
       return;
     }
     untrack(() => void load());
@@ -126,7 +110,7 @@
   });
   onDestroy(() => {
     disposed = true;
-    stopRead();
+    resource.dispose();
   });
   async function openConfirm() {
     if (disposed || !canStart) return;
@@ -147,14 +131,11 @@
     stopRead();
     let accepted = false;
     try {
-      const next = await api<BaselineCheck>('/baseline-checks', 'POST', {
-        expected_revision: savedRevision
-      });
+      const next = await client.startBaseline(savedRevision);
       if (disposed) return;
       // Keep the returned resource available, including its cancel action, if the read fails.
       acknowledgedCheck = next;
-      view = null;
-      error = '';
+      resource.clear();
       actionRecovery = 'Baseline check started.';
       accepted = true;
     } catch (e) {
@@ -177,7 +158,7 @@
     stopRead();
     let accepted = false;
     try {
-      await api(`/baseline-checks/${encodeURIComponent(id)}/cancel`, 'POST');
+      await client.cancelBaseline(id);
       if (disposed) return;
       acknowledgedCheck = current;
       cancellingId = id;

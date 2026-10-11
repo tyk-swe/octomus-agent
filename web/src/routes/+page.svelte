@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { api, get, setToken, onUnauthorized } from '$lib/api';
+  import { client, setToken, onUnauthorized } from '$lib/api';
+  import { StateSession } from '$lib/stateSession';
   import type { Snapshot, TaskRow, Page, ProposalRow, PRObservation } from '$lib/types';
   import Badge from '$lib/Badge.svelte';
   import FilterTabs from '$lib/FilterTabs.svelte';
@@ -101,17 +102,29 @@
   function noteNavigationIntent() {
     navigationGeneration++;
   }
-  let refreshing = false;
-  let refreshQueued = false;
-  let refreshRequest = Promise.resolve();
-  let controlGeneration = 0;
   let controlStatePending = $state(false);
+  const stateSession = new StateSession(
+    client.state,
+    (snapshot) => {
+      data = snapshot;
+      connectionError = '';
+      lastUpdated = clockTime();
+      if (!listLoading) listRefresh++;
+    },
+    (failure) => {
+      if (connected) connectionError = failure.message;
+    },
+    (pending) => {
+      controlStatePending = pending;
+    }
+  );
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
   let latestCycle = $derived(data?.cycles[0]);
   const setupStatus = $derived<SetupStatus | null>(
     data
       ? {
+          capabilities: data.capabilities,
           configured: data.configured,
           audit_configured: data.audit_configured,
           paused: data.control.paused,
@@ -133,6 +146,19 @@
       : null
   );
   const canControl = $derived(controlEligibility(setupStatus));
+  async function cycleAction(cycle: string, action: 'archive' | 'discard') {
+    const currentSession = sessionGeneration;
+    busy = true;
+    pendingAction = action;
+    try {
+      await client.cycleAction(cycle, action);
+    } finally {
+      if (currentSession === sessionGeneration) {
+        busy = false;
+        pendingAction = '';
+      }
+    }
+  }
   async function chooseOnOverview(action: 'audit' | 'cycle') {
     await navigate('overview');
     document.getElementById(action === 'audit' ? 'run-audit-control' : 'run-once-control')?.focus();
@@ -180,31 +206,29 @@
     try {
       const params = new URLSearchParams({ limit: '50', q: search });
       if (before !== null) params.set('before', String(before));
-      let endpoint = 'tasks';
-      if (view === 'queue') params.set('status', filter);
-      if (view === 'proposals') {
-        endpoint = 'proposals';
+      let page;
+      if (view === 'queue') {
+        params.set('status', filter);
+        const result = await client.tasks(params, controller.signal);
+        if (current !== listGeneration || controller.signal.aborted) return;
+        filtered = result.items;
+        queueTabCounts = result.counts;
+        page = result;
+      } else if (view === 'proposals') {
         params.set('status', proposalFilter);
         params.set('cycle', proposalCycle);
-      }
-      if (view === 'prs') {
-        endpoint = 'prs';
+        const result = await client.proposals(params, controller.signal);
+        if (current !== listGeneration || controller.signal.aborted) return;
+        proposals = result.items;
+        proposalCounts = result.counts;
+        page = result;
+      } else {
         params.set('status', filter);
+        const result = await client.prs(params, controller.signal);
+        if (current !== listGeneration || controller.signal.aborted) return;
+        prRows = result.items;
+        page = result;
       }
-      const page = await get<Page<TaskRow | ProposalRow | PRObservation>>(
-        `/${endpoint}?${params}`,
-        controller.signal
-      );
-      if (current !== listGeneration || controller.signal.aborted) return;
-      if (view === 'queue') {
-        filtered = page.items as TaskRow[];
-        queueTabCounts = page.counts;
-      }
-      if (view === 'proposals') {
-        proposals = page.items as ProposalRow[];
-        proposalCounts = page.counts;
-      }
-      if (view === 'prs') prRows = page.items as PRObservation[];
       listNext = page.next_cursor;
       listLoaded = true;
       listError = '';
@@ -216,46 +240,10 @@
     }
   }
   function refresh() {
-    if (!connected) return Promise.resolve();
-    if (refreshing) {
-      refreshQueued = true;
-      return refreshRequest;
-    }
-    const currentSession = sessionGeneration;
-    refreshing = true;
-    refreshRequest = (async () => {
-      try {
-        do {
-          refreshQueued = false;
-          const currentControl = controlGeneration;
-          try {
-            const snapshot = await api<Snapshot>('/state');
-            if (currentSession !== sessionGeneration) return;
-            // A poll started before a successful control cannot describe its result.
-            if (currentControl !== controlGeneration) continue;
-            data = snapshot;
-            controlStatePending = false;
-            if (!listLoading) listRefresh++;
-            connectionError = '';
-            lastUpdated = clockTime();
-          } catch (e) {
-            if (
-              connected &&
-              currentSession === sessionGeneration &&
-              currentControl === controlGeneration
-            )
-              connectionError = (e as Error).message;
-          }
-        } while (currentSession === sessionGeneration && refreshQueued);
-      } finally {
-        if (currentSession === sessionGeneration) refreshing = false;
-      }
-    })();
-    return refreshRequest;
+    return connected ? stateSession.refresh() : Promise.resolve();
   }
   function baselineChanged() {
-    controlGeneration++;
-    controlStatePending = true;
+    stateSession.invalidate();
     // Accepted start/cancel owns baseline activity until a fresh state read
     // confirms the worker has finished, even when its panel is hidden.
     if (data) data.baseline_active = true;
@@ -264,8 +252,7 @@
   function configSaved() {
     // Readiness belongs to the newly saved configuration; an earlier poll
     // cannot confirm which work can start with it.
-    controlGeneration++;
-    controlStatePending = true;
+    stateSession.invalidate();
     void refresh();
   }
   async function login() {
@@ -273,7 +260,7 @@
     error = '';
     setToken(accessToken.trim());
     try {
-      data = await api<Snapshot>('/state');
+      data = await client.state();
       connected = true;
       connectionError = '';
       accessToken = '';
@@ -293,7 +280,7 @@
       error = 'Session expired. Connect again to inspect private records.';
     });
     const timer = setInterval(() => {
-      if (!refreshing) void refresh();
+      if (!stateSession.active) void refresh();
     }, 4000);
     return () => {
       clearInterval(timer);
@@ -346,13 +333,16 @@
     pendingAction = 'self-test';
     error = '';
     try {
-      await api('/sandbox/self-test', 'POST');
+      await client.selfTest();
+      if (currentSession !== sessionGeneration) return;
       await refresh();
     } catch (e) {
       if (currentSession === sessionGeneration) error = (e as Error).message;
     } finally {
-      busy = false;
-      pendingAction = '';
+      if (currentSession === sessionGeneration) {
+        busy = false;
+        pendingAction = '';
+      }
     }
   }
   async function control(action: ControlAction) {
@@ -364,10 +354,9 @@
     pendingAction = action;
     error = '';
     try {
-      const result = await api<Snapshot['control']>(`/control/${action}`, 'POST');
+      const result = await client.control(action);
       if (currentSession !== sessionGeneration) return;
-      controlGeneration++;
-      controlStatePending = true;
+      stateSession.invalidate();
       if (data) data.control = result;
       // Confirmed running operation must remain pausable while its state read waits.
       if (!result.paused) {
@@ -403,10 +392,7 @@
     panelOpener = null;
     listGeneration++;
     listRequest?.abort();
-    refreshing = false;
-    refreshQueued = false;
-    refreshRequest = Promise.resolve();
-    controlStatePending = false;
+    stateSession.reset();
     listLoading = false;
     listLoaded = false;
     listError = '';
@@ -689,9 +675,9 @@
           bind:search
           bind:filter={proposalFilter}
           bind:cycle={proposalCycle}
-          bind:busy
-          bind:pendingAction
-          bind:error
+          {busy}
+          {pendingAction}
+          onaction={cycleAction}
           onrefresh={refresh}
           oninspect={inspectRun}
           onintent={noteNavigationIntent}

@@ -655,7 +655,8 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	checkpoint := delivered.Clone()
 	checkpoint.Status = model.StatusPublishing
 	must(t, s.Put("task", delivered.ID, checkpoint))
-	must(t, s.CompletePublication(func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA))
+	_, err := s.CompletePublication(func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA)
+	must(t, err)
 	applied, err := s.SettleMerge("fixture/project", 5, *mergeA, model.AutoMergeManual, "The diff touches a sensitive path", "", nil, true)
 	if err != nil || !applied {
 		t.Fatalf("manual settle = %v, %v", applied, err)
@@ -676,7 +677,8 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	prB := pr
 	prB.Head = "out00002"
 	must(t, s.Put("task", superseding.ID, func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublishing; return p }()))
-	must(t, s.CompletePublication(func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB))
+	_, err = s.CompletePublication(func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB)
+	must(t, err)
 
 	value := exported(t, s, "cycle-a")
 	evidence := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge")
