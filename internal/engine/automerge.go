@@ -558,6 +558,7 @@ func (a *App) settleMerge(observation model.PRObservation, expected model.AutoMe
 
 func manualMergeReason(task model.Task, live config.Config) string {
 	footprint := task.MaintenanceFootprint
+	maxLines, maxFiles := model.AutoMergeLimits(task.Config, live)
 	switch {
 	case footprint == nil:
 		return "No trusted footprint evidence is recorded"
@@ -575,8 +576,7 @@ func manualMergeReason(task model.Task, live config.Config) string {
 		return "Sensitive changes require a manual merge"
 	case !task.Reviews[len(task.Reviews)-1].TrustedDiffComplete:
 		return "The complete trusted diff did not fit the review"
-	case *footprint.ChangedLines > min(task.Config.AutoMergeMaxLines, live.AutoMergeMaxLines) ||
-		*footprint.ChangedFiles > min(task.Config.AutoMergeMaxFiles, live.AutoMergeMaxFiles):
+	case *footprint.ChangedLines > maxLines || *footprint.ChangedFiles > maxFiles:
 		return "The full pull request footprint exceeds the automatic merge limits"
 	case slices.ContainsFunc(footprint.Paths, func(name string) bool { return config.ManualMergePath(name, live.AutoMergeExcludedPaths) }):
 		return "A changed path requires manual merge under the saved or live exclusions"

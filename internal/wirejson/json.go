@@ -111,13 +111,13 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 			}
 		}
 	default:
-		return fmt.Errorf("expected an object")
+		return errors.New("expected an object")
 	}
 	if _, err := dec.Token(); err != nil {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("trailing JSON data")
+		return errors.New("trailing JSON data")
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
@@ -138,7 +138,7 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 func decodeValue(raw []byte, v reflect.Value) error {
 	raw = bytes.TrimSpace(raw)
 	if bytes.Equal(raw, []byte("null")) && v.Kind() != reflect.Pointer && v.Kind() != reflect.Interface {
-		return fmt.Errorf("null is not allowed")
+		return errors.New("null is not allowed")
 	}
 	if _, ok := v.Addr().Interface().(json.Unmarshaler); ok {
 		return json.Unmarshal(raw, v.Addr().Interface())
@@ -148,7 +148,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		token, err := dec.Token()
 		if err != nil || token != json.Delim('{') {
-			return fmt.Errorf("expected a map")
+			return errors.New("expected a map")
 		}
 		result := reflect.MakeMap(v.Type())
 		seen := make(map[string]struct{})
@@ -344,7 +344,7 @@ func clone(v reflect.Value) reflect.Value {
 
 func ValidStrings(data []byte) error {
 	if !utf8.Valid(data) {
-		return fmt.Errorf("invalid UTF-8")
+		return errors.New("invalid UTF-8")
 	}
 	inString := false
 	for i := 0; i < len(data); i++ {
@@ -363,7 +363,7 @@ func ValidStrings(data []byte) error {
 			continue
 		}
 		if i+5 > len(data) {
-			return fmt.Errorf("invalid Unicode escape")
+			return errors.New("invalid Unicode escape")
 		}
 		n, err := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
 		if err != nil {
@@ -371,15 +371,15 @@ func ValidStrings(data []byte) error {
 		}
 		i += 4
 		if n >= 0xdc00 && n <= 0xdfff {
-			return fmt.Errorf("unpaired low surrogate")
+			return errors.New("unpaired low surrogate")
 		}
 		if n >= 0xd800 && n <= 0xdbff {
 			if i+7 > len(data) || string(data[i+1:i+3]) != `\u` {
-				return fmt.Errorf("unpaired high surrogate")
+				return errors.New("unpaired high surrogate")
 			}
 			low, err := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
 			if err != nil || low < 0xdc00 || low > 0xdfff {
-				return fmt.Errorf("unpaired high surrogate")
+				return errors.New("unpaired high surrogate")
 			}
 			i += 6
 		}

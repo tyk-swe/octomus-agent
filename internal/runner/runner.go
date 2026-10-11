@@ -123,7 +123,7 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 	case config.BackendOpencode:
 		return connectOpenCode(ctx, cfg, cwd, entity, progress, box)
 	}
-	return nil, fmt.Errorf("Invalid backend")
+	return nil, errors.New("Invalid backend")
 }
 
 func FinishTurn(answer string, schema schemas.Schema) (string, error) {

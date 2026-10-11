@@ -1,7 +1,7 @@
 package runner
 
 import (
-	"fmt"
+	"errors"
 	"sort"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -11,11 +11,11 @@ func Catalog(value any) ([]Model, error) {
 	doc, _ := asObject(value)
 	all, ok := asArray(doc["all"])
 	if !ok {
-		return nil, fmt.Errorf("Invalid OpenCode provider catalog")
+		return nil, errors.New("Invalid OpenCode provider catalog")
 	}
 	connectedRaw, ok := asArray(doc["connected"])
 	if !ok {
-		return nil, fmt.Errorf("Missing OpenCode provider availability")
+		return nil, errors.New("Missing OpenCode provider availability")
 	}
 	connected := map[string]bool{}
 	for _, c := range connectedRaw {
@@ -28,12 +28,12 @@ func Catalog(value any) ([]Model, error) {
 		provider, _ := asObject(p)
 		id, ok := strAt(provider, "id")
 		if !ok {
-			return nil, fmt.Errorf("Missing OpenCode provider identity")
+			return nil, errors.New("Missing OpenCode provider identity")
 		}
 		available := connected[id]
 		models, ok := asObject(provider["models"])
 		if !ok {
-			return nil, fmt.Errorf("Invalid OpenCode models")
+			return nil, errors.New("Invalid OpenCode models")
 		}
 		modelIDs := make([]string, 0, len(models))
 		for modelID := range models {
@@ -42,7 +42,7 @@ func Catalog(value any) ([]Model, error) {
 		sort.Strings(modelIDs)
 		for _, modelID := range modelIDs {
 			if len(out) >= 10000 {
-				return nil, fmt.Errorf("OpenCode catalog exceeds 10000 models")
+				return nil, errors.New("OpenCode catalog exceeds 10000 models")
 			}
 			m, _ := asObject(models[modelID])
 			capabilities, _ := asObject(m["capabilities"])

@@ -87,7 +87,7 @@ func ParseLoopbackURL(endpoint string) (string, error) {
 	if u.Scheme() != "http" || u.Hostname() != "127.0.0.1" || perr != nil || port <= 0 ||
 		u.Username() != "" || u.Password() != "" || strings.Contains(authority, "@") ||
 		u.Pathname() != "/" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("OpenCode did not bind to a local server address")
+		return "", errors.New("OpenCode did not bind to a local server address")
 	}
 	return fmt.Sprintf("http://127.0.0.1:%s", u.Port()), nil
 }

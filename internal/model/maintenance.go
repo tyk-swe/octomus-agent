@@ -61,8 +61,7 @@ func (t Task) MaintenanceMergeAuthorized(live config.Config) bool {
 			return false
 		}
 	}
-	maxLines := min(t.Config.AutoMergeMaxLines, live.AutoMergeMaxLines)
-	maxFiles := min(t.Config.AutoMergeMaxFiles, live.AutoMergeMaxFiles)
+	maxLines, maxFiles := AutoMergeLimits(t.Config, live)
 	if maxLines == 0 || maxFiles == 0 ||
 		*footprint.ChangedLines > maxLines || *footprint.ChangedFiles > maxFiles {
 		return false
@@ -85,4 +84,11 @@ func (t Task) MaintenanceMergeAuthorized(live config.Config) bool {
 		}
 	}
 	return true
+}
+
+// AutoMergeLimits is the effective automatic-merge footprint bound: the tighter of
+// the saved and live limits, each zero when either side leaves it unset.
+func AutoMergeLimits(saved, live config.Config) (lines, files uint64) {
+	return min(saved.AutoMergeMaxLines, live.AutoMergeMaxLines),
+		min(saved.AutoMergeMaxFiles, live.AutoMergeMaxFiles)
 }

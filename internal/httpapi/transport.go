@@ -198,11 +198,17 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
 		var jc *wirejson.Error
 		var ute *json.UnmarshalTypeError
 		if errors.As(err, &jc) || errors.As(err, &ute) {
-			return &bodyError{http.StatusUnprocessableEntity, fmt.Sprintf("Failed to deserialize the JSON body into the target type: %v", err)}
+			return deserializeBodyError(err)
 		}
 		return &bodyError{http.StatusBadRequest, fmt.Sprintf("Failed to parse the request body as JSON: %v", err)}
 	}
 	return nil
+}
+
+// deserializeBodyError is the one refusal for JSON that parses but does not match
+// the target type: strict decoding and a partial configuration patch share it.
+func deserializeBodyError(err error) *bodyError {
+	return &bodyError{http.StatusUnprocessableEntity, fmt.Sprintf("Failed to deserialize the JSON body into the target type: %v", err)}
 }
 
 type bodyError struct {

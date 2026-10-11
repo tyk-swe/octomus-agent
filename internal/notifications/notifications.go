@@ -275,31 +275,31 @@ func isTimeout(err error) bool {
 // webhookDestination normalizes the configured webhook URL and derives the stable identity its deliveries are keyed by.
 func webhookDestination(raw string) (normalized, identity string, err error) {
 	if raw == "" || len(raw) > 8192 {
-		return "", "", fmt.Errorf("Notification webhook URL is empty or exceeds the 8192-byte limit")
+		return "", "", errors.New("Notification webhook URL is empty or exceeds the 8192-byte limit")
 	}
 	u, err := whatwg.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("Notification webhook URL is not a valid URL")
+		return "", "", errors.New("Notification webhook URL is not a valid URL")
 	}
 	if u.Username() != "" || u.Password() != "" {
-		return "", "", fmt.Errorf("Notification webhook URL must not contain credentials")
+		return "", "", errors.New("Notification webhook URL must not contain credentials")
 	}
 	normalized = u.Href(false)
 	if strings.Contains(normalized, "#") {
-		return "", "", fmt.Errorf("Notification webhook URL must not contain a fragment")
+		return "", "", errors.New("Notification webhook URL must not contain a fragment")
 	}
 	if u.Hostname() == "" {
-		return "", "", fmt.Errorf("Notification webhook URL must contain a host")
+		return "", "", errors.New("Notification webhook URL must contain a host")
 	}
 	switch u.Protocol() {
 	case "https:":
 	case "http:":
 		ip, e := netip.ParseAddr(strings.Trim(u.Hostname(), "[]"))
 		if e != nil || !(ip.Is4() && ip.IsLoopback() || ip == netip.IPv6Loopback()) {
-			return "", "", fmt.Errorf("Plain HTTP notification webhooks require a loopback IP address")
+			return "", "", errors.New("Plain HTTP notification webhooks require a loopback IP address")
 		}
 	default:
-		return "", "", fmt.Errorf("Notification webhook URL must use https, or http for a loopback IP")
+		return "", "", errors.New("Notification webhook URL must use https, or http for a loopback IP")
 	}
 	return normalized, fmt.Sprintf("%x", sha256.Sum256([]byte(normalized))), nil
 }

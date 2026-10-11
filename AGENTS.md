@@ -36,7 +36,8 @@ strict typed JSON boundaries for saved records and API requests.
   rediscovery requests), `invocation.go` (role invocation: every agent turn's
   admission, session start or resume, session record and redaction),
   `execution.go` (task supervision, execution, repair and publication),
-  `review.go` (trusted change set and code-review turns), `verification.go`
+  `automerge.go` (guarded maintenance merge candidates, readiness, reconciliation
+  and revoke), `review.go` (trusted change set and code-review turns), `verification.go`
   (task verification commands, sandbox evidence and the shared output bound),
   `recovery.go` (restart recovery and the orphan scans every tick repeats),
   `controls.go` (operating-mode and configuration controls, audit start,
@@ -48,7 +49,8 @@ strict typed JSON boundaries for saved records and API requests.
   `housekeeping.go` (retention and storage measurement), `baseline.go`
   (clean-baseline checks, separate from task verification), `deployment.go`
   (deployment pinning, scratch roots, sandbox readiness and route validation),
-  `prompts.go` (the planning roles' prompts).
+  `maintenance_prompts.go` (maintenance-only delivery policy, discovery scopes and
+  repair context) and `prompts.go` (the planning roles' prompts).
 - `internal/runner`: runner-neutral model discovery, exact routing and dispatch
   (`runner.go`); `codex.go` (app-server protocol) and `opencode.go` (HTTP/SSE, with
   `opencode_policy.go` for the worker policy and `opencode_catalog.go`) implement it
@@ -65,8 +67,9 @@ strict typed JSON boundaries for saved records and API requests.
   release and the attention outbox; `schema.go` checks the version, creates fresh
   databases and runs the backup-then-migrate upgrade path over `migrations/`, with
   `export_test.go`'s plan hooks and the `testdata/state-v*.db` goldens exercising
-  it; `queries.go`, `capacity.go`, `notifications.go` and `baseline.go` serve
-  operational views, PR capacity, the outbox and baseline-check admission.
+  it; `queries.go`, `capacity.go`, `notifications.go`, `automerge.go` and
+  `baseline.go` serve operational views, PR capacity, the outbox, merge claims and
+  settlement, and baseline-check admission.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
   readiness and its stream connection (`opencode.go`), the in-sandbox helper
@@ -100,8 +103,10 @@ strict typed JSON boundaries for saved records and API requests.
   tests hold each schema to the `internal/model` type that decodes its answers.
 - `internal/git`: `git.go` (exec plumbing on the trusted `repo.git`), `clone.go`
   (split clones and the deployment's remote clone), `remote.go` (origin validation,
-  fetches and snapshots), `github.go` (gh inventory and PR reads) and `publish.go`
-  (publication). `internal/process`: `command.go` (the process-group child),
+  fetches and snapshots), `github.go` (gh inventory and PR reads), `publish.go`
+  (publication), `automerge.go` (merge-status reads and the guarded squash merge)
+  and `merge_destination.go` (enforcing the merge destination's GitHub ruleset).
+  `internal/process`: `command.go` (the process-group child),
   `capture.go` (bounded capture, redacted failure text and `RunMachine`, `RunText`
   and `RunPredicate`), `status.go` (how a child ended) and `deadline.go` (`Bounded`
   and `WithDeadline`). `internal/workspace`: managed-directory safety.
@@ -113,7 +118,8 @@ strict typed JSON boundaries for saved records and API requests.
   `types.ts` (the TypeScript mirror of the Go records), `api.ts` (the authenticated
   client), `format.ts` (relative times, sizes and short hashes), `evidence.ts`
   (verdict rules), `sandbox.ts` (the sandbox verdict), `setup.ts` (checklist steps),
-  `modelRoutes.ts` (route labels) and `limits.ts` (numeric bounds).
+  `modelRoutes.ts` (route labels), `limits.ts` (numeric bounds) and `cycleHistory.ts`
+  (the incremental, cursor-aware cycle history loader).
 - Go behavior tests sit beside each package (`*_test.go`); `internal/testutil`
   holds their shared polling and process helpers, a POSIX-shell `git`/`gh`
   dispatcher (`InstallFixtureCommands`) that relays into a fixture's `bin/`
@@ -143,9 +149,10 @@ strict typed JSON boundaries for saved records and API requests.
   `configuration.spec.ts` (revision conflicts, drafts, the setup checklist),
   `controls.spec.ts` (planning capacity, queued state refreshes, control eligibility
   and an audit), `recovery.spec.ts` (list retries and refused actions),
-  `run-evidence.spec.ts`, `sandbox.spec.ts`, `evidence.spec.ts` and
-  `control-eligibility.spec.ts`, which check dashboard rules without a page, and
-  `launch-assets.spec.ts`, which captures `docs/dashboard.png` only under `npm run launch:assets`.
+  `run-evidence.spec.ts`, `sandbox.spec.ts`, `maintenance.spec.ts`,
+  `evidence.spec.ts`, `control-eligibility.spec.ts` and `cycle-history.spec.ts`,
+  which check dashboard rules without a page, and `launch-assets.spec.ts`, which
+  captures `docs/dashboard.png` only under `npm run launch:assets`.
 - `docs/architecture.md` describes the operating contract.
 
 ## Build and verify

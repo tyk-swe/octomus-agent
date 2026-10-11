@@ -153,15 +153,15 @@ func currentDecisions(ctx context.Context, cfg config.Config, grounding model.Gr
 // names no paths, otherwise a digest of those paths' tree entries at that revision.
 func decisionFingerprint(ctx context.Context, cfg config.Config, revision string, paths []string) (string, error) {
 	if len(paths) > 40 {
-		return "", fmt.Errorf("Decision has too many relevant paths")
+		return "", errors.New("Decision has too many relevant paths")
 	}
 	for _, path := range paths {
 		if path == "" || strings.HasPrefix(path, "/") {
-			return "", fmt.Errorf("Decision paths must be repository-relative files")
+			return "", errors.New("Decision paths must be repository-relative files")
 		}
 		for i, part := range strings.Split(path, "/") {
 			if part == ".." || (part == "." && i == 0) {
-				return "", fmt.Errorf("Decision paths must be repository-relative files")
+				return "", errors.New("Decision paths must be repository-relative files")
 			}
 		}
 	}

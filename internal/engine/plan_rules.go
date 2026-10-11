@@ -1,10 +1,10 @@
 package engine
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -351,7 +351,7 @@ func externalContext(inventory model.OpenPRInventory) ([]model.ExternalPRContext
 			external = append(external, pr)
 		}
 	}
-	sort.Slice(external, func(i, j int) bool { return external[i].Number < external[j].Number })
+	slices.SortFunc(external, func(a, b model.PullRequest) int { return cmp.Compare(a.Number, b.Number) })
 	total := len(external)
 	result := []model.ExternalPRContext{}
 	bytesUsed := 2

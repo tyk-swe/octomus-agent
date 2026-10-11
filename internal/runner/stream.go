@@ -114,10 +114,10 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 		line, err := split.next(MaxMessage - frameBytes - 1)
 		switch {
 		case err == errLineLimit:
-			emit(valueResult{err: fmt.Errorf("OpenCode event exceeds 16 MB protocol limit")})
+			emit(valueResult{err: errors.New("OpenCode event exceeds 16 MB protocol limit")})
 			return
 		case err == io.EOF:
-			emit(valueResult{err: fmt.Errorf("OpenCode event stream disconnected")})
+			emit(valueResult{err: errors.New("OpenCode event stream disconnected")})
 			return
 		case err != nil:
 			emit(valueResult{err: err})
@@ -125,7 +125,7 @@ func sseLoop(ctx context.Context, body io.Reader, out chan<- valueResult) {
 		}
 		frameBytes += len(line) + 1
 		if !utf8.Valid(line) {
-			emit(valueResult{err: fmt.Errorf("Invalid OpenCode event encoding")})
+			emit(valueResult{err: errors.New("Invalid OpenCode event encoding")})
 			return
 		}
 		text := strings.TrimRight(string(line), "\r")

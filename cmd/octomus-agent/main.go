@@ -370,7 +370,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 		a.sandbox = mode
 	}
 	if a.dataDir == "" || (a.assets != nil && *a.assets == "") {
-		return a, "", fmt.Errorf("a nonempty path is required")
+		return a, "", errors.New("a nonempty path is required")
 	}
 	listenAddr, err := parseListen(a.listen)
 	if err != nil {
@@ -378,7 +378,7 @@ func parse(args []string, env func(string) (string, bool)) (arguments, string, e
 	}
 	a.listenAddr = listenAddr
 	if a.audit && a.mode != "--doctor" {
-		return a, "", fmt.Errorf("--audit requires --doctor")
+		return a, "", errors.New("--audit requires --doctor")
 	}
 	return a, "", nil
 }

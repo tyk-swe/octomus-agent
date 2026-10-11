@@ -3,6 +3,7 @@ package wirejson
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -28,7 +29,7 @@ func parse(data []byte) (any, error) {
 		return nil, err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return nil, fmt.Errorf("trailing JSON data")
+		return nil, errors.New("trailing JSON data")
 	}
 	return value, nil
 }
@@ -43,7 +44,7 @@ func parseValue(dec *json.Decoder, depth int) (any, error) {
 		return token, nil
 	}
 	if depth >= maxDepth {
-		return nil, fmt.Errorf("JSON exceeds the maximum nesting depth")
+		return nil, errors.New("JSON exceeds the maximum nesting depth")
 	}
 	var value any
 	switch delim {

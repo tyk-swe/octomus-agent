@@ -36,14 +36,14 @@ func historyQuery(r *http.Request) (store.HistoryQuery, error) {
 	if raw := first(values, "before"); raw != nil {
 		before, err := strconv.ParseInt(*raw, 10, 64)
 		if err != nil {
-			return query, &bodyError{http.StatusBadRequest, fmt.Sprintf("Invalid query string: %v", err)}
+			return query, invalidQuery(err)
 		}
 		query.Before = &before
 	}
 	if raw := first(values, "limit"); raw != nil {
 		limit, err := strconv.ParseUint(*raw, 10, 64)
 		if err != nil {
-			return query, &bodyError{http.StatusBadRequest, fmt.Sprintf("Invalid query string: %v", err)}
+			return query, invalidQuery(err)
 		}
 		v := int(min(limit, math.MaxInt))
 		query.Limit = &v
@@ -52,6 +52,10 @@ func historyQuery(r *http.Request) (store.HistoryQuery, error) {
 	query.Q = first(values, "q")
 	query.Cycle = first(values, "cycle")
 	return query, nil
+}
+
+func invalidQuery(err error) *bodyError {
+	return &bodyError{http.StatusBadRequest, fmt.Sprintf("Invalid query string: %v", err)}
 }
 
 func first(values map[string][]string, key string) *string {
@@ -169,7 +173,7 @@ func (a *api) saveConfig(w http.ResponseWriter, r *http.Request) (int, any, erro
 	if err != nil {
 		var patch *engine.ConfigPatchError
 		if errors.As(err, &patch) {
-			return 0, nil, &bodyError{http.StatusUnprocessableEntity, "Failed to deserialize the JSON body into the target type: " + patch.Error()}
+			return 0, nil, deserializeBodyError(patch)
 		}
 		return 0, nil, err
 	}

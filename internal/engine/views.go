@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -257,7 +257,7 @@ func (a *App) Doctor(ctx context.Context, cfg config.Config, mode model.CycleMod
 			backends = append(backends, named.Route.Backend)
 		}
 	}
-	sort.Slice(backends, func(i, j int) bool { return backends[i] < backends[j] })
+	slices.Sort(backends)
 	diagnostics := []runner.Diagnostics{}
 	models := []runner.Model{}
 	warnings := []string{}
