@@ -25,7 +25,13 @@
   import ReviewChangeSet from './ReviewChangeSet.svelte';
   import SandboxRun from './SandboxRun.svelte';
   import Sha from './Sha.svelte';
-  import type { Task, Event, TaskEvidence } from './types';
+  import {
+    ERROR_EVENT_KINDS,
+    type Task,
+    type TaskAction,
+    type Event,
+    type TaskEvidence
+  } from './types';
   let {
     id,
     onclose,
@@ -79,7 +85,7 @@
   );
   const feedback = createCopyFeedback();
   const TABS = ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'];
-  const ACTION_LABELS: Record<string, string> = {
+  const ACTION_LABELS: Record<TaskAction, string> = {
     retry: 'Retry task',
     cancel: 'Cancel task',
     supersede: 'Supersede and rediscover',
@@ -87,8 +93,8 @@
     archive: 'Archive task',
     discard: 'Discard workspace'
   };
-  const DESTRUCTIVE_ACTIONS = new Set(['discard', 'cancel']);
-  const ACTION_RESULTS: Record<string, string> = {
+  const DESTRUCTIVE_ACTIONS = new Set<TaskAction>(['discard', 'cancel']);
+  const ACTION_RESULTS: Record<TaskAction, string> = {
     retry: 'Task retry requested.',
     cancel: 'Task cancellation requested.',
     supersede: 'Rediscovery requested.',
@@ -146,7 +152,7 @@
   let checks = $derived(checksVerdict(evidence));
   let delivery = $derived(prVerdict(evidence));
   let outputSha = $derived(evidence?.revisions.output ?? null);
-  async function action(value: string) {
+  async function action(value: TaskAction) {
     if (disposed || busy || actionRecovery) return;
     busy = true;
     actionError = '';
@@ -523,7 +529,9 @@
           </p>{/if}
         <div class="activity-list">
           {#each events as event}<div class="activity-item">
-              <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}
+              <span
+                class={'activity-point ' +
+                  (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
               ></span>
               <div>
                 <p>{event.message}</p>

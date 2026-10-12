@@ -40,7 +40,7 @@ func (a *App) branchHasUnfinishedWork(repository, branch, exceptID string) (bool
 	if running {
 		return true, nil
 	}
-	return unfinishedBranchWork(a.Store, repository, branch, exceptID)
+	return unfinishedBranchWork(a.store, repository, branch, exceptID)
 }
 
 var settleMergeRecord = func(s *store.Store, repository string, number uint64, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) (bool, error) {
@@ -91,9 +91,9 @@ func (a *App) checkMerges(cfg config.Config, control model.Control) {
 	}
 	cursor := a.runtime.mergeCursor
 	a.runtimeMu.Unlock()
-	candidates, err := a.Store.MergeCandidates(cursor, mergePageSize)
+	candidates, err := a.store.MergeCandidates(cursor, mergePageSize)
 	if err == nil && len(candidates) == 0 && cursor != 0 {
-		candidates, err = a.Store.MergeCandidates(0, mergePageSize)
+		candidates, err = a.store.MergeCandidates(0, mergePageSize)
 	}
 	if err != nil {
 		a.setRecoveryError(err)
@@ -145,7 +145,7 @@ func (a *App) mergePass(ctx context.Context, control model.Control) {
 		a.runtimeMu.Lock()
 		cursor := a.runtime.mergeCursor
 		a.runtimeMu.Unlock()
-		candidates, err := a.Store.MergeCandidates(cursor, mergePageSize)
+		candidates, err := a.store.MergeCandidates(cursor, mergePageSize)
 		if err != nil {
 			a.setRecoveryError(err)
 			return
@@ -187,7 +187,7 @@ func (a *App) mergeCandidate(ctx context.Context, cfg config.Config, modeOff, pa
 	if merge == nil || (!merge.Status.Pending() && merge.Status != model.AutoMergeManual) {
 		return
 	}
-	task, err := store.Get[model.Task](a.Store, "task", merge.TaskID)
+	task, err := store.Get(a.store, store.Tasks.Key(merge.TaskID))
 	if err != nil {
 		a.setRecoveryError(err)
 		return
@@ -427,7 +427,7 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 	if a.recoveryConflict() != nil {
 		return
 	}
-	current, err := store.Get[model.Task](a.Store, "task", merge.TaskID)
+	current, err := store.Get(a.store, store.Tasks.Key(merge.TaskID))
 	if err != nil || current == nil {
 		return
 	}
@@ -449,7 +449,7 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 		!strings.EqualFold(current.Config.GitHubRepo, observation.Repository) {
 		return
 	}
-	cancelled, err := a.Store.Marked("cancel", merge.TaskID)
+	cancelled, err := a.store.CancelMarked(merge.TaskID)
 	if err != nil || cancelled {
 		return
 	}
@@ -462,7 +462,7 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 	intent.AttemptedAt = new(model.Now())
 	intent.Reason = "Squash merge in flight"
 	intent.ObservedAt = model.Now()
-	claimed, err := a.Store.ClaimMerge(observation.Repository, number, intent, allowManual)
+	claimed, err := a.store.ClaimMerge(observation.Repository, number, intent, allowManual)
 	if err != nil || !claimed {
 		return
 	}
@@ -520,7 +520,7 @@ func (a *App) clearMergeRecoveryError(key string) {
 }
 
 func (a *App) mergeConfirmed(task *model.Task, observation model.PRObservation, expected model.AutoMergeState, commit string) {
-	if ok, err := settleMergeRecord(a.Store, observation.Repository, observation.PR.Number, expected, model.AutoMergeMerged, "Squash merged by Octomus", store.MergeResultConfirmed, &commit, false); err != nil || !ok {
+	if ok, err := settleMergeRecord(a.store, observation.Repository, observation.PR.Number, expected, model.AutoMergeMerged, "Squash merged by Octomus", store.MergeResultConfirmed, &commit, false); err != nil || !ok {
 		if err == nil {
 			err = errors.New("The confirmed merge result could not be recorded")
 		}
@@ -528,7 +528,7 @@ func (a *App) mergeConfirmed(task *model.Task, observation model.PRObservation, 
 		return
 	}
 	a.clearMergeRecoveryError(mergeBarrierKey(observation.Repository, observation.PR.Number))
-	_ = a.Store.Event(task.ID, "automerge", fmt.Sprintf("Squash merged pull request %d at %s", observation.PR.Number, commit))
+	_ = a.store.Event(task.ID, model.EventAutomerge, fmt.Sprintf("Squash merged pull request %d at %s", observation.PR.Number, commit))
 	live, err := a.Config()
 	if err != nil {
 		return
@@ -542,7 +542,7 @@ func (a *App) mergeConfirmed(task *model.Task, observation model.PRObservation, 
 
 func (a *App) settleMerge(observation model.PRObservation, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) {
 	key := mergeBarrierKey(observation.Repository, observation.PR.Number)
-	applied, err := settleMergeRecord(a.Store, observation.Repository, observation.PR.Number, expected, status, reason, source, commit, revoke)
+	applied, err := settleMergeRecord(a.store, observation.Repository, observation.PR.Number, expected, status, reason, source, commit, revoke)
 	if err != nil {
 		a.setMergeRecoveryError(key, err)
 		return
@@ -551,7 +551,7 @@ func (a *App) settleMerge(observation model.PRObservation, expected model.AutoMe
 		a.clearMergeRecoveryError(key)
 	}
 	if applied && status != model.AutoMergeWaiting {
-		_ = a.Store.Event(expected.TaskID, "automerge", fmt.Sprintf("Automatic merge: %s — %s", status, reason))
+		_ = a.store.Event(expected.TaskID, model.EventAutomerge, fmt.Sprintf("Automatic merge: %s — %s", status, reason))
 		a.notify()
 	}
 }

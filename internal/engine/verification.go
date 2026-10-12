@@ -90,7 +90,7 @@ func (a *App) verificationCheckout(ctx context.Context, task *model.Task, revisi
 	}
 	return checkout, func() {
 		if err := workspace.RemoveOwnedDir(taskRoot, root); err != nil {
-			_ = a.Store.Event(task.ID, "cleanup_error", "verification checkout: "+redact.Error(err))
+			_ = a.store.Event(task.ID, model.EventCleanupError, "verification checkout: "+redact.Error(err))
 		}
 	}, nil
 }
@@ -129,7 +129,7 @@ func (a *App) keepSandboxEvidence(entity, command string, record *model.SandboxR
 	if err != nil {
 		return
 	}
-	_ = a.Store.Event(entity, "sandbox_evidence", strconv.Quote(command)+": "+string(data))
+	_ = a.store.Event(entity, model.EventSandboxEvidence, strconv.Quote(command)+": "+string(data))
 }
 
 // sandboxUnavailable blocks a task as runner_unavailable, which a retry clears, when the sandbox failed one of its

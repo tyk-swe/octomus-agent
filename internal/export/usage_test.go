@@ -50,7 +50,7 @@ func TestUsageReport(t *testing.T) {
 		StartedAt: "2026-09-12T02:00:00Z", Repository: "fixture/project",
 	}
 	for _, cycle := range []model.Cycle{finished, running} {
-		if err := s.Put("cycle", cycle.ID, cycle); err != nil {
+		if err := store.Put(s, store.Cycles.Key(cycle.ID), cycle); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -70,7 +70,7 @@ func TestUsageReport(t *testing.T) {
 	published := task("t3", "c1", "S")
 	published.Status = model.StatusPublished
 	for _, saved := range []model.Task{configured, unknown, published} {
-		if err := s.Put("task", saved.ID, saved); err != nil {
+		if err := store.Put(s, store.Tasks.Key(saved.ID), saved); err != nil {
 			t.Fatal(err)
 		}
 	}

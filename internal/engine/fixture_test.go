@@ -139,7 +139,7 @@ func (f *fixture) configure(t *testing.T, adjust func(*config.Config)) {
 	t.Helper()
 	cfg := f.cfg.Clone()
 	adjust(&cfg)
-	if err := f.state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(f.state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	f.cfg = cfg
@@ -158,13 +158,13 @@ func (f *fixture) pausedApp(t *testing.T, options ...Option) *App {
 func (f *fixture) newApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := f.pausedApp(t, options...)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	return app
 }
 
-func control(app *App, action string) error {
+func control(app *App, action model.ControlAction) error {
 	_, err := app.ControlAction(action)
 	return err
 }
@@ -209,7 +209,7 @@ func testConfig(repository string) config.Config {
 
 func saveSettings(t *testing.T, state *store.Store, cfg config.Config, control model.Control) {
 	t.Helper()
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.SaveControl(control); err != nil {
@@ -297,14 +297,14 @@ func executionTask(t *testing.T, f *fixture, target string) model.Task {
 
 func putTask(t *testing.T, f *fixture, task model.Task) {
 	t.Helper()
-	if err := f.state.Put("task", task.ID, task); err != nil {
+	if err := store.Put(f.state, store.Tasks.Key(task.ID), task); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func loadTask(t *testing.T, state *store.Store, id string) model.Task {
 	t.Helper()
-	task, err := store.Get[model.Task](state, "task", id)
+	task, err := store.Get(state, store.Tasks.Key(id))
 	if err != nil || task == nil {
 		t.Fatalf("load task %s: %+v, %v", id, task, err)
 	}
@@ -341,7 +341,7 @@ func driveTaskResult(ctx context.Context, f *fixture, app *App, taskID string) (
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			task, err := store.Get[model.Task](f.state, "task", taskID)
+			task, err := store.Get(f.state, store.Tasks.Key(taskID))
 			if err != nil {
 				return err
 			}

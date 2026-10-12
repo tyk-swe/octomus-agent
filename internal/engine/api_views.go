@@ -72,7 +72,7 @@ type ControlResult struct {
 // limits. Embedding preserves the established flat task response.
 type TaskDetail struct {
 	model.Task
-	AllowedActions         []string            `json:"allowed_actions"`
+	AllowedActions         []model.TaskAction  `json:"allowed_actions"`
 	EffectiveAttemptPolicy model.AttemptPolicy `json:"effective_attempt_policy"`
 	OperatingPolicy        OperatingPolicy     `json:"operating_policy"`
 }
@@ -88,7 +88,7 @@ func (v TaskDetail) MarshalJSON() ([]byte, error) {
 	type taskFields model.Task
 	return wirejson.Record(struct {
 		taskFields
-		AllowedActions         []string            `json:"allowed_actions"`
+		AllowedActions         []model.TaskAction  `json:"allowed_actions"`
 		EffectiveAttemptPolicy model.AttemptPolicy `json:"effective_attempt_policy"`
 		OperatingPolicy        OperatingPolicy     `json:"operating_policy"`
 	}{wirejson.NormalizeRecord(taskFields(v.Task)), v.AllowedActions, v.EffectiveAttemptPolicy, v.OperatingPolicy})

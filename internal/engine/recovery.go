@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -20,16 +19,16 @@ func (a *App) Recover() error {
 
 	// Store transactions check the saved configuration, so it must carry the identity this deployment pins even when
 	// OCTOMUS_GITHUB_REPO changed after the last save.
-	saved, err := store.Get[config.Config](a.Store, "settings", "config")
+	saved, err := store.Get(a.store, store.ConfigKey)
 	if err != nil {
 		return err
 	}
 	if saved != nil {
 		if pinned := a.deployment.pin(*saved); !wirejson.Equal(*saved, pinned) {
-			if err := a.Store.Put("settings", "config", pinned); err != nil {
+			if err := store.Put(a.store, store.ConfigKey, pinned); err != nil {
 				return err
 			}
-			_ = a.Store.Event("system", "configuration", "Saved configuration now names the repository this deployment pins")
+			_ = a.store.Event("system", model.EventConfiguration, "Saved configuration now names the repository this deployment pins")
 		}
 	}
 
@@ -40,7 +39,7 @@ func (a *App) Recover() error {
 	if err := a.recoverBaselines(); err != nil {
 		return err
 	}
-	candidates, err := a.Store.ReservableTasks()
+	candidates, err := a.store.ReservableTasks()
 	if err != nil {
 		return err
 	}
@@ -48,18 +47,18 @@ func (a *App) Recover() error {
 	// whose blocked attempt released its reservation waits for admission again.
 	for _, task := range candidates {
 		if task.Proposal.Target == task.Config.DefaultBranch && task.Status != model.StatusCancelled {
-			if err := a.Store.SeedPRReservation(task); err != nil {
+			if err := a.store.SeedPRReservation(task); err != nil {
 				return err
 			}
 		}
 	}
 
-	tasks, err := a.Store.ActiveTasks()
+	tasks, err := a.store.ActiveTasks()
 	if err != nil {
 		return err
 	}
 	for _, task := range tasks {
-		markedCancelled, err := a.Store.Marked("cancel", task.ID)
+		markedCancelled, err := a.store.CancelMarked(task.ID)
 		if err != nil {
 			return err
 		}
@@ -89,7 +88,7 @@ func (a *App) Recover() error {
 		if err := a.checkpointTask(&task); err != nil {
 			return err
 		}
-		_ = a.Store.Event(task.ID, "recovery", *task.Error)
+		_ = a.store.Event(task.ID, model.EventRecovery, *task.Error)
 	}
 
 	if err := a.settleCancelledSessions(); err != nil {
@@ -106,7 +105,7 @@ func (a *App) interruptOrphanedCycles() error {
 		activeID = a.runtime.cycle.id
 	}
 	a.runtimeMu.Unlock()
-	cycles, err := a.Store.RunningCycles(activeID)
+	cycles, err := a.store.RunningCycles(activeID)
 	if err != nil {
 		return err
 	}
@@ -115,7 +114,7 @@ func (a *App) interruptOrphanedCycles() error {
 		cycle.Status = model.CycleInterrupted
 		cycle.CompletedAt = new(model.Now())
 		cycle.Error = new(interruptedMsg)
-		if err := a.Store.Put("cycle", cycle.ID, cycle); err != nil {
+		if err := store.Put(a.store, store.Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
 	}
@@ -142,7 +141,7 @@ func (a *App) blockOrphanedTasks() error {
 	excluded := a.ownedTaskIDs()
 	a.runtimeMu.Unlock()
 	for {
-		tasks, err := a.Store.ActiveTasksExcept(excluded)
+		tasks, err := a.store.ActiveTasksExcept(excluded)
 		if err != nil {
 			return err
 		}
@@ -177,7 +176,7 @@ func (a *App) settleCancelledSessions() error {
 	}
 	excluded := a.ownedTaskIDs()
 	a.runtimeMu.Unlock()
-	tasks, err := a.Store.CancelledWithLiveSessions(excluded)
+	tasks, err := a.store.CancelledWithLiveSessions(excluded)
 	if err != nil {
 		return err
 	}
@@ -202,7 +201,7 @@ func (a *App) recoverBaselines() error {
 	a.runtimeMu.Lock()
 	active := a.runtime.baseline
 	a.runtimeMu.Unlock()
-	checks, err := a.Store.RunningBaselines()
+	checks, err := a.store.RunningBaselines()
 	if err != nil {
 		return err
 	}
@@ -220,7 +219,7 @@ func (a *App) recoverBaselines() error {
 }
 
 func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted string) error {
-	marked, err := a.Store.Marked("baseline_cancel", check.ID)
+	marked, err := a.store.BaselineCancelMarked(check.ID)
 	if err != nil {
 		return err
 	}
@@ -232,5 +231,5 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 	}
 	check.CompletedAt = new(model.Now())
 	check.Error = &message
-	return a.Store.Put("baseline", check.ID, *check)
+	return store.Put(a.store, store.Baselines.Key(check.ID), *check)
 }

@@ -20,7 +20,7 @@ func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 	state := testStore(t)
 	app := New(state, t.TempDir())
 	cfg := testConfig(t.TempDir())
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	control, err := app.Control()
@@ -49,7 +49,7 @@ func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 func TestAuditControlConflicts(t *testing.T) {
 	t.Parallel()
 	app, _ := controlFixture(t, "audit")
-	for _, action := range []string{"audit", "cycle", "resume"} {
+	for _, action := range []model.ControlAction{model.ControlAudit, model.ControlCycle, model.ControlResume} {
 		if _, err := app.ControlAction(action); err == nil || !IsActionConflict(err) {
 			t.Fatalf("%s during an audit: %v; want a conflict", action, err)
 		}
@@ -85,7 +85,7 @@ func TestStateViewStatus(t *testing.T) {
 			if check.err {
 				control.Error = new("recorded planning failure")
 			}
-			if err := app.Store.SaveControl(control); err != nil {
+			if err := app.store.SaveControl(control); err != nil {
 				t.Fatal(err)
 			}
 			app.runtimeMu.Lock()
@@ -102,7 +102,7 @@ func TestStateViewStatus(t *testing.T) {
 					Status: model.CycleRunning, StartedAt: model.Now(),
 					Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 				}
-				if err := app.Store.Put("cycle", cycle.ID, cycle); err != nil {
+				if err := store.Put(app.store, store.Cycles.Key(cycle.ID), cycle); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -210,7 +210,7 @@ func TestSaveConfigKeepsPinnedIdentity(t *testing.T) {
 			deployment := Deployment{Repository: t.TempDir(), GitHubRepo: "fixture/project"}
 			app := New(state, t.TempDir(), WithDeployment(deployment))
 			cfg := deployment.pin(config.Default())
-			if err := state.Put("settings", "config", cfg); err != nil {
+			if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 				t.Fatal(err)
 			}
 			loaded, err := app.Settings()
@@ -231,7 +231,7 @@ func TestSaveConfigKeepsPinnedIdentity(t *testing.T) {
 			}); err == nil {
 				t.Fatal("save accepted a different deployment identity")
 			}
-			stored, err := store.Get[config.Config](state, "settings", "config")
+			stored, err := store.Get(state, store.ConfigKey)
 			if err != nil {
 				t.Fatal(err)
 			}

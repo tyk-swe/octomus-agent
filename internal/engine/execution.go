@@ -27,12 +27,12 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		// Admission may commit after shutdown begins. This worker has not
 		// started execution, so defer it without consuming a retry attempt.
 		a.gate.Lock()
-		current, err := store.Get[model.Task](a.Store, "task", task.ID)
+		current, err := store.Get(a.store, store.Tasks.Key(task.ID))
 		if err != nil || current == nil || !current.Status.Active() {
 			a.gate.Unlock()
 			return err
 		}
-		operatorCancelled, err := a.Store.Marked("cancel", task.ID)
+		operatorCancelled, err := a.store.CancelMarked(task.ID)
 		if err == nil && !operatorCancelled {
 			err = a.transition(current, model.StatusQueued)
 		}
@@ -52,7 +52,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		return nil
 	}
 	if task.Status == model.StatusPublished {
-		_ = a.Store.Event(task.ID, "error", executeErr.Error())
+		_ = a.store.Event(task.ID, model.EventError, executeErr.Error())
 		return executeErr
 	}
 	timedOut := result.Expired && !result.AlreadyCancelled
@@ -62,13 +62,13 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	}
 	message := taskErr.Error()
 	shuttingDown := a.ctx.Err() != nil
-	operatorCancelled, _ := a.Store.Marked("cancel", task.ID)
+	operatorCancelled, _ := a.store.CancelMarked(task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
 		if err := a.checkpointTask(&task); err != nil {
-			_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
+			_ = a.store.Event(task.ID, model.EventWorkerError, redact.Error(err))
 			return err
 		}
-		_ = a.Store.Event(task.ID, "interrupted", message)
+		_ = a.store.Event(task.ID, model.EventInterrupted, message)
 		return nil
 	}
 	status := model.StatusBlocked
@@ -86,10 +86,10 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	}
 	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {
-		_ = a.Store.Event(task.ID, "worker_error", redact.Error(err))
+		_ = a.store.Event(task.ID, model.EventWorkerError, redact.Error(err))
 		return err
 	}
-	_ = a.Store.Event(task.ID, "error", message)
+	_ = a.store.Event(task.ID, model.EventError, message)
 	return nil
 }
 
@@ -251,7 +251,7 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 		next := task.Clone()
 		if task.Config.DeliveryMode == config.DeliveryModeMaintenance {
 			if footprintErr != nil {
-				_ = a.Store.Event(task.ID, "maintenance", "Footprint measurement is incomplete; the delivery can publish but stays manual: "+redact.Error(footprintErr))
+				_ = a.store.Event(task.ID, model.EventMaintenance, "Footprint measurement is incomplete; the delivery can publish but stays manual: "+redact.Error(footprintErr))
 			}
 			next.MaintenanceFootprint = footprint
 		}
@@ -276,7 +276,7 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 }
 
 func (a *App) publishedDependency(id string) (model.Task, error) {
-	dependency, err := store.Get[model.Task](a.Store, "task", id)
+	dependency, err := store.Get(a.store, store.Tasks.Key(id))
 	if err != nil {
 		return model.Task{}, err
 	}
@@ -526,7 +526,7 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 	if err != nil {
 		return err
 	}
-	committed, err := a.Store.CompletePublication(next, p, merge)
+	committed, err := a.store.CompletePublication(next, p, merge)
 	if err != nil {
 		return err
 	}
@@ -544,7 +544,7 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 func (a *App) checkpointTask(task *model.Task) error {
 	next := *task
 	next.UpdatedAt = model.Now()
-	if err := a.Store.SaveTask(next); err != nil {
+	if err := a.store.SaveTask(next); err != nil {
 		return err
 	}
 	*task = next
@@ -561,7 +561,7 @@ func (a *App) transition(task *model.Task, status model.Status) error {
 		return err
 	}
 	*task = next
-	_ = a.Store.Event(task.ID, "status", statusLabel(status))
+	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(status))
 	return nil
 }
 

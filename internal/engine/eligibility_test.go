@@ -34,7 +34,11 @@ func TestCapabilitiesShareControlBlockers(t *testing.T) {
 					t.Errorf("%s has no blocker", action)
 				}
 				if capability.Allowed && action != "configure" {
-					if err := controlBlocker(action, control, test.activity); err != nil {
+					var controlAction model.ControlAction
+					if err := controlAction.UnmarshalText([]byte(action)); err != nil {
+						t.Fatal(err)
+					}
+					if err := controlBlocker(controlAction, control, test.activity); err != nil {
 						t.Errorf("advertised %s refused by shared policy: %v", action, err)
 					}
 				}
@@ -89,7 +93,7 @@ func TestStateViewPreflightCapabilitiesMatchControls(t *testing.T) {
 			if _, err := app.SaveConfig("", nil); ActionCode(err) != ActiveWorkConflict || err.Error() != view.Capabilities.Configure.Reason {
 				t.Fatalf("configuration during %s preflight: %v; want advertised active-work blocker", mode, err)
 			}
-			for action, capability := range map[string]Capability{"cycle": view.Capabilities.Cycle, "audit": view.Capabilities.Audit} {
+			for action, capability := range map[model.ControlAction]Capability{model.ControlCycle: view.Capabilities.Cycle, model.ControlAudit: view.Capabilities.Audit} {
 				if capability.Allowed || capability.Reason == "" {
 					t.Fatalf("%s during %s preflight: %+v", action, mode, capability)
 				}
@@ -103,7 +107,7 @@ func TestStateViewPreflightCapabilitiesMatchControls(t *testing.T) {
 			if mode == model.CycleModeExecution && !view.Capabilities.Pause.Allowed {
 				t.Fatalf("pause unavailable during execution preflight: %+v", view.Capabilities.Pause)
 			}
-			if _, err := app.ControlAction("pause"); err != nil {
+			if _, err := app.ControlAction(model.ControlPause); err != nil {
 				t.Fatalf("pause during %s preflight: %v", mode, err)
 			}
 		})

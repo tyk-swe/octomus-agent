@@ -44,7 +44,8 @@ strict typed JSON boundaries for saved records and API requests.
   planning preflight and cycle start), `actions.go` (per-record cycle and task
   actions, reconciliation and owned-root removal), `views.go` (state, baseline,
   doctor, model-catalog and sandbox posture views and the containment
-  self-test), `capacity.go` (open-PR inventory claims and capacity),
+  self-test), `reads.go` (the HTTP API's read-only queries over saved state),
+  `capacity.go` (open-PR inventory claims and capacity),
   `observation.go` (default-branch and open-PR observation, context fingerprint),
   `housekeeping.go` (retention and storage measurement), `baseline.go`
   (clean-baseline checks, separate from task verification), `deployment.go`
@@ -60,16 +61,19 @@ strict typed JSON boundaries for saved records and API requests.
   connect with a redacted stderr tail. `runnertest` is the scripted adapter tests
   inject as the runner connector (engine `WithRunnerConnector`) in place of a runner
   process.
-- `internal/config`, `internal/model`, `internal/store`: policy, durable records
-  and SQLite. In the store, `store.go` holds records, transactions and admission
-  reservation; `schema.sql` is the complete fresh DDL, whose triggers maintain the
-  record projections, counts, batch membership, proposal rows, PR reservation
-  release and the attention outbox; `schema.go` checks the version, creates fresh
-  databases and runs the backup-then-migrate upgrade path over `migrations/`, with
-  `export_test.go`'s plan hooks and the `testdata/state-v*.db` goldens exercising
-  it; `queries.go`, `capacity.go`, `notifications.go`, `automerge.go` and
-  `baseline.go` serve operational views, PR capacity, the outbox, merge claims and
-  settlement, and baseline-check admission.
+- `internal/config`, `internal/model`, `internal/store`: policy, durable records and
+  SQLite. The model's `actions.go` holds the task, cycle and control action
+  vocabularies and `events.go` the activity event kinds (and which record failures).
+  In the store, `store.go` holds records, transactions and admission reservation;
+  `keys.go` holds the typed record keys (each record kind with its Go type, and the
+  settings keys); `schema.sql` is the complete fresh DDL, whose triggers maintain the
+  record projections, counts, batch membership, proposal rows, PR reservation release
+  and the attention outbox; `schema.go` checks the version, creates fresh databases
+  and runs the backup-then-migrate upgrade path over `migrations/`, with
+  `export_test.go`'s plan hooks and the `testdata/state-v*.db` goldens exercising it;
+  `queries.go`, `capacity.go`, `notifications.go`, `automerge.go` and `baseline.go`
+  serve operational views, PR capacity, the outbox, merge claims and settlement, and
+  baseline-check admission.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
   readiness and its stream connection (`opencode.go`), the in-sandbox helper
@@ -99,8 +103,9 @@ strict typed JSON boundaries for saved records and API requests.
   read-only exports of saved records (`export.go` opens one snapshot and
   redacts, `usage.go` is the usage report, `evidence.go` the `RunEvidenceV1`
   export). `internal/httpapi`: authenticated controls and embedded dashboard
-  serving. `internal/schemas`: structured-output schemas and validation; its
-  tests hold each schema to the `internal/model` type that decodes its answers.
+  serving; handlers reach saved state only through `engine.App` methods.
+  `internal/schemas`: structured-output schemas and validation; its tests hold
+  each schema to the `internal/model` type that decodes its answers.
 - `internal/git`: `git.go` (exec plumbing on the trusted `repo.git`), `clone.go`
   (split clones and the deployment's remote clone), `remote.go` (origin validation,
   fetches and snapshots), `github.go` (gh inventory and PR reads), `publish.go`

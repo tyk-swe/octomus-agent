@@ -23,7 +23,7 @@ func (a *App) StateView() (*StateView, error) {
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := a.Store.Dashboard()
+	snapshot, err := a.store.Dashboard()
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func (a *App) StateView() (*StateView, error) {
 	if err != nil {
 		return nil, err
 	}
-	planningCapacity, err := a.Store.PlanningCapacity(time.Now())
+	planningCapacity, err := a.store.PlanningCapacity(time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -39,15 +39,15 @@ func (a *App) StateView() (*StateView, error) {
 	if err != nil {
 		return nil, err
 	}
-	latest, err := a.Store.LatestBaseline()
+	latest, err := a.store.LatestBaseline()
 	if err != nil {
 		return nil, err
 	}
-	notifications, err := a.Store.NotificationHealth()
+	notifications, err := a.store.NotificationHealth()
 	if err != nil {
 		return nil, err
 	}
-	mergeCounts, err := a.Store.MergeCounts(cfg.GitHubRepo)
+	mergeCounts, err := a.store.MergeCounts(cfg.GitHubRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ func (a *App) StateView() (*StateView, error) {
 	}
 	a.runtimeMu.Unlock()
 	if !cycleActive {
-		running, err := a.Store.RunningCycles("")
+		running, err := a.store.RunningCycles("")
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +101,7 @@ func (a *App) StateView() (*StateView, error) {
 		summary := a.baselineSummary(latest, cfg)
 		baseline = &summary
 	}
-	storage, err := store.Get[storageUsage](a.Store, "settings", "storage")
+	storage, err := store.Get(a.store, storageKey)
 	if err != nil {
 		return nil, err
 	}
@@ -136,9 +136,12 @@ func (a *App) BaselineView(id *string) (*BaselineView, error) {
 	var check *model.BaselineCheck
 	var err error
 	if id != nil {
-		check, err = store.Get[model.BaselineCheck](a.Store, "baseline", *id)
+		check, err = store.Get(a.store, store.Baselines.Key(*id))
+		if err == nil && check == nil {
+			return nil, NotFound("Baseline check not found")
+		}
 	} else {
-		check, err = a.Store.LatestBaseline()
+		check, err = a.store.LatestBaseline()
 	}
 	if err != nil {
 		return nil, err
@@ -410,7 +413,7 @@ func (a *App) SandboxPosture() SandboxPosture {
 			}
 		}
 	}
-	if selfTest, err := store.Get[SandboxSelfTest](a.Store, "settings", selfTestRecord); err == nil && selfTest != nil {
+	if selfTest, err := store.Get(a.store, selfTestKey); err == nil && selfTest != nil {
 		if posture.Broker != nil && selfTest.matchesPosture(*posture.Broker, a.deployment) {
 			posture.SelfTest = selfTest
 		}
@@ -430,7 +433,7 @@ type SandboxSelfTest struct {
 	Error              *string              `json:"error"`
 }
 
-const selfTestRecord = "sandbox_self_test"
+var selfTestKey = store.Setting[SandboxSelfTest]("sandbox_self_test")
 
 // SelfTest runs the containment probe in a real sandbox and records what it observed. It proves the boundary
 // rather than describing it: every check is made from inside.
@@ -501,7 +504,7 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	if err := cancellation(); err != nil {
 		return record, err
 	}
-	if err := a.Store.Put("settings", selfTestRecord, record); err != nil {
+	if err := store.Put(a.store, selfTestKey, record); err != nil {
 		return record, err
 	}
 	return record, nil

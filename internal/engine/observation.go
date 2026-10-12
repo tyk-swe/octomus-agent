@@ -85,7 +85,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	} else if err != nil && !errors.Is(err, errStaleInventory) {
 		return err
 	}
-	inventory, err := a.Store.OpenPRInventory()
+	inventory, err := a.store.OpenPRInventory()
 	if err != nil || inventory == nil {
 		if err == nil {
 			err = errors.New("PR refresh did not persist an inventory")
@@ -101,7 +101,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 	limit := 100
 	closed := []model.PullRequest{}
 	for {
-		page, err := a.Store.PRPage(store.HistoryQuery{Before: before, Status: &status, Limit: &limit})
+		page, err := a.store.PRPage(store.HistoryQuery{Before: before, Status: &status, Limit: &limit})
 		if err != nil {
 			return err
 		}
@@ -148,7 +148,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	for _, pr := range closed {
-		if err := a.Store.RecordPRObservation(cfg.GitHubRepo, pr, false); err != nil {
+		if err := a.store.RecordPRObservation(cfg.GitHubRepo, pr, false); err != nil {
 			return err
 		}
 	}
@@ -157,7 +157,7 @@ func (a *App) observeRemote(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	applyContextFingerprint(&control, fingerprint, time.Now(), cfg.CycleIntervalSeconds)
-	return a.Store.SaveControl(control)
+	return a.store.SaveControl(control)
 }
 
 func applyContextFingerprint(control *model.Control, fingerprint string, now time.Time, interval uint64) {
@@ -270,12 +270,12 @@ func (a *App) savePRsLocked(observed config.Config, snapshot prSnapshot) (bool, 
 	if err != nil {
 		return false, err
 	}
-	persisted, err := a.Store.PersistPRInventory(snapshot.inventory, snapshot.released)
+	persisted, err := a.store.PersistPRInventory(snapshot.inventory, snapshot.released)
 	if err != nil || !persisted {
 		return false, err
 	}
 	for _, pr := range snapshot.owned {
-		if err := a.Store.RecordPRObservation(observed.GitHubRepo, pr, false); err != nil {
+		if err := a.store.RecordPRObservation(observed.GitHubRepo, pr, false); err != nil {
 			return true, err
 		}
 	}
@@ -289,7 +289,7 @@ func (a *App) savePRsLocked(observed config.Config, snapshot prSnapshot) (bool, 
 }
 
 func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inventory model.OpenPRInventory) ([]string, error) {
-	reservations, err := a.Store.PRReservations(cfg.GitHubRepo)
+	reservations, err := a.store.PRReservations(cfg.GitHubRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inv
 		if _, open := represented[reservation.Branch]; open {
 			continue
 		}
-		task, err := store.Get[model.Task](a.Store, "task", reservation.TaskID)
+		task, err := store.Get(a.store, store.Tasks.Key(reservation.TaskID))
 		if err != nil {
 			return nil, err
 		}

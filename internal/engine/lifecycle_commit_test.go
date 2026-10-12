@@ -112,7 +112,7 @@ func TestReconciliationSettlementRetainsPublicationFailure(t *testing.T) {
 	must0(t, err)
 	app := New(f.state, f.dataDir)
 	t.Cleanup(app.Shutdown)
-	err = app.TaskAction(task.ID, "reconcile")
+	err = app.TaskAction(task.ID, model.TaskActionReconcile)
 	if err == nil || !strings.Contains(err.Error(), "refuse publication settlement") {
 		t.Fatalf("publication settlement failure = %v", err)
 	}
@@ -172,14 +172,14 @@ func TestRetryCommitsPolicyAndCancelMarkerTogether(t *testing.T) {
 			if err := app.retryTask(&task); err == nil {
 				t.Fatal("retry was not refused")
 			}
-			marked, err := f.state.Marked("cancel", task.ID)
+			marked, err := f.state.CancelMarked(task.ID)
 			if err != nil || !marked || !wirejson.Equal(task, before) || !wirejson.Equal(loadTask(t, f.state, task.ID), before) {
 				t.Fatalf("refused retry partially committed: marker=%v error=%v task=%+v", marked, err, task)
 			}
 			events, err := f.state.Events(&task.ID)
 			must0(t, err)
 			for _, event := range events {
-				if event.Kind == "attempt_policy" {
+				if event.Kind == model.EventAttemptPolicy {
 					t.Fatal("policy evidence committed without its retry")
 				}
 			}
@@ -244,7 +244,7 @@ func TestBaselineSettlementRetainsRecoveryBarrier(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	check := makeCheck(f.cfg, model.BaselineStatusRunning)
-	must0(t, f.state.Put("baseline", check.ID, check))
+	must0(t, store.Put(f.state, store.Baselines.Key(check.ID), check))
 	db := f.rawDB(t)
 	_, err := db.Exec(`CREATE TRIGGER refuse_baseline BEFORE UPDATE ON records WHEN NEW.kind='baseline'
 		BEGIN SELECT RAISE(FAIL,'baseline settlement refused'); END`)
@@ -266,7 +266,7 @@ func TestBaselineSettlementRetainsRecoveryBarrier(t *testing.T) {
 	_, err = db.Exec("DROP TRIGGER refuse_baseline")
 	must0(t, err)
 	must0(t, app.tick())
-	saved, err := store.Get[model.BaselineCheck](f.state, "baseline", check.ID)
+	saved, err := store.Get(f.state, store.Baselines.Key(check.ID))
 	if err != nil || saved == nil || saved.Status != model.BaselineStatusInterrupted || app.recoveryConflict() != nil {
 		t.Fatalf("baseline did not recover its terminal state: %+v, %v", saved, err)
 	}
@@ -298,7 +298,7 @@ func TestBrokerReadinessDoesNotBlockPause(t *testing.T) {
 		t.Fatal("tick never reached the broker read")
 	}
 	paused := make(chan error, 1)
-	go func() { paused <- control(app, "pause") }()
+	go func() { paused <- control(app, model.ControlPause) }()
 	select {
 	case err := <-paused:
 		must0(t, err)

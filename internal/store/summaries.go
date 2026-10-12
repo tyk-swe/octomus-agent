@@ -38,7 +38,7 @@ type CycleSummary struct {
 	SessionCount   uint64                   `json:"session_count"`
 	Decisions      DecisionCounts           `json:"decisions"`
 	Lifecycle      model.WorkspaceLifecycle `json:"lifecycle"`
-	AllowedActions []string                 `json:"allowed_actions"`
+	AllowedActions []model.CycleAction      `json:"allowed_actions"`
 }
 
 // The indexed projection stores facts. Derived policy is attached only to the

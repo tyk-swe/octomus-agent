@@ -23,7 +23,7 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 	err := s.transaction(true, func(c *sql.Conn) error {
 		repository := task.Config.GitHubRepo
 		var stored model.Task
-		found, err := txGet(c, "task", task.ID, &stored)
+		found, err := txGet(c, Tasks.Key(task.ID), &stored)
 		if err != nil {
 			return err
 		}
@@ -46,7 +46,7 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 		if previous != nil && previous.AutoMerge != nil && previous.AutoMerge.TaskID != task.ID {
 			state := previous.AutoMerge.Clone()
 			var old model.Task
-			oldFound, err := txGet(c, "task", previous.AutoMerge.TaskID, &old)
+			oldFound, err := txGet(c, Tasks.Key(previous.AutoMerge.TaskID), &old)
 			if err != nil {
 				return err
 			}
@@ -62,7 +62,7 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 					PRNumber:   previous.PR.Number,
 					State:      state,
 				}
-				if err := txPut(c, "task", old.ID, old); err != nil {
+				if err := txPut(c, Tasks.Key(old.ID), old); err != nil {
 					return err
 				}
 			}
@@ -79,13 +79,13 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 			PR:            p,
 			AutoMerge:     merge,
 		}
-		if err := txPut(c, "task", task.ID, task); err != nil {
+		if err := txPut(c, Tasks.Key(task.ID), task); err != nil {
 			return err
 		}
-		if err := txPut(c, "pr", recordID, observation); err != nil {
+		if err := txPut(c, PRs.Key(recordID), observation); err != nil {
 			return err
 		}
-		return txEvent(c, task.ID, "status", "Published")
+		return txEvent(c, task.ID, model.EventStatus, "Published")
 	})
 	if err != nil {
 		return model.Task{}, err
@@ -248,10 +248,10 @@ func (s *Store) ClaimMerge(repository string, number uint64, intent model.AutoMe
 			return errRollback
 		}
 		observation.AutoMerge = &intent
-		if err := txPut(c, "pr", id, *observation); err != nil {
+		if err := txPut(c, PRs.Key(id), *observation); err != nil {
 			return err
 		}
-		return txEvent(c, intent.TaskID, "automerge",
+		return txEvent(c, intent.TaskID, model.EventAutomerge,
 			fmt.Sprintf("Automatic squash merge attempt %s recorded for %s", *intent.AttemptID, intent.Head))
 	})
 }
@@ -299,7 +299,7 @@ func (s *Store) SettleMerge(repository string, number uint64, expected model.Aut
 				merge.Reason = reason
 				merge.ObservedAt = model.Now()
 			}
-			return txPut(c, "pr", id, *observation)
+			return txPut(c, PRs.Key(id), *observation)
 		default:
 			return errRollback
 		}
@@ -321,7 +321,7 @@ func (s *Store) SettleMerge(repository string, number uint64, expected model.Aut
 		if status == model.AutoMergeMerged || status == model.AutoMergeClosed {
 			observation.PR.State = status.String()
 		}
-		return txPut(c, "pr", id, *observation)
+		return txPut(c, PRs.Key(id), *observation)
 	})
 }
 
@@ -361,7 +361,7 @@ func txRevokeTaskMerges(c *sql.Conn, taskID, reason string) error {
 		if merge.Status != model.AutoMergeMerging && merge.Status != model.AutoMergeUncertain {
 			merge.Status = model.AutoMergeManual
 		}
-		if err := txPut(c, "pr", record.id, record.observation); err != nil {
+		if err := txPut(c, PRs.Key(record.id), record.observation); err != nil {
 			return err
 		}
 	}

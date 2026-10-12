@@ -78,7 +78,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 
 	if inv.task == nil {
 		record := model.NewSession(session, inv.role, inv.route)
-		_ = a.Store.Event(inv.cycleID, "session_started", fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
+		_ = a.store.Event(inv.cycleID, model.EventSessionStarted, fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
 		// Planning roles run in their own goroutines, outside the task supervisor. Convert a turn panic before the
 		// session is finalized so the failed evidence is retained and the ordinary cycle failure path can join
 		// siblings and release ownership.
@@ -109,7 +109,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 			record.MarkFailed(redact.Error(turnErr))
 			answer = ""
 		}
-		if err := a.Store.AppendCycleSession(inv.cycleID, record); err != nil {
+		if err := a.store.AppendCycleSession(inv.cycleID, record); err != nil {
 			return answer, errors.Join(turnErr, err)
 		}
 		return answer, turnErr
@@ -249,7 +249,7 @@ func (a *App) admit(ctx context.Context, cycleID string, task *model.Task, role 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("Operation cancelled: %w", err)
 	}
-	return a.Store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
+	return a.store.ReserveSession(size, store.NewAdmission(cycleID, taskID, role, route))
 }
 
 func (a *App) measureLocked(ctx context.Context, owner string) (uint64, error) {

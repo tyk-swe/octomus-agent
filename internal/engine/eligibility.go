@@ -32,18 +32,18 @@ func (a *App) operationActivity() operationActivity {
 	return operationActivity{idle: a.runtime.idle(), audit: a.runtime.auditActive(), baseline: a.runtime.baseline != nil}
 }
 
-func controlBlocker(action string, control model.Control, activity operationActivity) error {
-	refused := (action == "audit" || action == "cycle") && (!control.Paused || !activity.idle) ||
-		(action == "resume" || action == "cycle") && activity.audit ||
-		action == "resume" && activity.baseline
+func controlBlocker(action model.ControlAction, control model.Control, activity operationActivity) error {
+	refused := (action == model.ControlAudit || action == model.ControlCycle) && (!control.Paused || !activity.idle) ||
+		(action == model.ControlResume || action == model.ControlCycle) && activity.audit ||
+		action == model.ControlResume && activity.baseline
 	switch {
 	case !refused:
 		return nil
 	case activity.baseline:
 		return codedConflict(ActiveWorkConflict, "Wait for the baseline check to finish.")
-	case action == "audit":
+	case action == model.ControlAudit:
 		return codedConflict(ActiveWorkConflict, "Audits require paused operation with no active work. Pause the service and wait for active work to finish.")
-	case action == "cycle":
+	case action == model.ControlCycle:
 		return codedConflict(ActiveWorkConflict, "Run once requires paused operation with no active work. Pause the service and wait for active work to finish.")
 	default:
 		return codedConflict(ActiveWorkConflict, "Wait for the audit to finish before starting continuous operation.")
@@ -51,8 +51,8 @@ func controlBlocker(action string, control model.Control, activity operationActi
 }
 
 func capabilities(control model.Control, cfg config.Config, activity operationActivity, recovery *string, capacity model.PlanningCapacity) Capabilities {
-	operation := func(action string) Capability {
-		if action != "pause" && recovery != nil {
+	operation := func(action model.ControlAction) Capability {
+		if action != model.ControlPause && recovery != nil {
 			return Capability{Reason: errRecoveryBlocked.Error()}
 		}
 		if err := controlBlocker(action, control, activity); err != nil {
@@ -60,14 +60,14 @@ func capabilities(control model.Control, cfg config.Config, activity operationAc
 		}
 		// Pausing an audit is an accepted API no-op; the dashboard avoids offering
 		// it while already paused. Recovery remains interruptible.
-		if action == "pause" && activity.audit && recovery == nil {
+		if action == model.ControlPause && activity.audit && recovery == nil {
 			return Capability{Reason: "Wait for the audit to finish."}
 		}
-		if action == "pause" {
+		if action == model.ControlPause {
 			return Capability{Allowed: true}
 		}
 		var err error
-		if action == "audit" {
+		if action == model.ControlAudit {
 			err = cfg.ValidateAudit()
 		} else {
 			err = cfg.Validate(true)
@@ -75,7 +75,7 @@ func capabilities(control model.Control, cfg config.Config, activity operationAc
 		if err != nil {
 			return Capability{Reason: err.Error()}
 		}
-		if action == "cycle" || action == "audit" {
+		if action == model.ControlCycle || action == model.ControlAudit {
 			if err := capacity.EnsureAvailable(); err != nil {
 				return Capability{Reason: err.Error()}
 			}
@@ -86,5 +86,5 @@ func capabilities(control model.Control, cfg config.Config, activity operationAc
 	if !configure.Allowed {
 		configure.Reason = "Pause and wait for active work to finish before changing configuration."
 	}
-	return Capabilities{Pause: operation("pause"), Resume: operation("resume"), Cycle: operation("cycle"), Audit: operation("audit"), Configure: configure}
+	return Capabilities{Pause: operation(model.ControlPause), Resume: operation(model.ControlResume), Cycle: operation(model.ControlCycle), Audit: operation(model.ControlAudit), Configure: configure}
 }

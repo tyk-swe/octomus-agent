@@ -6,7 +6,7 @@
   import Icon, { type IconName } from './Icon.svelte';
   import { sandboxVerdict } from './sandbox';
   import TaskList from './TaskList.svelte';
-  import { ACTIVE_STATUSES } from './types';
+  import { ACTIVE_STATUSES, ERROR_EVENT_KINDS } from './types';
   import type { CycleSummary, Snapshot } from './types';
 
   let {
@@ -372,10 +372,15 @@
     </div>
     <div class="activity-list">
       {#each data.events.slice(0, 6) as event}<div class="activity-item">
-          <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}></span>
+          <span
+            class={'activity-point ' +
+              (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
+          ></span>
           <div>
             <p>{event.message}</p>
-            <small>{event.kind === 'error' ? 'Error · ' : ''}{relative(event.at)}</small>
+            <small
+              >{ERROR_EVENT_KINDS.includes(event.kind) ? 'Error · ' : ''}{relative(event.at)}</small
+            >
           </div>
         </div>{:else}<div class="activity-item">
           <span class="activity-point"></span>

@@ -65,7 +65,7 @@ func TestInvocationAdmitsOncePerTurn(t *testing.T) {
 	script.Queue(routes.Repair,
 		runnertest.Reply{Answer: "Rewrote the draft", Effect: writeFile("feature.txt", "second draft\n")},
 		runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
-	if err := app.TaskAction(task.ID, "retry"); err != nil {
+	if err := app.TaskAction(task.ID, model.TaskActionRetry); err != nil {
 		t.Fatal(err)
 	}
 	saved = driveTask(t, f, app, task.ID)
@@ -301,7 +301,7 @@ func TestUnstartedSessionRecovery(t *testing.T) {
 			if err := os.WriteFile(marker, []byte("retain workspace\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.TaskAction(task.ID, "retry"); err != nil {
+			if err := app.TaskAction(task.ID, model.TaskActionRetry); err != nil {
 				t.Fatal(err)
 			}
 			saved := driveTask(t, f, app, task.ID)

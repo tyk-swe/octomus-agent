@@ -25,7 +25,7 @@ func saveConfig(t *testing.T, s *store.Store, edit func(*config.Config)) config.
 	t.Helper()
 	c := config.Default()
 	edit(&c)
-	must(t, s.Put("settings", "config", c))
+	must(t, store.Put(s, store.ConfigKey, c))
 	return c
 }
 
@@ -45,7 +45,7 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 1 })
-	must(t, s.Put("x", "a", []int{1, 2}))
+	must(t, store.Put(s, store.AnyKey[[]int]("x", "a"), []int{1, 2}))
 	must(t, s.ReserveSession(0, store.NewAdmission("cycle", nil, "discovery", config.NewRoute("fixture", "low"))))
 	if err := s.ReserveSession(0, store.NewAdmission("cycle", nil, "discovery", config.NewRoute("fixture", "low"))); err == nil {
 		t.Fatal("second reservation exceeded the daily budget")
@@ -54,7 +54,7 @@ func TestDurableAndBudgetAtomic(t *testing.T) {
 	}
 	must(t, s.Close())
 	s = open(t, path)
-	value, err := store.Get[[]int](s, "x", "a")
+	value, err := store.Get(s, store.AnyKey[[]int]("x", "a"))
 	must(t, err)
 	if value == nil || len(*value) != 2 || (*value)[0] != 1 || (*value)[1] != 2 {
 		t.Fatalf("durable record differs: %v", value)
@@ -201,7 +201,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 		"error": nil, "idle_streak": 3, "context_fingerprint": "",
 		"batch": map[string]any{"id": "run-1", "phase": "planning", "cycle_id": "cycle-1"},
 	}
-	must(t, s.Put("settings", "control", control))
+	must(t, putMap(s, store.ControlKey.Raw(), control))
 	queued := reviewTask()
 	queued.CycleID = "cycle-1"
 	plan := cycleFor(queued)
@@ -214,16 +214,16 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	}
 	assertEmpty := func(taskID string) {
 		t.Helper()
-		if c, _ := store.Get[model.Cycle](s, "cycle", "cycle-1"); c != nil {
+		if c, _ := store.Get(s, store.Cycles.Key("cycle-1")); c != nil {
 			t.Fatal("cycle survived the failed commit")
 		}
-		if tk, _ := store.Get[model.Task](s, "task", taskID); tk != nil {
+		if tk, _ := store.Get(s, store.Tasks.Key(taskID)); tk != nil {
 			t.Fatal("task survived the failed commit")
 		}
-		if d, _ := store.Get[any](s, "decision", "decision-1"); d != nil {
+		if d, _ := store.Get(s, store.Decisions.Key("decision-1")); d != nil {
 			t.Fatal("decision survived the failed commit")
 		}
-		saved, err := store.Get[any](s, "settings", "control")
+		saved, err := store.Get(s, store.ControlKey.Raw())
 		must(t, err)
 		if saved == nil || !equalJSON(t, *saved, control) {
 			t.Fatal(canonical(t, saved))
@@ -247,18 +247,18 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan.RunID = str("run-1")
 	plan.DecisionMemory = []model.DecisionRecord{{ID: "decision-1", Repository: "Fixture/Project"}}
 	must(t, s.CommitPlan(t.Context(), plan, []model.Task{valid}))
-	saved, err := store.Get[model.Control](s, "settings", "control")
+	saved, err := store.Get(s, store.ControlKey)
 	must(t, err)
 	if saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting || saved.IdleStreak != 0 {
 		t.Fatalf("%+v", saved)
 	}
-	if d, _ := store.Get[any](s, "decision", "decision-1"); d == nil {
+	if d, _ := store.Get(s, store.Decisions.Key("decision-1")); d == nil {
 		t.Fatal("decision memory missing")
 	}
 	empty := cycleFor(valid)
 	empty.ID = "cycle-2"
 	must(t, s.CommitPlan(t.Context(), empty, nil))
-	saved, err = store.Get[model.Control](s, "settings", "control")
+	saved, err = store.Get(s, store.ControlKey)
 	must(t, err)
 	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {
 		t.Fatalf("%+v", saved)

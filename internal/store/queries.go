@@ -361,11 +361,11 @@ func (s *Store) StaleBaselines(after string) ([]model.BaselineCheck, error) {
 }
 
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
-	id, err := Get[string](s, "settings", "baseline_latest")
+	id, err := Get(s, latestBaselineKey)
 	if err != nil || id == nil {
 		return nil, err
 	}
-	return Get[model.BaselineCheck](s, "baseline", *id)
+	return Get(s, Baselines.Key(*id))
 }
 
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
@@ -435,7 +435,7 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 	tasks := make([]model.Task, 0, len(ids))
 	for _, id := range ids {
 		var task model.Task
-		found, err := txGet(s.conn, "task", id, &task)
+		found, err := txGet(s.conn, Tasks.Key(id), &task)
 		if err != nil {
 			return nil, err
 		}
@@ -465,7 +465,7 @@ func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
 	if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
 		return model.Control{}, err
 	}
-	if err := txPut(c, "settings", "control", next); err != nil {
+	if err := txPut(c, ControlKey, next); err != nil {
 		return model.Control{}, err
 	}
 	return next, nil
@@ -478,7 +478,7 @@ func (s *Store) StartBatch(control *model.Control, at time.Time) (model.Planning
 	var next model.Control
 	started, err := s.conditional(func(c *sql.Conn) error {
 		var live model.Control
-		found, err := txGet(c, "settings", "control", &live)
+		found, err := txGet(c, ControlKey, &live)
 		if err != nil {
 			return err
 		}
@@ -515,7 +515,7 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 			return err
 		}
 		var live model.Control
-		found, err := txGet(c, "settings", "control", &live)
+		found, err := txGet(c, ControlKey, &live)
 		if err != nil {
 			return err
 		}
@@ -529,10 +529,10 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 		if liveFingerprint != fingerprint || !wirejson.Equal(live, expected) || !capacity.Available() {
 			return errRollback
 		}
-		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
+		if err := txPut(c, Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
-		return txPut(c, "settings", "control", control)
+		return txPut(c, ControlKey, control)
 	})
 	return capacity, started, err
 }
@@ -717,7 +717,7 @@ func (s *Store) RecordPRObservation(repository string, p model.PullRequest, deli
 		PR:                   p,
 		AutoMerge:            preserveAutoMerge(previous, p),
 	}
-	return txPut(s.conn, "pr", recordID, observation)
+	return txPut(s.conn, PRs.Key(recordID), observation)
 }
 
 // decisionRecords excludes alternatives absorbed by an accepted proposal in the same cycle,

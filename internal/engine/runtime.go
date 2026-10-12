@@ -226,7 +226,7 @@ func (a *App) reportCleanupFailure(kind cleanupKind, id string, err error) error
 	}
 	a.runtime.cleanupReports[key] = cleanupReport{message: message, at: now}
 	a.runtimeMu.Unlock()
-	if eventErr := a.Store.Event(id, "cleanup_error", message); eventErr != nil {
+	if eventErr := a.store.Event(id, model.EventCleanupError, message); eventErr != nil {
 		a.clearCleanupReport(kind, id)
 		return eventErr
 	}

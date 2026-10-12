@@ -30,14 +30,14 @@ func TestReviewPRSummaryDoesNotExposeCutToken(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))
 	pr := model.PRObservation{PR: model.PullRequest{Number: 42, State: "open", Title: boundaryText(200, summaryToken), Body: "full private PR body"}}
-	must(t, s.Put("pr", "42", pr))
+	must(t, store.Put(s, store.PRs.Key("42"), pr))
 	task := task()
 	task.Proposal.Title = boundaryText(200, summaryToken)
 	task.Error = str(boundaryText(512, summaryToken))
-	must(t, s.Put("task", task.ID, task))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), task))
 	cycle := cycleFor(task)
 	cycle.Error = task.Error
-	must(t, s.Put("cycle", cycle.ID, cycle))
+	must(t, store.Put(s, store.Cycles.Key(cycle.ID), cycle))
 	for _, kind := range []string{"pr", "task", "cycle"} {
 		page, err := summaryPage(s, kind, store.HistoryQuery{})
 		must(t, err)
@@ -65,7 +65,7 @@ func TestReviewPRSummaryDoesNotExposeCutToken(t *testing.T) {
 			t.Fatal("dashboard bypassed the safe summary projection")
 		}
 	}
-	saved, err := store.Get[model.PRObservation](s, "pr", "42")
+	saved, err := store.Get(s, store.PRs.Key("42"))
 	must(t, err)
 	if saved.PR.Title != pr.PR.Title || saved.PR.Body != pr.PR.Body {
 		t.Fatal("presentation redaction modified the raw PR observation")
@@ -94,6 +94,9 @@ func TestSummaryMigrationRestoresCompleteText(t *testing.T) {
 	if s.Upgraded() == nil || s.Upgraded().From != 9 || s.Upgraded().To != store.ReleaseVersion() || len(backups(t, path)) != 1 {
 		t.Fatalf("missing verified predecessor upgrade: %+v", s.Upgraded())
 	}
+	if events, err := s.Events(nil); err != nil || len(events) == 0 {
+		t.Fatalf("golden events: %d, %v", len(events), err)
+	}
 	if diff, same := equalStrings(before, recordDump(t, db)); !same {
 		t.Fatalf("summary migration changed raw records: %s", diff)
 	}
@@ -114,9 +117,9 @@ func TestSummaryMigrationRestoresCompleteText(t *testing.T) {
 	}
 	// Future writes must use the repaired triggers as well.
 	pr := model.PRObservation{PR: model.PullRequest{Number: 999, Title: boundaryText(200, summaryToken), State: "open"}}
-	must(t, s.Put("pr", "999", pr))
+	must(t, store.Put(s, store.PRs.Key("999"), pr))
 	pr.PR.Title += " updated"
-	must(t, s.Put("pr", "999", pr))
+	must(t, store.Put(s, store.PRs.Key("999"), pr))
 	var retained string
 	must(t, db.QueryRow("SELECT json_extract(summary,'$.pr.title') FROM record_meta WHERE kind='pr' AND id='999'").Scan(&retained))
 	if retained != pr.PR.Title {
@@ -138,7 +141,7 @@ func TestSummaryUsesReadTimeEnvironment(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
 	pr := model.PRObservation{PR: model.PullRequest{Number: 42, State: "open", Title: boundaryText(200, secret)}}
-	must(t, s.Put("pr", "42", pr))
+	must(t, store.Put(s, store.PRs.Key("42"), pr))
 	must(t, s.Close())
 	// The writer did not know this value was a secret. A new process knows it
 	// at read time; persisted redaction or a saved prefix would both be wrong.

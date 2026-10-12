@@ -6,6 +6,7 @@ import type {
   Config,
   DoctorResponse,
   Cycle,
+  CycleAction,
   CycleMode,
   CycleSummary,
   Event,
@@ -19,6 +20,7 @@ import type {
   SettingsView,
   Snapshot,
   Task,
+  TaskAction,
   TaskRow
 } from './types';
 import type { ControlAction } from './setup';
@@ -118,11 +120,11 @@ export const client = {
     request<Page<PRObservation>>(`/prs${query(parameters)}`, 'GET', undefined, signal),
   task: (task: string, signal?: AbortSignal) =>
     request<Task>(`/tasks/${id(task)}`, 'GET', undefined, signal),
-  taskAction: (task: string, action: string) =>
+  taskAction: (task: string, action: TaskAction) =>
     request<Acknowledgement>(`/tasks/${id(task)}/${id(action)}`, 'POST'),
   cycle: (cycle: string, signal?: AbortSignal) =>
     request<Cycle>(`/cycles/${id(cycle)}`, 'GET', undefined, signal),
-  cycleAction: (cycle: string, action: 'archive' | 'discard') =>
+  cycleAction: (cycle: string, action: CycleAction) =>
     request<Acknowledgement>(`/cycles/${id(cycle)}/${action}`, 'POST'),
   proposal: (cycle: string, proposal: string, signal?: AbortSignal) =>
     request<ProposalDetail>(`/proposals/${id(cycle)}/${id(proposal)}`, 'GET', undefined, signal),
