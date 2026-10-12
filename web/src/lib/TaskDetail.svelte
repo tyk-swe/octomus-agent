@@ -14,14 +14,16 @@
     reviewVerdict,
     revisionMatchLabel
   } from './evidence';
+  import CopyText from './CopyText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import FindingCard from './FindingCard.svelte';
-  import { gb, relative, safeUrl } from './format';
+  import { gb, safeUrl } from './format';
   import Icon from './Icon.svelte';
   import { routeLabel } from './modelRoutes';
   import PanelDialog from './PanelDialog.svelte';
   import RecoveryNotice from './RecoveryNotice.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import ReviewChangeSet from './ReviewChangeSet.svelte';
   import SandboxRun from './SandboxRun.svelte';
   import Sha from './Sha.svelte';
@@ -324,7 +326,7 @@
           </div>
           <div>
             <dt>Branch</dt>
-            <dd><code>{task.branch}</code></dd>
+            <dd><CopyText value={task.branch} label="Branch name" oncopy={feedback.copy} /></dd>
           </div>
           <div>
             <dt>Source revision</dt>
@@ -344,7 +346,13 @@
           </div>
           <div class="full">
             <dt>Workspace</dt>
-            <dd><code>{task.workspace || 'Created when execution starts'}</code></dd>
+            <dd>
+              {#if task.workspace}<CopyText
+                  value={task.workspace}
+                  label="Workspace path"
+                  oncopy={feedback.copy}
+                />{:else}<code>Created when execution starts</code>{/if}
+            </dd>
           </div>
           <div>
             <dt>Dependencies</dt>
@@ -418,7 +426,7 @@
             </div>
             <p>Requested route: {routeLabel(session.route)}</p>
             <SandboxRun record={session.sandbox} />
-            <code>{session.id}</code><small>{relative(session.started_at)}</small
+            <code>{session.id}</code><small><RelativeTime value={session.started_at} /></small
             >{#if session.id === task.repair_session}<div class="inline-note">
                 This repair context is reused across rounds.
               </div>{/if}{#if session.summary}<pre class="prompt">{session.summary}</pre>{/if}
@@ -504,7 +512,7 @@
                     value={verification.revision}
                     label="Verified revision"
                     oncopy={feedback.copy}
-                  /> · {relative(verification.created_at)}
+                  /> · <RelativeTime value={verification.created_at} />
                 </p>
                 <SandboxRun record={verification.sandbox} />
                 <details class="command-output" open={!verification.success}>
@@ -535,7 +543,7 @@
               ></span>
               <div>
                 <p>{event.message}</p>
-                <small>{event.kind.replaceAll('_', ' ')} · {relative(event.at)}</small>
+                <small>{event.kind.replaceAll('_', ' ')} · <RelativeTime value={event.at} /></small>
               </div>
             </div>{:else}{#if !eventsError}<p class="muted">
                 {eventsLoading ? 'Loading activity…' : 'No activity recorded yet.'}
@@ -544,7 +552,9 @@
     </div>
     <div class="dialog-footer">
       <span class="muted" aria-live="polite"
-        >{feedback.status || `Created ${relative(task.created_at)}`}</span
+        >{#if feedback.status}{feedback.status}{:else}Created <RelativeTime
+            value={task.created_at}
+          />{/if}</span
       >
       <div class="actions">
         {#if task.pr_url}<a

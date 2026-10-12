@@ -4,9 +4,9 @@
   import { Resource } from './resource';
   import Badge from './Badge.svelte';
   import { baselineStatusLabel, type Tone } from './evidence';
-  import { relative } from './format';
   import Icon from './Icon.svelte';
   import RecoveryNotice from './RecoveryNotice.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import SandboxRun from './SandboxRun.svelte';
   import Sha from './Sha.svelte';
   import type { BaselineCheck, BaselineView } from './types';
@@ -223,11 +223,11 @@
       </div>
       <div>
         <dt>Started</dt>
-        <dd>{relative(check.started_at)} · {check.started_at}</dd>
+        <dd><RelativeTime value={check.started_at} /> · {check.started_at}</dd>
       </div>
       {#if check.completed_at}<div>
           <dt>Finished</dt>
-          <dd>{relative(check.completed_at)}</dd>
+          <dd><RelativeTime value={check.completed_at} /></dd>
         </div>{/if}
       <div>
         <dt>Revision</dt>
@@ -262,7 +262,7 @@
       {#if view?.default_observation}<div>
           <dt>Last observed</dt>
           <dd>
-            {relative(view.default_observation.observed_at)} · <Sha
+            <RelativeTime value={view.default_observation.observed_at} /> · <Sha
               value={view.default_observation.revision}
               label="observed revision"
             />

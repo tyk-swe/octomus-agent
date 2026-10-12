@@ -9,6 +9,11 @@ export function relative(value: string) {
         ? `${Math.floor(seconds / 3600)}h ago`
         : `${Math.floor(seconds / 86400)}d ago`;
 }
+export function exactTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'long' });
+}
 export function clockTime(date = new Date()): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

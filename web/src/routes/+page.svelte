@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { pushState } from '$app/navigation';
   import { client, setToken, onUnauthorized } from '$lib/api';
   import { StateSession } from '$lib/stateSession';
   import type {
@@ -12,12 +13,13 @@
   } from '$lib/types';
   import Badge from '$lib/Badge.svelte';
   import FilterTabs from '$lib/FilterTabs.svelte';
-  import { clockTime, relative, safeUrl } from '$lib/format';
+  import { clockTime, safeUrl } from '$lib/format';
   import Icon from '$lib/Icon.svelte';
   import LoginScreen from '$lib/LoginScreen.svelte';
   import Notices from '$lib/Notices.svelte';
   import Overview from '$lib/Overview.svelte';
   import Proposals from '$lib/Proposals.svelte';
+  import RelativeTime from '$lib/RelativeTime.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
   import {
@@ -29,7 +31,13 @@
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';
-  import { NAVIGATION, PR_FILTERS, QUEUE_FILTERS, TOGGLE_PENDING_LABELS } from '$lib/navigation';
+  import {
+    NAVIGATION,
+    PR_FILTERS,
+    QUEUE_FILTERS,
+    TOGGLE_PENDING_LABELS,
+    viewFromHash
+  } from '$lib/navigation';
   const version = __APP_VERSION__;
   const shortVersion = version.split('.').slice(0, 2).join('.');
   let connected = $state(false),
@@ -127,6 +135,11 @@
   );
   let published = $derived(data?.tasks.filter((t) => t.status === 'published') ?? []);
   let attentionCount = $derived((data?.counts.blocked ?? 0) + (data?.counts.failed ?? 0));
+  const documentTitle = $derived(
+    connected && data
+      ? `${attentionCount ? `(${attentionCount}) ` : ''}${current?.label ?? 'Overview'} · Octomus Agent`
+      : 'Octomus Agent · Your project, moving forward'
+  );
   let latestCycle = $derived(data?.cycles[0]);
   const setupStatus = $derived<SetupStatus | null>(
     data
@@ -268,6 +281,8 @@
     setToken(accessToken.trim());
     try {
       data = await client.state();
+      view = viewFromHash(location.hash) ?? 'overview';
+      settingsVisited = view === 'settings';
       connected = true;
       connectionError = '';
       accessToken = '';
@@ -295,9 +310,10 @@
       disconnect();
     };
   });
-  async function navigate(id: string) {
+  async function navigate(id: string, record = true) {
     navigationGeneration++;
     view = id;
+    if (record && viewFromHash(location.hash) !== id) pushState('#' + id, {});
     if (id === 'settings') settingsVisited = true;
     search = '';
     filter = 'all';
@@ -305,6 +321,22 @@
     await tick();
     document.getElementById('main-content')?.focus();
     window.scrollTo(0, 0);
+  }
+  function followLocation() {
+    if (!connected) return;
+    const id = viewFromHash(location.hash);
+    if (!id || id === view) return;
+    selected = null;
+    runPanel = null;
+    panelOpener = null;
+    void navigate(id, false);
+  }
+  async function clearListFilters() {
+    noteNavigationIntent();
+    search = '';
+    filter = 'all';
+    await tick();
+    document.querySelector<HTMLInputElement>('.search-box input')?.focus();
   }
   async function onWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && mobileOpen) {
@@ -426,9 +458,13 @@
   }
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} />
+<svelte:window
+  onkeydown={onWindowKeydown}
+  onhashchange={followLocation}
+  onpopstate={followLocation}
+/>
 <svelte:head
-  ><title>Octomus Agent · Your project, moving forward</title><meta
+  ><title>{documentTitle}</title><meta
     name="description"
     content="The private control room for continuous, reviewed project improvement."
   /></svelte:head
@@ -439,7 +475,13 @@
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell">
     <aside id="workspace-navigation" class:mobile-open={mobileOpen} class="sidebar">
-      <a class="brand" href="#overview" onclick={() => navigate('overview')}
+      <a
+        class="brand"
+        href="#overview"
+        onclick={(event) => {
+          event.preventDefault();
+          void navigate('overview');
+        }}
         ><img src="/favicon.svg" alt="" width="35" height="35" /><span
           >octomus<span class="brand-light">agent</span></span
         ></a
@@ -583,6 +625,9 @@
                     ? 'Try another filter or search term.'
                     : 'Accepted proposals become focused tasks with a clear outcome.'}
                 </p>
+                {#if search || filter !== 'all'}<button class="button" onclick={clearListFilters}
+                    >Clear search and filters</button
+                  >{/if}
               </div>{/if}
           </section>
         {:else if view === 'prs'}
@@ -627,7 +672,7 @@
                       class="pr-observed"
                       >· {pr.owned ? 'owned by Octomus' : 'not owned by Octomus'}</span
                     >{#if observed.observed_at}<span class="pr-observed"
-                        >· observed {relative(observed.observed_at)}</span
+                        >· observed <RelativeTime value={observed.observed_at} /></span
                       >{/if}
                   </p>
                   {#if observed.auto_merge}
@@ -663,6 +708,9 @@
                     ? 'Try another filter or search term.'
                     : 'Open Octomus branches appear here after discovery grounds the repository.'}
                 </p>
+                {#if search || filter !== 'all'}<button class="button" onclick={clearListFilters}
+                    >Clear search and filters</button
+                  >{/if}
               </div>{/if}
           </section>
           {#if published.length}<section class="panel published-panel">

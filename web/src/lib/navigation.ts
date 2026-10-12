@@ -48,6 +48,12 @@ export const NAVIGATION: {
   }
 ];
 
+export function viewFromHash(hash: string): string | null {
+  const id = hash.startsWith('#') ? hash.slice(1) : hash;
+  if (id === '') return 'overview';
+  return NAVIGATION.some((item) => item.id === id) ? id : null;
+}
+
 export const TOGGLE_PENDING_LABELS: Record<string, string> = {
   resume: 'Starting continuous…',
   pause: 'Pausing…'

@@ -21,13 +21,15 @@
     revisionMatchLabel,
     verdictBadge
   } from './evidence';
+  import CopyText from './CopyText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import FindingCard from './FindingCard.svelte';
-  import { plural, relative, safeUrl, shortHash } from './format';
+  import { plural, safeUrl, shortHash } from './format';
   import Icon from './Icon.svelte';
   import { routeLabel } from './modelRoutes';
   import PanelDialog from './PanelDialog.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import ReviewChangeSet from './ReviewChangeSet.svelte';
   import Sha from './Sha.svelte';
   import type { Cycle, ProposalEvidence, RunEvidenceV1, TaskEvidence } from './types';
@@ -152,9 +154,9 @@
       </h2>
       <p>
         <code>{run.cycle.repository || 'Repository not recorded'}</code>
-        <span>started {relative(run.cycle.started_at)}</span>
+        <span>started <RelativeTime value={run.cycle.started_at} /></span>
         {#if run.cycle.completed_at}<span class="dot-separator">·</span><span
-            >planning finished {relative(run.cycle.completed_at)}</span
+            >planning finished <RelativeTime value={run.cycle.completed_at} /></span
           >{/if}
       </p>
     </div>
@@ -244,8 +246,9 @@
               {coverage.total_external} external of {coverage.total_open} open ·
               {coverage.included_external} included{coverage.omitted_external > 0
                 ? ` · ${coverage.omitted_external} omitted by context limits`
-                : ''}{#if coverage.observed_at}
-                · observed {relative(coverage.observed_at)}{/if}
+                : ''}{#if coverage.observed_at}{' · observed '}<RelativeTime
+                  value={coverage.observed_at}
+                />{/if}
             {:else}
               Coverage was not recorded for this run.
             {/if}
@@ -445,7 +448,9 @@
                 <EvidenceFact label="Recorded outcome" verdict={outcomeVerdict(task)} />
                 <div>
                   <dt>Branch</dt>
-                  <dd><code>{task.branch}</code></dd>
+                  <dd>
+                    <CopyText value={task.branch} label="Branch name" oncopy={feedback.copy} />
+                  </dd>
                 </div>
                 <div>
                   <dt>Source revision</dt>
@@ -479,7 +484,7 @@
                 </div>
                 <div>
                   <dt>Last updated</dt>
-                  <dd>{relative(task.updated_at)}</dd>
+                  <dd><RelativeTime value={task.updated_at} /></dd>
                 </div>
               </dl>
               <details class="evidence-more">
@@ -493,7 +498,9 @@
                       <Badge label={session.status} tone={session.status} />
                     </div>
                     <p>Requested route: {routeLabel(session.requested_route)}</p>
-                    <code>{session.id}</code><small>{relative(session.started_at)}</small>
+                    <code>{session.id}</code><small
+                      ><RelativeTime value={session.started_at} /></small
+                    >
                   </article>{:else}<p class="muted">No sessions are recorded for this task.</p>
                 {/each}
                 <p class="muted">
@@ -643,9 +650,9 @@
                         {plural(
                           command.results_recorded,
                           'recorded result'
-                        )}{command.latest_created_at
-                          ? ` · latest ${relative(command.latest_created_at)}`
-                          : ''}.
+                        )}{#if command.latest_created_at}{' · latest '}<RelativeTime
+                            value={command.latest_created_at}
+                          />{/if}.
                       </p>
                     </li>
                   {/each}
@@ -707,7 +714,11 @@
               2
             )}</pre>{/if}
       </details>
-      <small>Schema version {run.schema_version} · assembled {relative(run.generated_at)}</small>
+      <small
+        >Schema version {run.schema_version} · assembled <RelativeTime
+          value={run.generated_at}
+        /></small
+      >
     </div>
     <div class="dialog-footer">
       <span class="muted" aria-live="polite"

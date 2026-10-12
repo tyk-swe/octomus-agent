@@ -7,6 +7,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Dashboard conveniences: the current view lives in the URL hash (`#queue`, `#proposals`,
+  `#prs`, `#settings`), so Back/Forward switch views and reconnecting after a reload or an
+  expired session returns to it; the browser tab title names the view and the count of
+  tasks needing attention; hovering a relative time shows the exact local date and time;
+  task details copy the branch name and workspace path (run evidence copies the branch);
+  filtered empty lists offer **Clear search and filters**.
+- `make fmt` rewrites the Go and dashboard formatting that `make check` verifies.
 - Maintenance delivery mode (`delivery_mode: maintenance`): features are excluded and a
   small, clean-reviewed, verified maintenance PR may be squash-merged by a dedicated
   merger identity after fresh GitHub checks, review state and protections confirm the

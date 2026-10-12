@@ -10,7 +10,7 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, tick, untrack } from 'svelte';
   import { client } from './api';
   import { CycleHistory, type CycleHistoryState } from './cycleHistory';
   import Badge from './Badge.svelte';
@@ -184,6 +184,14 @@
       }
     }
   }
+  async function clearListFilters() {
+    onintent();
+    search = '';
+    filter = 'all';
+    cycle = 'all';
+    await tick();
+    document.querySelector<HTMLInputElement>('.search-box input')?.focus();
+  }
   function retryCycleHistory() {
     if (cyclesLoading) return;
     void loadCycles();
@@ -292,6 +300,10 @@
               ? 'Try another cycle, filter or search term.'
               : 'Discovery explores your project. Two adversarial reviewers challenge each proposal before the orchestrator decides.'}
           </p>
+          {#if search || filter !== 'all' || cycle !== 'all'}<button
+              class="button"
+              onclick={clearListFilters}>Clear search and filters</button
+            >{/if}
         </div>{/if}
     </div>
   </section>

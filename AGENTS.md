@@ -86,6 +86,8 @@ race detector. Install dashboard dependencies with `npm ci --prefix web` and bro
 test prerequisites with `npx --prefix web playwright install --with-deps chromium`.
 
 - `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks.
+- `make fmt`: rewrites what `make check`'s formatting checks verify (gofmt, then
+  Prettier).
 - `make test`: the `-race` Go suite, then `make test-integration`, then
   `make test-browser`, against the production binary and dashboard build. Ordering
   holds under parallel Make; CI runs the service and browser stages separately.

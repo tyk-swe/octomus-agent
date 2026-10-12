@@ -2,7 +2,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { Resource } from './resource';
   import { client, ApiError } from './api';
-  import { clockTime, plural, relative } from './format';
+  import { clockTime, plural } from './format';
   import type {
     Backend,
     Config,
@@ -13,6 +13,7 @@
     SettingsView,
     TransformedField
   } from './types';
+  import RelativeTime from './RelativeTime.svelte';
   import RouteEditor from './RouteEditor.svelte';
   import { BACKENDS, backendLabel } from './modelRoutes';
   import SetupChecklist from './SetupChecklist.svelte';
@@ -669,7 +670,7 @@
         {#if health.last_delivered_at}<div>
             <dt>Last delivered</dt>
             <dd>
-              {relative(health.last_delivered_at)}
+              <RelativeTime value={health.last_delivered_at} />
             </dd>
           </div>{/if}
         {#if health.last_error}<div>

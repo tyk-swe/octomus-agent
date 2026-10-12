@@ -1,4 +1,4 @@
-.PHONY: dashboard build check test test-go test-go-race test-ui-logic test-python test-integration test-browser test-sandbox production-image-driver test-production-images package audit
+.PHONY: dashboard build check fmt test test-go test-go-race test-ui-logic test-python test-integration test-browser test-sandbox production-image-driver test-production-images package audit
 
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
@@ -8,6 +8,9 @@ E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1
 # a failure prints its seed (-test.shuffle N) to reproduce.
 GO_TEST_FLAGS = -timeout 30m -shuffle=on
 GO_TEST_PACKAGES ?= ./...
+
+# The Go files gofmt manages; check lints them and fmt rewrites them.
+GO_FORMAT_PATHS = version.go cmd internal web/*.go tests/productionimage
 
 # Directory timestamps also invalidate the build when inputs are added or removed.
 # Vite reads VERSION, and Makefile changes can alter the input list or build command.
@@ -23,11 +26,16 @@ build: dashboard
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/octomus-agent ./cmd/octomus-agent
 
 check: dashboard
-	files=$$("$$(go env GOROOT)/bin/gofmt" -l version.go cmd internal web/*.go tests/productionimage) || exit 1; \
+	files=$$("$$(go env GOROOT)/bin/gofmt" -l $(GO_FORMAT_PATHS)) || exit 1; \
 	if [ -n "$$files" ]; then printf 'gofmt required:\n%s\n' "$$files" >&2; exit 1; fi
 	go vet ./...
 	npm run check --prefix web
 	npm run format:check --prefix web
+
+# Rewrites what check's formatting checks verify: gofmt, then Prettier.
+fmt:
+	"$$(go env GOROOT)/bin/gofmt" -w $(GO_FORMAT_PATHS)
+	npm run format --prefix web
 
 # The race suite runs the same tests as test-go, with the race detector; test-go is the quick local loop.
 test:
