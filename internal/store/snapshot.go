@@ -22,7 +22,7 @@ func (r *ReadOnly) Snapshot(read func(*Snapshot) error) error {
 }
 
 func (r *Snapshot) Cycle(id string) (*model.Cycle, error) {
-	return recordAt[model.Cycle](r.conn, "cycle", id)
+	return recordAt(r.conn, Cycles.Key(id))
 }
 
 const snapshotCycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY r.id"

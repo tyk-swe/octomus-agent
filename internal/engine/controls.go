@@ -12,6 +12,7 @@ import (
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -465,7 +466,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 			return nil, codedConflict(UnresolvedWorkConflict, "Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
-	if err := a.store.Put("settings", "config", c); err != nil {
+	if err := store.Put(a.store, store.ConfigKey, c); err != nil {
 		return nil, err
 	}
 	a.invalidatePRs()

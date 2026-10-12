@@ -35,14 +35,14 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 			dependent := queuedTask(cfg, "dependent", dependency.Branch, dependency.Branch)
 			dependent.Proposal.Dependencies = []string{dependency.ID}
 			for _, task := range []model.Task{dependency, dependent} {
-				if err := state.Put("task", task.ID, task); err != nil {
+				if err := store.Put(state, store.Tasks.Key(task.ID), task); err != nil {
 					t.Fatal(err)
 				}
 			}
 			app := New(state, t.TempDir())
 			app.supervise = func(_ context.Context, task model.Task) error {
 				task.Status = model.StatusPublished
-				return state.Put("task", task.ID, task)
+				return store.Put(state, store.Tasks.Key(task.ID), task)
 			}
 			cleanupApp(t, app)
 			deferHousekeeping(app)
@@ -53,7 +53,7 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitApp(t, app)
-			saved, err := store.Get[model.Task](state, "task", dependent.ID)
+			saved, err := store.Get(state, store.Tasks.Key(dependent.ID))
 			if err != nil || saved == nil || saved.Status != model.StatusPublished {
 				t.Fatalf("published prerequisite blocked its RunOnce successor: %+v, %v", saved, err)
 			}
@@ -100,7 +100,7 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 					t.Fatalf("Continuous did not defer after failed preflight: %+v", control)
 				}
 			}
-			cycles, err := store.List[model.Cycle](f.state, "cycle")
+			cycles, err := store.List(f.state, store.Cycles)
 			if err != nil || len(cycles) != 0 {
 				t.Fatalf("unauthenticated preflight created cycles: %d, %v", len(cycles), err)
 			}
@@ -125,10 +125,10 @@ func TestOneWriterPerBranch(t *testing.T) {
 	first := queuedTask(cfg, "first", "octomus/existing", "octomus/existing")
 	second := queuedTask(cfg, "second", "octomus/existing", "octomus/existing")
 	second.Proposal.Dependencies = []string{first.ID}
-	if err := state.Put("task", first.ID, first); err != nil {
+	if err := store.Put(state, store.Tasks.Key(first.ID), first); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.Put("task", second.ID, second); err != nil {
+	if err := store.Put(state, store.Tasks.Key(second.ID), second); err != nil {
 		t.Fatal(err)
 	}
 	started := make(chan string, 2)
@@ -136,13 +136,13 @@ func TestOneWriterPerBranch(t *testing.T) {
 	published := make(chan string, 2)
 	runner := func(_ context.Context, task model.Task) error {
 		started <- task.ID
-		current, err := store.Get[model.Task](state, "task", task.ID)
+		current, err := store.Get(state, store.Tasks.Key(task.ID))
 		if err != nil || current == nil {
 			return fmt.Errorf("reload task: %v", err)
 		}
 		current.Status = model.StatusPublished
 		current.UpdatedAt = model.Now()
-		if err := state.Put("task", current.ID, *current); err != nil {
+		if err := store.Put(state, store.Tasks.Key(current.ID), *current); err != nil {
 			return err
 		}
 		published <- task.ID

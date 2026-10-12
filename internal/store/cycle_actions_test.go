@@ -15,7 +15,7 @@ func TestIndexedCycleActionsFollowPersistedLifecycle(t *testing.T) {
 	cycle.Status = model.CycleCompleted
 	check := func(expected []string) {
 		t.Helper()
-		must(t, s.Put("cycle", cycle.ID, cycle))
+		must(t, store.Put(s, store.Cycles.Key(cycle.ID), cycle))
 		page, err := s.CyclePage(store.HistoryQuery{})
 		must(t, err)
 		if len(page.Items) != 1 || !slices.Equal(page.Items[0].AllowedActions, expected) {

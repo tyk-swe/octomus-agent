@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) TaskDetail(id string) (*TaskDetail, error) {
-	task, err := store.Get[model.Task](a.store, "task", id)
+	task, err := store.Get(a.store, store.Tasks.Key(id))
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +29,7 @@ func (a *App) TaskDetail(id string) (*TaskDetail, error) {
 }
 
 func (a *App) CycleDetail(id string) (*model.Cycle, error) {
-	cycle, err := store.Get[model.Cycle](a.store, "cycle", id)
+	cycle, err := store.Get(a.store, store.Cycles.Key(id))
 	if err != nil {
 		return nil, err
 	}

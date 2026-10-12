@@ -165,7 +165,7 @@ func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryReques
 		if id == "" {
 			return errors.New("Missing rediscovery identity")
 		}
-		old, err := store.Get[model.Task](a.store, "task", id)
+		old, err := store.Get(a.store, store.Tasks.Key(id))
 		if err != nil || old == nil {
 			if err == nil {
 				err = fmt.Errorf("Missing rediscovery task %s", id)
@@ -517,14 +517,14 @@ func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
 
 // saveCycle writes the cycle with the sessions the store holds, which running roles append as they finish.
 func (a *App) saveCycle(cycle *model.Cycle) error {
-	current, err := store.Get[model.Cycle](a.store, "cycle", cycle.ID)
+	current, err := store.Get(a.store, store.Cycles.Key(cycle.ID))
 	if err != nil {
 		return err
 	}
 	if current != nil {
 		cycle.Sessions = current.Sessions
 	}
-	return a.store.Put("cycle", cycle.ID, *cycle)
+	return store.Put(a.store, store.Cycles.Key(cycle.ID), *cycle)
 }
 
 func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {

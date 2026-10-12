@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -11,6 +12,21 @@ import (
 )
 
 const notifyDest = "destination-a"
+
+func putMap(s *store.Store, key store.Key[json.RawMessage], record map[string]any) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return store.Put(s, key, data)
+}
+
+func domainKey(kind, id string) store.Key[json.RawMessage] {
+	if kind == "task" {
+		return store.Tasks.Key(id).Raw()
+	}
+	return store.Cycles.Key(id).Raw()
+}
 
 func putNotificationTask(t *testing.T, s *store.Store, id, status string, reason string) {
 	t.Helper()
@@ -24,7 +40,7 @@ func putNotificationTask(t *testing.T, s *store.Store, id, status string, reason
 	if reason != "" {
 		task["blocked_reason"] = reason
 	}
-	must(t, s.Put("task", id, task))
+	must(t, putMap(s, store.Tasks.Key(id).Raw(), task))
 }
 
 func outboxRows(t *testing.T, path, status string) []map[string]any {
@@ -110,13 +126,13 @@ func TestReleaseNotificationEvents(t *testing.T) {
 					record := map[string]any{"id": id, "mode": event.mode, "status": "planning", "repository": "fixture/project", "run_id": "run-1", "cycle_id": "cycle-1", "config": map[string]any{"github_repo": "fixture/project"}}
 					before := len(pendingRows(t, path))
 					if !insert {
-						must(t, s.Put(event.kind, id, record))
+						must(t, putMap(s, domainKey(event.kind, id), record))
 					}
 					record["status"] = event.status
-					must(t, s.Put(event.kind, id, record))
+					must(t, putMap(s, domainKey(event.kind, id), record))
 					// Repeated terminal saves and lifecycle-only changes are not new episodes.
 					record["lifecycle"] = map[string]any{"archived_at": model.Now()}
-					must(t, s.Put(event.kind, id, record))
+					must(t, putMap(s, domainKey(event.kind, id), record))
 					rows := pendingRows(t, path)
 					if len(rows) != before+1 {
 						t.Fatalf("%s generated %d events", id, len(rows)-before)
@@ -136,15 +152,15 @@ func TestReleaseNotificationEvents(t *testing.T) {
 			}
 			before := len(pendingRows(t, path))
 			for _, status := range []string{"planning", "interrupted", "cancelled", "completed", "idle"} {
-				must(t, s.Put("cycle", "no-event-"+status, map[string]any{"mode": "execution", "status": status}))
+				must(t, putMap(s, store.Cycles.Key("no-event-"+status).Raw(), map[string]any{"mode": "execution", "status": status}))
 			}
 			if len(pendingRows(t, path)) != before {
 				t.Fatal("non-event cycle statuses generated notifications")
 			}
 			must(t, s.SetNotifyPolicy(nil, "disabled", nil))
 			putNotificationTask(t, s, "disabled-published", "published", "")
-			must(t, s.Put("cycle", "disabled-failed", map[string]any{"status": "failed"}))
-			must(t, s.Put("cycle", "disabled-audit", map[string]any{"mode": "audit", "status": "completed"}))
+			must(t, putMap(s, store.Cycles.Key("disabled-failed").Raw(), map[string]any{"status": "failed"}))
+			must(t, putMap(s, store.Cycles.Key("disabled-audit").Raw(), map[string]any{"mode": "audit", "status": "completed"}))
 			if len(pendingRows(t, path)) != 0 {
 				t.Fatal("disabled policy queued notifications")
 			}

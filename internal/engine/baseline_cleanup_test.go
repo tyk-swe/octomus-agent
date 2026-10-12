@@ -24,13 +24,13 @@ func TestReviewBaselineCleanupErrorReachesCaller(t *testing.T) {
 	t.Parallel()
 	app, cfg := baselineApp(t)
 	check := makeCheck(cfg, model.BaselineStatusPassed)
-	must0(t, app.store.Put("baseline", check.ID, check))
+	must0(t, store.Put(app.store, store.Baselines.Key(check.ID), check))
 	path := refusedBaselineRoot(t, app, check.ID)
 	err := app.removeBaselineWorkspace(&check)
 	if err == nil || !strings.Contains(err.Error(), "Cleanup refuses symlink paths") {
 		t.Fatalf("cleanup failure did not reach the caller: %v", err)
 	}
-	saved, err := store.Get[model.BaselineCheck](app.store, "baseline", check.ID)
+	saved, err := store.Get(app.store, store.Baselines.Key(check.ID))
 	must0(t, err)
 	if saved.CleanupError == nil || saved.WorkspaceRemoved {
 		t.Fatalf("cleanup failure was not retained: %+v", saved)
@@ -41,7 +41,7 @@ func TestReviewBaselineCleanupErrorReachesCaller(t *testing.T) {
 	must0(t, os.Remove(path))
 	must0(t, os.Mkdir(path, 0700))
 	must0(t, app.removeBaselineWorkspace(saved))
-	saved, err = store.Get[model.BaselineCheck](app.store, "baseline", check.ID)
+	saved, err = store.Get(app.store, store.Baselines.Key(check.ID))
 	must0(t, err)
 	if !saved.WorkspaceRemoved || saved.CleanupError != nil || saved.Status != model.BaselineStatusPassed {
 		t.Fatalf("successful cleanup did not clear only its own evidence: %+v", saved)
@@ -65,12 +65,12 @@ func TestBaselineRetentionReportsOldCleanupFailure(t *testing.T) {
 	t.Parallel()
 	app, cfg := baselineApp(t)
 	old := makeCheck(cfg, model.BaselineStatusPassed)
-	must0(t, app.store.Put("baseline", old.ID, old))
+	must0(t, store.Put(app.store, store.Baselines.Key(old.ID), old))
 	path := refusedBaselineRoot(t, app, old.ID)
 	latest := makeCheck(cfg, model.BaselineStatusPassed)
 	latest.WorkspaceRemoved = true
-	must0(t, app.store.Put("baseline", latest.ID, latest))
-	must0(t, app.store.Put("settings", "baseline_latest", latest.ID))
+	must0(t, store.Put(app.store, store.Baselines.Key(latest.ID), latest))
+	must0(t, store.Put(app.store, store.Setting[string]("baseline_latest"), latest.ID))
 	count := func(want int) {
 		t.Helper()
 		events, err := app.store.Events(&old.ID)

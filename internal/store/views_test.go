@@ -36,13 +36,13 @@ func TestIndexedViews(t *testing.T) {
 	blocked.Status = model.StatusBlocked
 	blocked.OutputCommit = str("out00002")
 	for _, tk := range []model.Task{queued, active, reserved, published, blocked} {
-		must(t, s.Put("task", tk.ID, tk))
+		must(t, store.Put(s, store.Tasks.Key(tk.ID), tk))
 	}
 
 	c := cycleFor(queued)
 	c.ID = "cycle-running"
 	c.Lifecycle.DiscardedAt = str("2020-01-01T00:00:00Z")
-	must(t, s.Put("cycle", c.ID, c))
+	must(t, store.Put(s, store.Cycles.Key(c.ID), c))
 	done := cycleFor(queued)
 	done.ID = "cycle-done"
 	done.Status = model.CycleCompleted
@@ -53,16 +53,16 @@ func TestIndexedViews(t *testing.T) {
 		p.Decision = model.DecisionRejected
 		return p
 	}()}
-	must(t, s.Put("cycle", done.ID, done))
+	must(t, store.Put(s, store.Cycles.Key(done.ID), done))
 
 	baseline := func(id string, status model.BaselineStatus, removed bool) model.BaselineCheck {
 		return model.BaselineCheck{ID: id, Status: status, Config: config.Default(), ConfigFingerprint: "fp",
 			StartedAt: model.Now(), Commands: []model.BaselineCommand{}, WorkspaceRemoved: removed}
 	}
-	must(t, s.Put("baseline", "base-running", baseline("base-running", model.BaselineStatusRunning, false)))
-	must(t, s.Put("baseline", "base-done", baseline("base-done", model.BaselineStatusPassed, false)))
-	must(t, s.Put("baseline", "base-clean", baseline("base-clean", model.BaselineStatusFailed, true)))
-	must(t, s.Put("settings", "baseline_latest", "base-done"))
+	must(t, store.Put(s, store.Baselines.Key("base-running"), baseline("base-running", model.BaselineStatusRunning, false)))
+	must(t, store.Put(s, store.Baselines.Key("base-done"), baseline("base-done", model.BaselineStatusPassed, false)))
+	must(t, store.Put(s, store.Baselines.Key("base-clean"), baseline("base-clean", model.BaselineStatusFailed, true)))
+	must(t, store.Put(s, store.Setting[string]("baseline_latest"), "base-done"))
 
 	scheduling, err := s.SchedulingTasks(nil)
 	must(t, err)
@@ -192,7 +192,7 @@ func TestIndexedViews(t *testing.T) {
 	if !started {
 		t.Fatal("begin cycle refused an affordable cycle under the saved control")
 	}
-	reloaded, err := store.Get[model.Control](s, "settings", "control")
+	reloaded, err := store.Get(s, store.ControlKey)
 	must(t, err)
 	if reloaded == nil || reloaded.Batch == nil || reloaded.Batch.CycleID == nil || *reloaded.Batch.CycleID != "cycle-next" {
 		t.Fatalf("begin cycle control: %+v", reloaded)

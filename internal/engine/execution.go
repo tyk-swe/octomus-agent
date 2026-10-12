@@ -27,12 +27,12 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		// Admission may commit after shutdown begins. This worker has not
 		// started execution, so defer it without consuming a retry attempt.
 		a.gate.Lock()
-		current, err := store.Get[model.Task](a.store, "task", task.ID)
+		current, err := store.Get(a.store, store.Tasks.Key(task.ID))
 		if err != nil || current == nil || !current.Status.Active() {
 			a.gate.Unlock()
 			return err
 		}
-		operatorCancelled, err := a.store.Marked("cancel", task.ID)
+		operatorCancelled, err := a.store.CancelMarked(task.ID)
 		if err == nil && !operatorCancelled {
 			err = a.transition(current, model.StatusQueued)
 		}
@@ -62,7 +62,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	}
 	message := taskErr.Error()
 	shuttingDown := a.ctx.Err() != nil
-	operatorCancelled, _ := a.store.Marked("cancel", task.ID)
+	operatorCancelled, _ := a.store.CancelMarked(task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
 		if err := a.checkpointTask(&task); err != nil {
 			_ = a.store.Event(task.ID, "worker_error", redact.Error(err))
@@ -276,7 +276,7 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 }
 
 func (a *App) publishedDependency(id string) (model.Task, error) {
-	dependency, err := store.Get[model.Task](a.store, "task", id)
+	dependency, err := store.Get(a.store, store.Tasks.Key(id))
 	if err != nil {
 		return model.Task{}, err
 	}

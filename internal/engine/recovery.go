@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
@@ -20,13 +19,13 @@ func (a *App) Recover() error {
 
 	// Store transactions check the saved configuration, so it must carry the identity this deployment pins even when
 	// OCTOMUS_GITHUB_REPO changed after the last save.
-	saved, err := store.Get[config.Config](a.store, "settings", "config")
+	saved, err := store.Get(a.store, store.ConfigKey)
 	if err != nil {
 		return err
 	}
 	if saved != nil {
 		if pinned := a.deployment.pin(*saved); !wirejson.Equal(*saved, pinned) {
-			if err := a.store.Put("settings", "config", pinned); err != nil {
+			if err := store.Put(a.store, store.ConfigKey, pinned); err != nil {
 				return err
 			}
 			_ = a.store.Event("system", "configuration", "Saved configuration now names the repository this deployment pins")
@@ -59,7 +58,7 @@ func (a *App) Recover() error {
 		return err
 	}
 	for _, task := range tasks {
-		markedCancelled, err := a.store.Marked("cancel", task.ID)
+		markedCancelled, err := a.store.CancelMarked(task.ID)
 		if err != nil {
 			return err
 		}
@@ -115,7 +114,7 @@ func (a *App) interruptOrphanedCycles() error {
 		cycle.Status = model.CycleInterrupted
 		cycle.CompletedAt = new(model.Now())
 		cycle.Error = new(interruptedMsg)
-		if err := a.store.Put("cycle", cycle.ID, cycle); err != nil {
+		if err := store.Put(a.store, store.Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
 	}
@@ -220,7 +219,7 @@ func (a *App) recoverBaselines() error {
 }
 
 func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted string) error {
-	marked, err := a.store.Marked("baseline_cancel", check.ID)
+	marked, err := a.store.BaselineCancelMarked(check.ID)
 	if err != nil {
 		return err
 	}
@@ -232,5 +231,5 @@ func (a *App) abandonBaseline(check *model.BaselineCheck, cancelled, interrupted
 	}
 	check.CompletedAt = new(model.Now())
 	check.Error = &message
-	return a.store.Put("baseline", check.ID, *check)
+	return store.Put(a.store, store.Baselines.Key(check.ID), *check)
 }

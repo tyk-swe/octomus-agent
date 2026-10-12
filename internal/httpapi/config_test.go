@@ -66,7 +66,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	cfg.VerificationCommands = []string{"echo ghp_syntheticsecrettoken123", "true"}
 	longPath := "/" + strings.Repeat("storage", 2500)
 	cfg.RunnerStoragePaths = map[string]string{"codex": longPath}
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := cfg.Fingerprint()
@@ -124,7 +124,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	if commands := display["verification_commands"].([]any); commands[0] != "echo [redacted]" {
 		t.Fatalf("saved view commands: %v", commands)
 	}
-	saved, err := store.Get[config.Config](state, "settings", "config")
+	saved, err := store.Get(state, store.ConfigKey)
 	if err != nil || saved == nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("replacement: %d %s", response.Code, response.Body.String())
 	}
-	saved, _ = store.Get[config.Config](state, "settings", "config")
+	saved, _ = store.Get(state, store.ConfigKey)
 	if !reflect.DeepEqual(saved.RunnerStoragePaths, map[string]string{"opencode": "/o"}) || len(saved.VerificationCommands) != 0 {
 		t.Fatalf("replacement did not apply exactly: %+v", saved)
 	}
@@ -201,7 +201,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	loaded, err := store.Get[config.Config](reopened, "settings", "config")
+	loaded, err := store.Get(reopened, store.ConfigKey)
 	if err != nil || loaded == nil || !reflect.DeepEqual(*loaded, *saved) {
 		t.Fatalf("reopened config: %v, err=%v", loaded, err)
 	}
@@ -213,7 +213,7 @@ func TestConfigConflicts(t *testing.T) {
 	router := Router(app, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := cfg.Fingerprint()
@@ -238,7 +238,7 @@ func TestConfigConflicts(t *testing.T) {
 	conflict(`{"expected_revision":"`+strings.Repeat("0", 64)+`","config":{"max_retries":3}}`, engine.ConfigRevisionConflict)
 
 	task := queuedTask(cfg)
-	if err := state.Put("task", task.ID, task); err != nil {
+	if err := store.Put(state, store.Tasks.Key(task.ID), task); err != nil {
 		t.Fatal(err)
 	}
 	conflict(`{"expected_revision":"`+revision+`","config":{"github_repo":"fixture/other"}}`, engine.UnresolvedWorkConflict)

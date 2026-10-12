@@ -406,7 +406,7 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if task.Status != model.StatusQueued || task.OutputCommit != nil || a.cleanupClaimed(cleanupTask, task.ID) {
 			continue
 		}
-		marked, err := a.store.Marked("cancel", task.ID)
+		marked, err := a.store.CancelMarked(task.ID)
 		if err != nil {
 			return changed, err
 		}
@@ -550,7 +550,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 
 func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, error, error) {
 	for _, id := range task.Proposal.Dependencies {
-		dependency, err := store.Get[model.Task](a.store, "task", id)
+		dependency, err := store.Get(a.store, store.Tasks.Key(id))
 		if err != nil {
 			return false, nil, err
 		}

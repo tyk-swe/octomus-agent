@@ -28,6 +28,8 @@ type storageUsage struct {
 	RunnerTranscripts runnerTranscripts `json:"runner_transcripts"`
 }
 
+var storageKey = store.Setting[storageUsage]("storage")
+
 const runnerStorageMessage = "Runner storage reported separately. Application admission measures the data directory."
 
 type runnerTranscripts struct {
@@ -111,7 +113,7 @@ func (a *App) retention(cfg config.Config) error {
 		}
 		a.advanceRetentionCursor(cleanupBaseline, check.ID)
 		a.gate.Lock()
-		current, loadErr := store.Get[model.BaselineCheck](a.store, "baseline", check.ID)
+		current, loadErr := store.Get(a.store, store.Baselines.Key(check.ID))
 		terminal := current != nil && current.Status != model.BaselineStatusRunning
 		a.runtimeMu.Lock()
 		active := a.runtime.baseline != nil && a.runtime.baseline.id == check.ID
@@ -169,7 +171,7 @@ func (a *App) retainCandidateLocked(kind cleanupKind, id, cutoff string) error {
 		return err
 	}
 	if kind == cleanupTask {
-		task, err := store.Get[model.Task](a.store, "task", id)
+		task, err := store.Get(a.store, store.Tasks.Key(id))
 		if err != nil || task == nil || task.Lifecycle.DiscardedAt != nil {
 			return err
 		}
@@ -181,7 +183,7 @@ func (a *App) retainCandidateLocked(kind cleanupKind, id, cutoff string) error {
 		}
 		return a.discardTask(task)
 	}
-	cycle, err := store.Get[model.Cycle](a.store, "cycle", id)
+	cycle, err := store.Get(a.store, store.Cycles.Key(id))
 	if err != nil || cycle == nil || cycle.Lifecycle.DiscardedAt != nil || cycle.Status == model.CycleRunning {
 		return err
 	}
@@ -246,5 +248,5 @@ func (a *App) measureStorage(cfg config.Config) error {
 		transcripts.Status = "measured"
 	}
 	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
-	return a.store.Put("settings", "storage", usage)
+	return store.Put(a.store, storageKey, usage)
 }

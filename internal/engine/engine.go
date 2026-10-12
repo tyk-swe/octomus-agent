@@ -140,7 +140,7 @@ func (a *App) notify() {
 }
 
 func (a *App) Config() (config.Config, error) {
-	cfg, err := store.Get[config.Config](a.store, "settings", "config")
+	cfg, err := store.Get(a.store, store.ConfigKey)
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -151,7 +151,7 @@ func (a *App) Config() (config.Config, error) {
 }
 
 func (a *App) Control() (model.Control, error) {
-	control, err := store.Get[model.Control](a.store, "settings", "control")
+	control, err := store.Get(a.store, store.ControlKey)
 	if err != nil {
 		return model.Control{}, err
 	}

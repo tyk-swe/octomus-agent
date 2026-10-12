@@ -63,9 +63,11 @@ strict typed JSON boundaries for saved records and API requests.
   process.
 - `internal/config`, `internal/model`, `internal/store`: policy, durable records
   and SQLite. In the store, `store.go` holds records, transactions and admission
-  reservation; `schema.sql` is the complete fresh DDL, whose triggers maintain the
-  record projections, counts, batch membership, proposal rows, PR reservation
-  release and the attention outbox; `schema.go` checks the version, creates fresh
+  reservation; `keys.go` holds the typed record keys (each record kind with its Go
+  type, and the settings keys); `schema.sql` is the complete fresh DDL, whose
+  triggers maintain the record projections, counts, batch membership, proposal
+  rows, PR reservation release and the attention outbox; `schema.go` checks the
+  version, creates fresh
   databases and runs the backup-then-migrate upgrade path over `migrations/`, with
   `export_test.go`'s plan hooks and the `testdata/state-v*.db` goldens exercising
   it; `queries.go`, `capacity.go`, `notifications.go`, `automerge.go` and

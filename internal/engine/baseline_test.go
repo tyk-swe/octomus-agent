@@ -13,6 +13,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // baselineApp is an App over a plain local repository with no routes configured: a baseline needs none.
@@ -40,7 +41,7 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 		t.Fatal(err)
 	}
 	state := openStore(t, data)
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	return New(state, data), cfg
@@ -126,10 +127,10 @@ func TestBaselineViewStaleness(t *testing.T) {
 	check.Revision = &revision
 	check.CompletedAt = &completed
 	check.WorkspaceRemoved = true
-	if err := app.store.Put("baseline", check.ID, check); err != nil {
+	if err := store.Put(app.store, store.Baselines.Key(check.ID), check); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.store.Put("settings", "baseline_latest", check.ID); err != nil {
+	if err := store.Put(app.store, store.Setting[string]("baseline_latest"), check.ID); err != nil {
 		t.Fatal(err)
 	}
 	view, err := app.BaselineView(nil)
@@ -183,7 +184,7 @@ func TestBaselineViewStaleness(t *testing.T) {
 	}
 	changed := cfg.Clone()
 	changed.DefaultBranch = "moved"
-	if err := app.store.Put("settings", "config", changed); err != nil {
+	if err := store.Put(app.store, store.ConfigKey, changed); err != nil {
 		t.Fatal(err)
 	}
 	view, err = app.BaselineView(nil)
@@ -201,7 +202,7 @@ func TestBaselineViewStaleness(t *testing.T) {
 	}
 	noCommands := changed.Clone()
 	noCommands.VerificationCommands = []string{}
-	if err := app.store.Put("settings", "config", noCommands); err != nil {
+	if err := store.Put(app.store, store.ConfigKey, noCommands); err != nil {
 		t.Fatal(err)
 	}
 	view, err = app.BaselineView(nil)

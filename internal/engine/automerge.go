@@ -187,7 +187,7 @@ func (a *App) mergeCandidate(ctx context.Context, cfg config.Config, modeOff, pa
 	if merge == nil || (!merge.Status.Pending() && merge.Status != model.AutoMergeManual) {
 		return
 	}
-	task, err := store.Get[model.Task](a.store, "task", merge.TaskID)
+	task, err := store.Get(a.store, store.Tasks.Key(merge.TaskID))
 	if err != nil {
 		a.setRecoveryError(err)
 		return
@@ -427,7 +427,7 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 	if a.recoveryConflict() != nil {
 		return
 	}
-	current, err := store.Get[model.Task](a.store, "task", merge.TaskID)
+	current, err := store.Get(a.store, store.Tasks.Key(merge.TaskID))
 	if err != nil || current == nil {
 		return
 	}
@@ -449,7 +449,7 @@ func (a *App) mergeAttempt(ctx context.Context, task model.Task, observation mod
 		!strings.EqualFold(current.Config.GitHubRepo, observation.Repository) {
 		return
 	}
-	cancelled, err := a.store.Marked("cancel", merge.TaskID)
+	cancelled, err := a.store.CancelMarked(merge.TaskID)
 	if err != nil || cancelled {
 		return
 	}

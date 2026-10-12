@@ -26,7 +26,7 @@ func (a *App) CycleAction(id, action string) error {
 	a.wg.Add(1)
 	defer a.wg.Done()
 	defer a.gate.Unlock()
-	cycle, err := store.Get[model.Cycle](a.store, "cycle", id)
+	cycle, err := store.Get(a.store, store.Cycles.Key(id))
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func (a *App) CycleAction(id, action string) error {
 	switch action {
 	case "archive":
 		cycle.Lifecycle.ArchivedAt = new(model.Now())
-		if err := a.store.Put("cycle", id, *cycle); err != nil {
+		if err := store.Put(a.store, store.Cycles.Key(id), *cycle); err != nil {
 			return err
 		}
 	case "discard":
@@ -200,7 +200,7 @@ func (a *App) retryTask(task *model.Task) error {
 }
 
 func (a *App) eligibleTask(id, action string) (*model.Task, error) {
-	task, err := store.Get[model.Task](a.store, "task", id)
+	task, err := store.Get(a.store, store.Tasks.Key(id))
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func (a *App) discardTask(task *model.Task) error {
 			return err
 		}
 	}
-	current, err := store.Get[model.Task](a.store, "task", task.ID)
+	current, err := store.Get(a.store, store.Tasks.Key(task.ID))
 	if err != nil {
 		return err
 	}
@@ -368,7 +368,7 @@ func (a *App) discardTask(task *model.Task) error {
 		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
 	}
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.store.Put("task", current.ID, *current); err != nil {
+	if err := a.store.SaveTask(*current); err != nil {
 		return err
 	}
 	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
@@ -390,7 +390,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	if err := a.removeOwnedRoot(cleanupCycle, cycle.ID, root, filepath.Join(root, cycle.ID)); err != nil {
 		return err
 	}
-	current, err := store.Get[model.Cycle](a.store, "cycle", cycle.ID)
+	current, err := store.Get(a.store, store.Cycles.Key(cycle.ID))
 	if err != nil {
 		return err
 	}
@@ -401,7 +401,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
 	}
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.store.Put("cycle", current.ID, *current); err != nil {
+	if err := store.Put(a.store, store.Cycles.Key(current.ID), *current); err != nil {
 		return err
 	}
 	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt

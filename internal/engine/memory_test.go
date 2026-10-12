@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,8 +13,17 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
+
+func putRaw(state *store.Store, key store.Key[json.RawMessage], record map[string]any) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return store.Put(state, key, data)
+}
 
 func TestDecisionMemoryReconsideration(t *testing.T) {
 	t.Parallel()
@@ -47,7 +57,7 @@ func TestDecisionMemoryReconsideration(t *testing.T) {
 			"reason": "Recorded reason", "source_revision": recorded,
 			"context_fingerprint": fingerprint, "reconsider_after": after, "cycle_id": cycleID,
 		}
-		if err := f.state.Put("decision", id, record); err != nil {
+		if err := putRaw(f.state, store.Decisions.Key(id).Raw(), record); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -203,12 +213,12 @@ func TestDecisionAdmissionBeyondPromptWindow(t *testing.T) {
 	proposed := proposal("repeat", cfg.DefaultBranch)
 	proposed.ProblemKey = "unchanged-problem"
 	old := savedDecision(strings.ToUpper(cfg.GitHubRepo), cfg.DefaultBranch, "old", proposed.ProblemIdentity(), grounding.Revision)
-	if err := state.Put("decision", old.ID, old); err != nil {
+	if err := store.Put(state, store.Decisions.Key(old.ID), old); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 100 {
 		id := fmt.Sprintf("unrelated-%d", i)
-		if err := state.Put("decision", id, savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, id, id, grounding.Revision)); err != nil {
+		if err := store.Put(state, store.Decisions.Key(id), savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, id, id, grounding.Revision)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -236,7 +246,7 @@ func TestDecisionAdmissionBeyondPromptWindow(t *testing.T) {
 		t.Fatalf("explicit rediscovery failed: %v", err)
 	}
 	old.ReconsiderAfter = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	if err := state.Put("decision", old.ID, old); err != nil {
+	if err := store.Put(state, store.Decisions.Key(old.ID), old); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil); err != nil {
@@ -257,17 +267,17 @@ func TestDecisionPromptFiltersTargetsBeforeLimit(t *testing.T) {
 		savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, "main", "main", grounding.Revision),
 		savedDecision(cfg.GitHubRepo, pr.Branch, "open", "open", pr.Head),
 	} {
-		if err := state.Put("decision", record.ID, record); err != nil {
+		if err := store.Put(state, store.Decisions.Key(record.ID), record); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := range 100 {
 		id := fmt.Sprintf("closed-%d", i)
-		if err := state.Put("decision", id, savedDecision(cfg.GitHubRepo, "octomus/closed", id, id, "closed")); err != nil {
+		if err := store.Put(state, store.Decisions.Key(id), savedDecision(cfg.GitHubRepo, "octomus/closed", id, id, "closed")); err != nil {
 			t.Fatal(err)
 		}
 		id = fmt.Sprintf("other-repository-%d", i)
-		if err := state.Put("decision", id, savedDecision("another/repository", cfg.DefaultBranch, id, id, grounding.Revision)); err != nil {
+		if err := store.Put(state, store.Decisions.Key(id), savedDecision("another/repository", cfg.DefaultBranch, id, id, grounding.Revision)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -287,12 +297,12 @@ func TestPlanRejectsDecisionOutsidePromptWindow(t *testing.T) {
 	f := newFixture(t)
 	revision := git(t, f.repo, "rev-parse", "HEAD")
 	old := savedDecision(f.cfg.GitHubRepo, f.cfg.DefaultBranch, "old-rejection", model.ProblemIdentity("Complete the fixture feature", ""), revision)
-	if err := f.state.Put("decision", old.ID, old); err != nil {
+	if err := store.Put(f.state, store.Decisions.Key(old.ID), old); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 100 {
 		id := fmt.Sprintf("unrelated-%d", i)
-		if err := f.state.Put("decision", id, savedDecision(f.cfg.GitHubRepo, f.cfg.DefaultBranch, id, id, revision)); err != nil {
+		if err := store.Put(f.state, store.Decisions.Key(id), savedDecision(f.cfg.GitHubRepo, f.cfg.DefaultBranch, id, id, revision)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -318,12 +328,12 @@ func TestDecisionAdmissionChecksAllExactHistory(t *testing.T) {
 	proposed := proposal("repeat", cfg.DefaultBranch)
 	proposed.ProblemKey = "same-problem"
 	old := savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, "still-current", proposed.ProblemIdentity(), grounding.Revision)
-	if err := state.Put("decision", old.ID, old); err != nil {
+	if err := store.Put(state, store.Decisions.Key(old.ID), old); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 100 {
 		id := fmt.Sprintf("different-context-%d", i)
-		if err := state.Put("decision", id, savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, id, proposed.ProblemIdentity(), id)); err != nil {
+		if err := store.Put(state, store.Decisions.Key(id), savedDecision(cfg.GitHubRepo, cfg.DefaultBranch, id, proposed.ProblemIdentity(), id)); err != nil {
 			t.Fatal(err)
 		}
 	}

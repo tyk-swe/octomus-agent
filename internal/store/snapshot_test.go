@@ -15,8 +15,8 @@ func TestTypedSnapshotKeepsCycleAndTaskEvidenceTogether(t *testing.T) {
 	cycle := cycleFor(task)
 	task.CycleID = cycle.ID
 	cycle.Assessments = []any{"historical malformed assessment"}
-	must(t, s.Put("cycle", cycle.ID, cycle))
-	must(t, s.Put("task", task.ID, task))
+	must(t, store.Put(s, store.Cycles.Key(cycle.ID), cycle))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), task))
 	r, err := store.OpenReadOnly(path, "snapshot test")
 	must(t, err)
 	defer r.Close()
@@ -63,11 +63,11 @@ func TestSnapshotSelectsExactEvidenceBeforeDecoding(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
 	task := task()
-	must(t, s.Put("task", task.ID, task))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), task))
 	observation := model.PRObservation{
 		Repository: "Fixture/Project", PR: model.PullRequest{Number: 5, State: "open"},
 	}
-	must(t, s.Put("pr", "fixture/project:5", observation))
+	must(t, store.Put(s, store.PRs.Key("fixture/project:5"), observation))
 	db := raw(t, path)
 	// These unrelated records cannot decode as their domain types. Bounded
 	// selectors must exclude them before touching full historical evidence.
@@ -91,7 +91,7 @@ func TestSnapshotSelectsExactEvidenceBeforeDecoding(t *testing.T) {
 		return nil
 	}))
 	for _, id := range []string{"duplicate-a", "duplicate-b"} {
-		must(t, s.Put("pr", id, observation))
+		must(t, store.Put(s, store.PRs.Key(id), observation))
 	}
 	must(t, s.Snapshot(func(snapshot *store.Snapshot) error {
 		observations, err := snapshot.PRObservations("fixture/project", 5)

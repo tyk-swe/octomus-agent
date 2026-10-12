@@ -54,7 +54,7 @@ func TestVerificationMutationFails(t *testing.T) {
 		if err == nil || model.BlockedReasonFromError(err) != model.BlockedWorkspaceInvalid {
 			t.Fatalf("commands %v: err = %v, want workspace_invalid", commands, err)
 		}
-		saved, getErr := store.Get[model.Task](app.store, "task", task.ID)
+		saved, getErr := store.Get(app.store, store.Tasks.Key(task.ID))
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
@@ -174,7 +174,7 @@ func TestEvidenceRedactsAdjacentSecrets(t *testing.T) {
 				if status, err := app.executeBaseline(context.Background(), &check); err != nil || status != model.BaselineStatusFailed {
 					t.Fatalf("baseline = %v, %v", status, err)
 				}
-				saved, err := store.Get[model.BaselineCheck](app.store, "baseline", check.ID)
+				saved, err := store.Get(app.store, store.Baselines.Key(check.ID))
 				if err != nil || saved == nil || len(saved.Commands) != 1 || saved.Commands[0].Success {
 					t.Fatalf("expected saved baseline failure: %+v, %v", saved, err)
 				}

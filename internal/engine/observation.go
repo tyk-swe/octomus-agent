@@ -299,7 +299,7 @@ func (a *App) releasableReservations(ctx context.Context, cfg config.Config, inv
 		if _, open := represented[reservation.Branch]; open {
 			continue
 		}
-		task, err := store.Get[model.Task](a.store, "task", reservation.TaskID)
+		task, err := store.Get(a.store, store.Tasks.Key(reservation.TaskID))
 		if err != nil {
 			return nil, err
 		}
