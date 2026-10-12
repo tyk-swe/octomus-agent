@@ -2,24 +2,21 @@
 
 Each release publishes x86_64 and aarch64 archives with `SHA256SUMS`, plus signed
 `octomus-agent` and `octomus-sandbox` images on GHCR; the [changelog](../CHANGELOG.md)
-records what each one shipped. Local packages, fixture tests and workflow definitions do
-not prove public download availability; the release page, the green release workflow run
-and the installer's checksum verification do.
+records what each shipped. Only the release page, the green release workflow run and the
+installer's checksum verification prove public download availability, not local
+packages, fixture tests or workflow definitions.
 
 ## Version
 
-The application version lives in the `VERSION` file at the repository root. The
-Go binary embeds it at compile time, so `--version`, `/healthz` and runner
-client metadata all report the same string. The dashboard build shows it too, and
-release tooling reads the same file for tag validation and archive names. Bump it
+The version lives in the `VERSION` file at the repository root; the binary, `/healthz`,
+runner client metadata, the dashboard build and release tooling all read it, so bump it
 in one place only. A published version must start with a digit and use only letters,
-digits, dots and hyphens, up to 128 characters: it is also an OCI tag. SemVer build
-metadata containing `+` cannot be used as an image tag.
+digits, dots and hyphens, up to 128 characters, because it is also an OCI tag (SemVer
+build metadata containing `+` cannot be used).
 
-Local packaging, release tags and OCI metadata use one bounded version validator in
-`scripts/release-images.py`. `scripts/package.sh` runs its offline preflight through
-`scripts/release.py version --tag` before writing an archive; no account or GitHub
-request is needed to validate a local version.
+One bounded validator in `scripts/release-images.py` serves local packaging, release
+tags and OCI metadata; `scripts/package.sh` runs it offline through
+`scripts/release.py version --tag` before writing an archive.
 
 ## Build and package
 
@@ -31,10 +28,9 @@ make audit
 make package
 ```
 
-`make audit` runs govulncheck (`go run golang.org/x/vuln/cmd/govulncheck@v1.8.0`,
-pinned) plus `npm audit`; it needs module download access. Dashboard assets are
-generated before the Go build and embedded with `go:embed`. Compilation fails if
-`web/build` output is absent. Rebuild after UI edits. The output is
+`make audit` runs the pinned govulncheck plus `npm audit` and needs module download
+access. Dashboard assets are generated before the Go build and embedded with `go:embed`;
+compilation fails if `web/build` is absent, so rebuild after UI edits. The output is
 `dist/octomus-agent-vVERSION-TARGET.tar.gz` plus `SHA256SUMS`. GNU/Linux x86_64
 and aarch64 are the supported release targets; Ubuntu 24.04 is the release build
 and smoke-test baseline. The build is statically linked (`CGO_ENABLED=0`), so
@@ -43,17 +39,18 @@ the executable needs no build toolchain or minimum glibc at runtime.
 The archive contains `octomus-agent/octomus-agent`, license, policies and operator
 documentation. It never packages live state or separate runtime dashboard files.
 `scripts/release-files.txt` lists every public input besides the executable, and
-`scripts/package.sh` archives exactly those files with normalised permissions; CI
-smoke-tests the executable extracted from each archive. Packaging works without Git
-metadata and rejects any listed input that is not a regular file or whose path has a
-symlinked or non-canonical component.
-The installer validates a single matching SHA-256 entry before extracting only
-the executable, then replaces the destination binary. Set an absolute writable
-`INSTALL_DIR` to avoid sudo. A failed copy or rename leaves the previous
-destination intact and removes the temporary executable. The destination must
-not be a directory; an existing symlink is replaced without following its target.
-Downloads and checksums come from the same release;
-release archives do not include Sigstore signatures.
+`scripts/package.sh` archives exactly those files with normalised permissions, rejecting
+any that is not a regular file or has a symlinked or non-canonical path; CI smoke-tests
+the executable extracted from each archive. Files not listed there (such as
+`AGENTS.md`, `CONTRIBUTING.md` and this document) are not shipped, so shipped documents
+link to them by GitHub URL.
+
+The installer validates a single matching SHA-256 entry before extracting only the
+executable, then replaces the destination binary; a failed copy or rename leaves the
+previous destination intact. Set an absolute writable `INSTALL_DIR` to avoid sudo. The
+destination must not be a directory, and an existing symlink is replaced without
+following its target. Downloads and checksums come from the same release, and archives
+do not include Sigstore signatures.
 
 ## GitHub release workflow
 
@@ -64,9 +61,9 @@ commit: source checks, vulnerability audits, race tests, service and browser tes
 native package smoke tests, client contracts, sandbox tests and production image
 acceptance. A failed gate prevents release staging and image publication.
 
-The native Ubuntu 24.04 package jobs build the x86_64 and aarch64 archives once.
-The image jobs build the production OCI archives once and test their retained native
-manifests as described below. After every required check passes, the publisher
+Native Ubuntu 24.04 jobs build the x86_64 and aarch64 archives once, and the image jobs
+build the production OCI archives once and test their retained native manifests (see
+[Container images](#container-images)). After every required check passes, the publisher
 assembles these six release assets:
 
 - `octomus-agent-vVERSION-x86_64-unknown-linux-gnu.tar.gz`
@@ -93,38 +90,38 @@ The manual workflow has three paths:
 | Draft or published | Nonempty | Update only the description; preserve the hidden input receipt |
 | Draft or published | Empty | Recover original inputs, finish publication if needed, retry promotion and signing |
 
-Notes updates do not build, test, install, upload assets, publish a draft or promote
-images. They also work for historical releases whose tags predate the current scripts
-or state schema: the workflow uses its own exact revision's helper code and skips
-source/version checks for this operation. Do not remove the hidden input receipt when
-editing a release description manually.
+Notes updates do not build, test, upload assets, publish a draft or promote images, and
+they also work for historical releases whose tags predate the current scripts or state
+schema. Do not remove the hidden input receipt when editing a release description
+manually.
 
 An interrupted draft upload downloads the artifacts from the **original** run and
-requires every reconstructed asset to match the receipt. It never uses a later run's
-build. Package, image and acceptance artifacts retain 90 days, subject to repository
-retention limits. Once all assets are uploaded, retries read the permanent release
-assets and no longer need Actions artifacts. A failed upload's incomplete `starter`
-asset may be removed and retried only while the release is a draft; completed assets
-are never overwritten. A changed asset, moved tag, missing receipt or expired original
-artifact stops recovery. Recover the original verified inputs or release a new version;
-rebuilding into an existing version is not a recovery method. Legacy releases without
-retained inputs still support notes updates, but cannot use image recovery.
+requires every reconstructed asset to match the receipt; it never uses a later run's
+build. Package, image and acceptance artifacts are retained for 90 days, subject to
+repository retention limits, and once all assets are uploaded retries read the permanent
+release assets instead. A failed upload's incomplete `starter` asset may be removed and
+retried only while the release is a draft; completed assets are never overwritten. A
+changed asset, moved tag, missing receipt or expired original artifact stops recovery:
+recover the original verified inputs or release a new version, never rebuild into an
+existing version. Legacy releases without retained inputs support notes updates but not
+image recovery.
 
-For recovery, start a fresh manual dispatch with the same tag and **empty notes**.
-GitHub's **Re-run failed jobs** can reuse an earlier preparation result of `build`;
-if a draft was created since that result, staging safely refuses it. A fresh dispatch
-or **Re-run all jobs** reruns preparation and selects the retained-input recovery path.
+To recover, start a fresh manual dispatch with the same tag and **empty notes**. GitHub's
+**Re-run failed jobs** can reuse an earlier preparation result, which staging safely
+refuses if a draft was created since; a fresh dispatch or **Re-run all jobs** reruns
+preparation and selects the retained-input recovery path.
 
-Releases with the same tag queue rather than cancel one another. Repository CI and
-release CI have separate concurrency groups. Draft discovery uses the paginated release
-list as well as get-by-tag; GitHub exposes drafts only to identities with push access,
-so the preparation job has contents-write permission even though it only reads.
+Releases with the same tag queue rather than cancel one another, and repository CI and
+release CI have separate concurrency groups. GitHub exposes drafts only to identities
+with push access, so the preparation job has contents-write permission even though it
+only reads.
 
-The workflow does not push tags, merge PRs or change repository/package visibility. Before enabling live
-workers, configure release-tag protections so their GitHub identity cannot trigger a
-release by pushing a tag. Restrict changes to release descriptions, assets, workflow
-code and registry tags to trusted release administrators. These repository controls
-are an owner setup action; worker prompts are not an authorization boundary.
+The workflow does not push tags, merge PRs or change repository/package visibility.
+Before enabling live workers, configure release-tag protections so their GitHub identity
+cannot trigger a release by pushing a tag. Restrict changes to release descriptions,
+assets, workflow code and registry tags to trusted release administrators. These
+repository controls are an owner setup action; worker prompts are not an authorization
+boundary.
 
 ## Container images
 
@@ -132,13 +129,27 @@ The CI gate builds the two Docker images for `linux/amd64` and `linux/arm64`:
 `ghcr.io/tyk-swe/octomus-agent:<version>` (the control plane, broker and egress gateway) and
 `ghcr.io/tyk-swe/octomus-sandbox:<version>`. The unchanged production Dockerfiles produce
 multi-platform OCI archives with source/version/image labels, SBOM and build provenance.
-Separate native amd64 and arm64 runners load those exact manifests. They exercise the
-real pinned Codex and OpenCode clients through the production broker, helper and egress
-gateway, using a synthetic HTTPS provider with the normal TLS and egress policy active.
-The acceptance gate requires structured completion, session resume in new containers,
-cancellation, verification, containment, dashboard boot and complete cleanup. Host
-inspections bind each recorded runner to its actual image, networks and mounts. See
-[Sandbox validation](sandbox.md#checked-so-far-and-what-is-still-yours-to-check) for the topology.
+Each native amd64 and arm64 runner imports its manifest without rebuilding, boots the
+embedded dashboard, and runs the real pinned Codex and OpenCode clients through the
+production broker, helper and egress gateway. A synthetic HTTPS provider supplies
+deterministic responses through the normal leased CONNECT gateway, so no live provider
+account is used and the TLS and egress policy stay active. The gate requires completed
+turns with structured output, persisted-session resume in a fresh container,
+cancellation, verification, all eleven containment checks, dashboard boot and complete
+cleanup. The host inspects each of the four runner containers before its turn continues,
+verifies its exact image, network and mounts and records its distinct container ID;
+direct connections to the fixture's address must fail from runner and verification
+containers, and complete broker evidence, provider CONNECT counts and zero remaining
+sandboxes and leases are required.
+
+`make test-production-images` runs this acceptance on a disposable Docker Engine 28+
+host with Compose, Skopeo and OpenSSL, given the retained `dist/images/*.oci.tar`
+archives. The synthetic provider sits on a separate internal bridge using
+`11.255.254.0/24`, a globally numbered range reserved locally for the test (it contacts
+nothing there); the gateway is the only deployment service that also joins that bridge,
+the provider publishes no host port, and using a globally classified address keeps the
+gateway's private-address denial in force. Temporary keys, provider state and volumes are
+removed at teardown.
 
 After the complete release becomes public, the image job downloads its retained assets
 and checks their hashes, manifests, source identity and both native receipts. Skopeo

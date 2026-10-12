@@ -12,10 +12,10 @@ repo=https://github.com/tyk-swe/octomus-agent
 version=${1:-${OCTOMUS_VERSION:-}}
 if [ -z "$version" ]; then
   latest=$(curl --proto '=https' --proto-redir '=https' -fsSL -o /dev/null -w '%{url_effective}' "$repo/releases/latest") || fail 'No downloadable release; check release availability'
-  case "$latest" in */releases/tag/v[0-9]*) ;; *) fail 'No published stable release found; pass a version such as v0.1.0';; esac
+  case "$latest" in */releases/tag/v[0-9]*) ;; *) fail 'No published stable release found; pass a version such as vX.Y.Z';; esac
   version=${latest##*/}
 fi
-case "$version" in v[0-9]*) ;; *) fail 'Version must be a release tag such as v0.1.0';; esac
+case "$version" in v[0-9]*) ;; *) fail 'Version must be a release tag such as vX.Y.Z';; esac
 case "$version" in *[!a-zA-Z0-9.+-]*) fail 'Invalid version';; esac
 dest=${INSTALL_DIR:-/usr/local/bin}
 case "$dest" in /*) ;; *) fail 'INSTALL_DIR must be absolute';; esac

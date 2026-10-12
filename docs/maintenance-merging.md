@@ -15,12 +15,11 @@ retarget a PR after a client checks it. Another read narrows that window without
 closing it. Octomus therefore uses a dedicated merger credential whose branch updates
 are restricted by a repository ruleset **at the time GitHub applies the merge**.
 
-This assumes the trusted repository administrators maintain the configured ruleset.
-An administrator who removes the restriction changes the security policy; Octomus
-cannot defend against an administrator intentionally changing protections during a
-request. Pause maintenance before changing the ruleset, merger identity, or default
-branch. Octomus checks the current policy before every attempt and never installs,
-edits or bypasses repository rules itself.
+This assumes the trusted repository administrators maintain the configured ruleset;
+Octomus cannot defend against an administrator removing protections during a request.
+Pause maintenance before changing the ruleset, merger identity, or default branch.
+Octomus checks the current policy before every attempt and never installs, edits or
+bypasses repository rules itself.
 
 ## Configure the repository
 
@@ -55,12 +54,11 @@ The ruleset ID is allocated by GitHub; it is not part of the create request.
 }
 ```
 
-Add each trusted publisher or maintainer who must update other branches to the
-explicit user bypass list, including the normal publication identity. **Never add the
-merger.** This rule affects every non-default branch, including branches created in
-the future. Review the bypass list before activating it so ordinary collaborators
-retain the intended access. An empty list is restrictive and accepted, but prevents
-all non-default branch updates. Creation is separate from update permission.
+Add each trusted publisher or maintainer who must update other branches, including the
+normal publication identity, to the explicit user bypass list. **Never add the merger.**
+This rule affects every non-default branch, including future ones, so review the bypass
+list before activating it. An empty list is accepted but prevents all non-default branch
+updates. Creation is separate from update permission.
 
 Octomus deliberately accepts only explicit `User` bypass entries. Team, repository
 role, organization-administrator, deploy-key and App bypasses need additional
@@ -85,10 +83,10 @@ for setup and access details.
 | `OCTOMUS_MERGE_TOKEN_FILE` | Alternative one-line secret file; do not also set the token variable |
 | `OCTOMUS_MERGE_RULESET_ID` | Positive numeric ID of the active repository ruleset above |
 
-These are deployment settings, not editable dashboard fields. The merger secret and
-its file path are removed from ordinary child environments. Only the two dedicated
-`gh` requests receive the token as `GH_TOKEN`; it is never passed as a command argument,
-used by the Git credential helper, persisted in state, or supplied to a sandbox.
+These are deployment settings, not dashboard fields. Only the two dedicated `gh`
+requests receive the token (as `GH_TOKEN`); the token and its file path are removed from
+ordinary child environments, and it is never passed as an argument, used by the Git
+credential helper, persisted in state, or supplied to a sandbox.
 
 For Docker Compose, install the token file with the same ownership as the existing
 deployment secrets, set the ruleset ID in `.env`, and include the optional overlay:
@@ -109,11 +107,11 @@ does not authorize a PR by itself: every original maintenance gate still has to 
 
 A missing token, inactive/wrong ruleset, hidden bypass list, ambiguous identity, or
 unreadable policy produces Manual with its reason and no merge mutation. The reviewed
-authorization remains recorded; after correcting deployment settings, continuous
-operation can check again. A new run-once batch does not adopt an older manual
+authorization remains recorded, and continuous operation can check again after you
+correct deployment settings. A new run-once batch does not adopt an older manual
 delivery: use continuous operation, merge it manually, or produce a new reviewed
-delivery. A GitHub refusal
-at the mutation, including a retargeted destination, never counts as a merged PR.
+delivery. A GitHub refusal at the mutation, including a retargeted destination, never
+counts as a merged PR.
 
 After a successful acknowledgement, Octomus reads the authoritative PR outcome and
 checks the repository, source branch, reviewed head, destination and merge commit
@@ -121,7 +119,5 @@ before recording **confirmed**. If that read fails or disagrees, the outcome sta
 **uncertain** for reconciliation. Recovery observes the remote before another attempt;
 a matching completed merge can be recorded as **observed** without repeating the write.
 
-The deterministic GitHub fixture models this same configured update rule. Its race
-regression retargets the PR inside the merge operation, after policy/readiness reads,
-and checks that neither branch changed. It does not invent a base-SHA or base-name
-guard in GitHub's merge API. Live repository-policy setup remains an operator action.
+The test fixture models this update rule, including a retarget inside the merge
+operation; live repository-policy setup remains an operator action.

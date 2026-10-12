@@ -33,8 +33,8 @@ running repository content.
 
 ## Quick start
 
-For prerequisites, installation and the first run, follow [Getting started](docs/getting-started.md).
-The short version is:
+For prerequisites, installation and the first run, follow
+[Getting started](docs/getting-started.md). In short:
 
 1. Deploy the Docker stack or the dedicated-VM service.
 2. Sign in the runner and open the loopback dashboard through SSH.
@@ -59,7 +59,7 @@ see [cost and usage](docs/cost.md).
 | [Run evidence](docs/run-evidence.md) | `RunEvidenceV1` export and its limits |
 | [Cost](docs/cost.md) | Session admissions and usage reporting |
 | [Maintenance merging](docs/maintenance-merging.md) | Destination protections for automatic maintenance merges |
-| [Releasing](docs/releasing.md) | Packaging and release workflow |
+| [Releasing](https://github.com/tyk-swe/octomus-agent/blob/main/docs/releasing.md) | Packaging and release workflow |
 
 ## Security and contribution
 
@@ -67,5 +67,7 @@ Repository content, dependencies and model output are untrusted. Keep the dashbo
 loopback behind SSH, use a random operator token and restrict the GitHub token to this
 repository. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
 
-Contribution rules and the repository map are in [CONTRIBUTING.md](CONTRIBUTING.md) and
-[AGENTS.md](AGENTS.md). License: [Apache-2.0](LICENSE).
+Contribution rules and the repository map are in
+[CONTRIBUTING.md](https://github.com/tyk-swe/octomus-agent/blob/main/CONTRIBUTING.md) and
+[AGENTS.md](https://github.com/tyk-swe/octomus-agent/blob/main/AGENTS.md).
+License: [Apache-2.0](LICENSE).

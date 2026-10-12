@@ -37,20 +37,16 @@ The same nine caveats ship inside each export as `limitations`:
 | HTTP | `GET /api/cycles/{id}/evidence` with `Authorization: Bearer <operator token>` |
 | CLI | `octomus-agent --data-dir <dir> --export-run <cycle-id>` |
 
-Both share the typed `store.Snapshot` reader, one assembler and one redaction pass
-in `internal/export` (`export.RunEvidence` for the HTTP route, `export.Run` for the
-CLI), so their output is identical apart from `generated_at`. The store owns SQL,
-indexes and record selection; the export layer owns evidence interpretation.
-
-The HTTP route sits inside the existing authenticated API router, so it inherits the
-operator token check, the authentication backoff and the response-wide redaction pass.
-Unknown cycles return `404 {"error":"Cycle not found"}`.
+Both share one reader, assembler and redaction pass, so their output is identical apart
+from `generated_at`. The HTTP route inherits the API's operator token check,
+authentication backoff and response-wide redaction; unknown cycles return
+`404 {"error":"Cycle not found"}`.
 
 `--export-run` follows `--usage-report`: it opens the existing database read-only and
-returns **before** directory creation, permission changes or service locking,
-`App` construction and worker startup. Diagnostics go to stderr; stdout carries only the
-JSON. It conflicts with `--doctor`, `--print-config` and `--usage-report`. A missing
-state database or a missing cycle is an explicit error, never an empty successful export.
+returns before directory creation, permission changes, service locking or worker
+startup. Diagnostics go to stderr and stdout carries only the JSON. It conflicts with
+`--doctor`, `--print-config` and `--usage-report`, and a missing state database or cycle
+is an explicit error, never an empty successful export.
 
 ### Exporting from a copy of saved state
 
@@ -60,7 +56,7 @@ a disposable copy in a private directory outside Git and any served root, and re
 capture time, source identity and snapshot checksum privately.
 
 A plain file copy of a live SQLite database can lose recent writes still in the
-write-ahead log. The example below is owner-operated.
+write-ahead log, so use SQLite's backup API as in this owner-operated example.
 
 ```sh
 (
@@ -96,10 +92,9 @@ after an error and retry with a new private filename.
 ## Consistency and joins
 
 The cycle and its tasks are read inside **one** database transaction, so a cycle can
-never be paired with tasks from a later write. The dashboard's recent-task window is not
-used; task selection uses the saved `cycle_id` index before decoding full records.
-Maintenance PR evidence uses the repository/PR-number identity index, is read in
-that same snapshot, and refuses duplicate identities rather than choosing one.
+never be paired with tasks from a later write, and the dashboard's recent-task window is
+not used. Maintenance PR evidence is read in the same snapshot and refuses duplicate
+repository/PR-number identities rather than choosing one.
 
 Tasks are joined to proposals strictly on `(cycle_id, proposal_id)` — never by title,
 never by proposal ID alone, and never by "whichever task is newest". Proposal IDs repeat
@@ -137,12 +132,10 @@ The TypeScript mirror is `RunEvidenceV1` in `web/src/lib/types.ts`.
 
 ### Reviewer verdicts
 
-Proposal assessments are stored as untyped JSON batches on the cycle, appended in
-reviewer-slot order by `reviewProposals` (`internal/engine/planning.go`), with reviewer
-identity recorded separately as
-`adversary-a` / `adversary-b` sessions. Reviewer slots here are therefore **positional
-and fixed**: a malformed batch keeps its slot instead of shifting the next batch into the
-missing reviewer's identity.
+Proposal assessments are saved as untyped JSON batches on the cycle in reviewer-slot
+order, with reviewer identity recorded separately as `adversary-a` / `adversary-b`
+sessions. Reviewer slots are therefore **positional and fixed**: a malformed batch keeps
+its slot instead of shifting the next batch into the missing reviewer's identity.
 
 `state` is one of:
 
@@ -189,14 +182,13 @@ summaries, raw command output, task error text and arbitrary logs. Where a recor
 otherwise be summarized by private text, only the fact survives — `error_recorded`,
 `summary_present`, `results_recorded`.
 
-The store's existing redaction runs over the assembled value as defense in depth, after
-all facts are computed, so redacting a display string can never change a reported fact.
+Redaction runs over the assembled value after all facts are computed, so redacting a
+display string can never change a reported fact.
 
-Two joins stay outside the export. Tasks whose saved proposal ID is not among the
-cycle's proposals are counted only in the run-level `gaps`; their review and check
-evidence is not exported. The overview's "Recent tasks from this run" counts come from the
-dashboard's bounded recent-task window, not from this scan; the Inspect run panel is
-the complete view.
+Tasks whose saved proposal ID is not among the cycle's proposals are counted only in the
+run-level `gaps`; their review and check evidence is not exported. The overview's "Recent
+tasks from this run" counts come from the dashboard's bounded recent-task window, so the
+Inspect run panel is the complete view.
 
 ### Hash a candidate before sharing
 
@@ -207,8 +199,7 @@ octomus-agent --data-dir /var/lib/octomus/.octomus --export-run <cycle-id> > can
 sha256sum candidate.json
 ```
 
-The export is already the allowlisted `RunEvidenceV1` shape described above: it carries
-no prompts, transcripts, configuration, logs or command output, and its display strings
-are redacted. Supply the reviewer with the file, its exact-byte SHA-256 and a short
-provenance summary. Never fabricate, upgrade or remove adverse evidence to make a run
-presentable.
+The export carries no prompts, transcripts, configuration, logs or command output, and
+its display strings are redacted. Supply the reviewer with the file, its exact-byte
+SHA-256 and a short provenance summary. Never fabricate, upgrade or remove adverse
+evidence to make a run presentable.

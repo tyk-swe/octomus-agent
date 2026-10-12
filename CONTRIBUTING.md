@@ -15,10 +15,9 @@ reference before changing a contract:
 - [Run evidence](docs/run-evidence.md) for exported evidence.
 - [Releasing](docs/releasing.md) for versioning and package contents.
 
-The dashboard is embedded in the Go binary. Build its assets before Go analysis, and run
-the focused package checks while editing. The complete command inventory and test stages
-are maintained in [AGENTS.md#build-and-verify](AGENTS.md#build-and-verify); do not copy that
-list into another guide.
+The dashboard is embedded in the Go binary, so build its assets before Go analysis, and
+run focused package checks while editing. The command inventory and test stages live in
+[AGENTS.md](AGENTS.md#build-and-verify) alone.
 
 ## Pull requests
 

@@ -1,20 +1,15 @@
 # Cost and usage
 
-**Live measurements are pending.** No day-price or per-task dollar claim has been
-validated. Repository preparation and fixture tests do not establish live usage
-or billing evidence.
-
-Use existing provider subscription allowance only, with no paid overage.
-Record real usage measurements, the subscription fee and verified incremental
-charges when per-task dollar attribution is unavailable. A missing charge
-measurement is **unavailable**, not zero.
+Octomus publishes no live cost measurements and makes no per-task dollar claim.
+Admissions are not charges, and the service never infers provider billing. Set
+spending limits on your provider account, and capture usage and fees from the account
+itself. A missing charge measurement is **unavailable**, not zero.
 
 ## What is counted
 
 `octomus-agent --data-dir PATH --usage-report` exports a read-only JSON snapshot.
 Its schema version is 1. `daily` includes the daily budget counter and attributed
-admissions. Version-7 state records every admission in the ledger, so
-`has_admission_ledger` is always true and `unattributed_admissions` is zero; both
+admissions; `has_admission_ledger` (always true) and `unattributed_admissions` (zero)
 stay in the report shape. `cycles` includes
 planning wall time (not subsequent task execution), mode (audit/execution), status,
 per-decision proposal counts, planning admissions and task admissions associated
@@ -31,6 +26,6 @@ atomically.
 
 `recorded_completed_sessions` counts persisted thread records, not turns: repeated
 repairs share one record, and interrupted persistence can leave incomplete session
-metadata. Do not use thread counts to estimate billing. The report makes no
-provider charge or merged-PR inference. It does not collect tokens, account
-allowance, raw transcripts or prices; capture account observations separately.
+metadata, so do not use thread counts to estimate billing. The report makes no
+provider charge or merged-PR inference and collects no tokens, account allowance, raw
+transcripts or prices.

@@ -58,10 +58,12 @@ blocked. The API has no TLS listener, multi-user roles, per-operation authorizat
 expiry or comprehensive rate limit. It compares token hashes in constant time and applies a
 shared failed-authentication backoff; this is a deterrent, not public exposure protection.
 
-Request headers have a 10-second deadline, idle keep-alive closes after two minutes and
-bodies are limited to 256 KiB. Authenticated mutations require JSON content type. Health and
-dashboard assets are unauthenticated and reveal application identity/version. Rotate the
-operator token through the service environment and restart.
+Request headers, idle connections and bodies are bounded (see the
+[HTTP API](deployment.md#http-api)), and mutations require a JSON content type. Health and
+dashboard assets are unauthenticated and reveal application identity and version. Rotate the
+operator token by replacing its secret file or environment value and restarting; see
+[Docker](deployment.md#docker-deployment) or the
+[dedicated VM](deployment.md#dedicated-vm-without-a-sandbox).
 
 ## Redaction and evidence
 
