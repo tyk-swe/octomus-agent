@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"modernc.org/sqlite"
 )
 
@@ -166,7 +167,7 @@ func (s *Store) migrate(plan schemaPlan, from int64) error {
 				return err
 			}
 			if v+1 == latest {
-				return txEvent(c, "system", "upgrade", fmt.Sprintf("Upgraded state from schema version %d to %d; the pre-upgrade backup %s is kept until the operator removes it", from, latest, filepath.Base(backup)))
+				return txEvent(c, "system", model.EventUpgrade, fmt.Sprintf("Upgraded state from schema version %d to %d; the pre-upgrade backup %s is kept until the operator removes it", from, latest, filepath.Base(backup)))
 			}
 			return nil
 		})

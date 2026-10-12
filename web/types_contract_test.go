@@ -70,6 +70,7 @@ func TestVocabulariesMirrorGo(t *testing.T) {
 	}
 	for name, want := range map[string][]string{
 		"CycleMode":       enumNames[model.CycleMode](),
+		"EventKind":       enumNames[model.EventKind](),
 		"TaskAction":      enumNames[model.TaskAction](),
 		"CycleAction":     enumNames[model.CycleAction](),
 		"ControlAction":   enumNames[model.ControlAction](),

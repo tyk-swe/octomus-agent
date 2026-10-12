@@ -167,6 +167,9 @@ func TestGoldenOpensOnMain(t *testing.T) {
 			t.Fatalf("backups = %v", backups(t, path))
 		}
 	}
+	if events, err := s.Events(nil); err != nil || len(events) == 0 {
+		t.Fatalf("golden events: %d, %v", len(events), err)
+	}
 	tasks, err := store.List(s, store.Tasks)
 	must(t, err)
 	if len(tasks) != 3 {
@@ -355,7 +358,7 @@ func TestMigrationUpgradesGolden(t *testing.T) {
 	must(t, err)
 	upgrade := 0
 	for _, event := range events {
-		if event.Kind == "upgrade" {
+		if event.Kind == model.EventUpgrade {
 			upgrade++
 			if !strings.Contains(event.Message, "version 7 to 8") {
 				t.Fatalf("upgrade event: %+v", event)

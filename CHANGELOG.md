@@ -5,6 +5,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard marks every failure activity kind (planning, worker, recovery, cleanup,
+  housekeeping and baseline errors) as an error, not only generic errors.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

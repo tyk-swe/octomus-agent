@@ -169,7 +169,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now(), false); err != nil {
 			return err
 		}
-		return txEvent(c, next.ID, "status", "Executing")
+		return txEvent(c, next.ID, model.EventStatus, "Executing")
 	})
 	if admitted {
 		*task = next

@@ -410,14 +410,14 @@ func listRecords[T any](s *Store, query string, args ...any) ([]T, error) {
 	return queryRecords[T](s.conn, query, args...)
 }
 
-func (s *Store) Event(entity, kind, message string) error {
+func (s *Store) Event(entity string, kind model.EventKind, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return txEvent(s.conn, entity, kind, message)
 }
 
-func txEvent(c *sql.Conn, entity, kind, message string) error {
-	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, redact.Text(message))
+func txEvent(c *sql.Conn, entity string, kind model.EventKind, message string) error {
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind.String(), redact.Text(message))
 	return err
 }
 
@@ -432,7 +432,20 @@ func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) 
 	if err != nil {
 		return nil, err
 	}
-	return scanAll(rows, func(e *model.Event) []any { return []any{&e.ID, &e.At, &e.EntityID, &e.Kind, &e.Message} })
+	defer rows.Close()
+	events := []model.Event{}
+	for rows.Next() {
+		var e model.Event
+		var kind string
+		if err := rows.Scan(&e.ID, &e.At, &e.EntityID, &kind, &e.Message); err != nil {
+			return nil, err
+		}
+		if err := e.Kind.UnmarshalText([]byte(kind)); err != nil {
+			return nil, fmt.Errorf("Saved event %d has an unreadable kind: %w", e.ID, err)
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 func (s *Store) PruneEvents(retain int64) error {

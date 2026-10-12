@@ -197,7 +197,7 @@ func TestClaimMergeOnlyPendingWaitingOrContinuousManual(t *testing.T) {
 	must(t, err)
 	found := false
 	for _, event := range events {
-		if event.Kind == "automerge" && strings.Contains(event.Message, "attempt") {
+		if event.Kind == model.EventAutomerge && strings.Contains(event.Message, "attempt") {
 			found = true
 		}
 	}
@@ -243,7 +243,7 @@ func TestClaimMergeOnlyPendingWaitingOrContinuousManual(t *testing.T) {
 	events, err = s.Events(new(task.ID))
 	must(t, err)
 	for _, event := range events {
-		if event.Kind == "automerge" && strings.Contains(event.Message, "attempt") {
+		if event.Kind == model.EventAutomerge && strings.Contains(event.Message, "attempt") {
 			attempts++
 		}
 	}

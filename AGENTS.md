@@ -63,16 +63,17 @@ strict typed JSON boundaries for saved records and API requests.
   process.
 - `internal/config`, `internal/model`, `internal/store`: policy, durable records and
   SQLite. The model's `actions.go` holds the task, cycle and control action
-  vocabularies. In the store, `store.go` holds records, transactions and admission
-  reservation; `keys.go` holds the typed record keys (each record kind with its Go
-  type, and the settings keys); `schema.sql` is the complete fresh DDL, whose
-  triggers maintain the record projections, counts, batch membership, proposal rows,
-  PR reservation release and the attention outbox; `schema.go` checks the version,
-  creates fresh databases and runs the backup-then-migrate upgrade path over
-  `migrations/`, with `export_test.go`'s plan hooks and the `testdata/state-v*.db`
-  goldens exercising it; `queries.go`, `capacity.go`, `notifications.go`,
-  `automerge.go` and `baseline.go` serve operational views, PR capacity, the outbox,
-  merge claims and settlement, and baseline-check admission.
+  vocabularies and `events.go` the activity event kinds (and which record failures).
+  In the store, `store.go` holds records, transactions and admission reservation;
+  `keys.go` holds the typed record keys (each record kind with its Go type, and the
+  settings keys); `schema.sql` is the complete fresh DDL, whose triggers maintain the
+  record projections, counts, batch membership, proposal rows, PR reservation release
+  and the attention outbox; `schema.go` checks the version, creates fresh databases
+  and runs the backup-then-migrate upgrade path over `migrations/`, with
+  `export_test.go`'s plan hooks and the `testdata/state-v*.db` goldens exercising it;
+  `queries.go`, `capacity.go`, `notifications.go`, `automerge.go` and `baseline.go`
+  serve operational views, PR capacity, the outbox, merge claims and settlement, and
+  baseline-check admission.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), owned-root preparation, OpenCode
   readiness and its stream connection (`opencode.go`), the in-sandbox helper

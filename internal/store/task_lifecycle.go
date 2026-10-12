@@ -44,7 +44,7 @@ func (s *Store) RetryTask(task model.Task) error {
 		if err := txResetTaskCancellation(c, task); err != nil {
 			return err
 		}
-		return txEvent(c, task.ID, "attempt_policy", string(policy))
+		return txEvent(c, task.ID, model.EventAttemptPolicy, string(policy))
 	})
 }
 

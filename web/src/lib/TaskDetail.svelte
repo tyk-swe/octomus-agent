@@ -25,7 +25,13 @@
   import ReviewChangeSet from './ReviewChangeSet.svelte';
   import SandboxRun from './SandboxRun.svelte';
   import Sha from './Sha.svelte';
-  import type { Task, TaskAction, Event, TaskEvidence } from './types';
+  import {
+    ERROR_EVENT_KINDS,
+    type Task,
+    type TaskAction,
+    type Event,
+    type TaskEvidence
+  } from './types';
   let {
     id,
     onclose,
@@ -523,7 +529,9 @@
           </p>{/if}
         <div class="activity-list">
           {#each events as event}<div class="activity-item">
-              <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}
+              <span
+                class={'activity-point ' +
+                  (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
               ></span>
               <div>
                 <p>{event.message}</p>

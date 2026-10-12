@@ -94,6 +94,9 @@ func TestSummaryMigrationRestoresCompleteText(t *testing.T) {
 	if s.Upgraded() == nil || s.Upgraded().From != 9 || s.Upgraded().To != store.ReleaseVersion() || len(backups(t, path)) != 1 {
 		t.Fatalf("missing verified predecessor upgrade: %+v", s.Upgraded())
 	}
+	if events, err := s.Events(nil); err != nil || len(events) == 0 {
+		t.Fatalf("golden events: %d, %v", len(events), err)
+	}
 	if diff, same := equalStrings(before, recordDump(t, db)); !same {
 		t.Fatalf("summary migration changed raw records: %s", diff)
 	}

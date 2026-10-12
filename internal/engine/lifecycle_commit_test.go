@@ -179,7 +179,7 @@ func TestRetryCommitsPolicyAndCancelMarkerTogether(t *testing.T) {
 			events, err := f.state.Events(&task.ID)
 			must0(t, err)
 			for _, event := range events {
-				if event.Kind == "attempt_policy" {
+				if event.Kind == model.EventAttemptPolicy {
 					t.Fatal("policy evidence committed without its retry")
 				}
 			}

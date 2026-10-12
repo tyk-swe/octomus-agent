@@ -338,3 +338,38 @@ for (const reducedMotion of ['reduce', 'no-preference'] as const) {
     await expect(page.getByRole('navigation')).toBeVisible();
   });
 }
+
+test('every failure activity kind is marked as an error on the overview', async ({ page }) => {
+  const at = new Date().toISOString();
+  await patchState(page, (snapshot) => {
+    snapshot.events = [
+      {
+        id: 9001,
+        at,
+        entity_id: 'system',
+        kind: 'planning_error',
+        message: 'Synthetic planning failure.'
+      },
+      {
+        id: 9002,
+        at,
+        entity_id: 'system',
+        kind: 'operator',
+        message: 'Synthetic operator action.'
+      }
+    ];
+  });
+  await login(page);
+  const activity = page.locator('.activity-panel');
+  const failure = activity
+    .locator('.activity-item')
+    .filter({ hasText: 'Synthetic planning failure.' });
+  await expect(failure.locator('.error-point')).toHaveCount(1);
+  await expect(failure).toContainText('Error ·');
+  const operator = activity
+    .locator('.activity-item')
+    .filter({ hasText: 'Synthetic operator action.' });
+  await expect(operator).toBeVisible();
+  await expect(operator.locator('.error-point')).toHaveCount(0);
+  await expect(operator).not.toContainText('Error ·');
+});

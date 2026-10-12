@@ -200,6 +200,11 @@ func apiContract() string {
 		active = append(active, "'"+status.String()+"'")
 	}
 	fmt.Fprintf(&out, "export const ACTIVE_STATUSES: string[] = [%s];\n", strings.Join(active, ", "))
+	var failures []string
+	for _, kind := range model.ErrorEventKinds() {
+		failures = append(failures, "'"+kind.String()+"'")
+	}
+	fmt.Fprintf(&out, "export const ERROR_EVENT_KINDS: EventKind[] = [%s];\n", strings.Join(failures, ", "))
 	return out.String()
 }
 

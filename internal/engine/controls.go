@@ -128,7 +128,7 @@ func (a *App) ControlAction(action model.ControlAction) (*ControlResult, error) 
 		return nil, NotFound("Unknown control")
 	}
 	// Activity is best-effort after the operator change has committed.
-	_ = a.store.Event("system", "operator", action.String())
+	_ = a.store.Event("system", model.EventOperator, action.String())
 	body := &ControlResult{Control: control, PlanningCapacity: planningCapacity}
 	return body, nil
 }
@@ -203,7 +203,7 @@ func (a *App) startAudit(ctx context.Context) (string, error) {
 		a.endPreflight()
 		return "", err
 	}
-	_ = a.store.Event(id, "operator", "Audit started")
+	_ = a.store.Event(id, model.EventOperator, "Audit started")
 	return id, nil
 }
 
@@ -471,6 +471,6 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	}
 	a.invalidatePRs()
 	// Activity is best-effort after the configuration change has committed.
-	_ = a.store.Event("system", "configuration", "Operator saved configuration")
+	_ = a.store.Event("system", model.EventConfiguration, "Operator saved configuration")
 	return settingsView(c)
 }

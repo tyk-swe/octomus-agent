@@ -85,7 +85,7 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 		if err := txPut(c, PRs.Key(recordID), observation); err != nil {
 			return err
 		}
-		return txEvent(c, task.ID, "status", "Published")
+		return txEvent(c, task.ID, model.EventStatus, "Published")
 	})
 	if err != nil {
 		return model.Task{}, err
@@ -251,7 +251,7 @@ func (s *Store) ClaimMerge(repository string, number uint64, intent model.AutoMe
 		if err := txPut(c, PRs.Key(id), *observation); err != nil {
 			return err
 		}
-		return txEvent(c, intent.TaskID, "automerge",
+		return txEvent(c, intent.TaskID, model.EventAutomerge,
 			fmt.Sprintf("Automatic squash merge attempt %s recorded for %s", *intent.AttemptID, intent.Head))
 	})
 }

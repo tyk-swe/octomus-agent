@@ -100,7 +100,7 @@ func (a *App) CancelBaseline(id string) error {
 			return err
 		}
 		// Like the worker path, activity is best-effort after terminal state commits.
-		_ = a.store.Event(id, "baseline", baselineLabels[check.Status])
+		_ = a.store.Event(id, model.EventBaseline, baselineLabels[check.Status])
 		return nil
 	}
 	cancel()
@@ -247,9 +247,9 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	check.Status = status
 	check.CompletedAt = new(model.Now())
 	if err := store.Put(a.store, store.Baselines.Key(id), *check); err != nil {
-		_ = a.store.Event(id, "baseline_error", redact.Error(err))
+		_ = a.store.Event(id, model.EventBaselineError, redact.Error(err))
 	} else {
-		_ = a.store.Event(id, "baseline", baselineLabels[status])
+		_ = a.store.Event(id, model.EventBaseline, baselineLabels[status])
 	}
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {

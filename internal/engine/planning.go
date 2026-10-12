@@ -80,7 +80,7 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 			_ = a.store.SaveControl(control)
 		}
 		if err != nil {
-			_ = a.store.Event(cycle.ID, "planning_error", message)
+			_ = a.store.Event(cycle.ID, model.EventPlanningError, message)
 		}
 	}
 	a.gate.Unlock()
@@ -240,7 +240,7 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		}
 	}
 	if len(missing) > 0 {
-		_ = a.store.Event(cycle.ID, "grounding", fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))
+		_ = a.store.Event(cycle.ID, model.EventGrounding, fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))
 	}
 	limit := 100
 	history, err := a.store.TaskPage(store.HistoryQuery{Limit: &limit})
@@ -467,7 +467,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	})
 	if outcome.err == nil {
 		if err := a.removePlanningWorkspace(roleRoot); err != nil {
-			_ = a.store.Event(cycleID, "cleanup_error", fmt.Sprintf("%s: %s", label, redact.Error(err)))
+			_ = a.store.Event(cycleID, model.EventCleanupError, fmt.Sprintf("%s: %s", label, redact.Error(err)))
 		}
 	}
 	return outcome

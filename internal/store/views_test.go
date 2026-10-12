@@ -198,8 +198,8 @@ func TestIndexedViews(t *testing.T) {
 		t.Fatalf("begin cycle control: %+v", reloaded)
 	}
 
-	must(t, s.Event("queued", "status", "Queued"))
-	must(t, s.Event("active", "status", "Reviewing"))
+	must(t, s.Event("queued", model.EventStatus, "Queued"))
+	must(t, s.Event("active", model.EventStatus, "Reviewing"))
 	scoped, err := s.Events(str("active"))
 	must(t, err)
 	if len(scoped) != 1 || scoped[0].Message != "Reviewing" {

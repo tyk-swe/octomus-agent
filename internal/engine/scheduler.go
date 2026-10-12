@@ -233,7 +233,7 @@ func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	if err := a.pauseLocked(&control, nil); err != nil {
 		return err
 	}
-	_ = a.store.Event("system", "run_complete", message)
+	_ = a.store.Event("system", model.EventRunComplete, message)
 	return nil
 }
 
@@ -292,13 +292,13 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 		case live.Mode == model.OperatingModeRunOnce:
 			message := redact.Error(err)
 			_ = a.pauseLocked(&live, &message)
-			_ = a.store.Event("system", "planning_error", message)
+			_ = a.store.Event("system", model.EventPlanningError, message)
 		case live.Mode == model.OperatingModeContinuous:
 			message := redact.Error(err)
 			live.Error = &message
 			live.NextCycleAt = time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
 			_ = a.store.SaveControl(live)
-			_ = a.store.Event("system", "planning_error", message)
+			_ = a.store.Event("system", model.EventPlanningError, message)
 		}
 	})
 	return nil
@@ -317,7 +317,7 @@ func (a *App) waitForCapacity(control model.Control, capacity model.PlanningCapa
 	if err := a.pauseLocked(&control, &message); err != nil {
 		return err
 	}
-	_ = a.store.Event("system", "planning_capacity", message)
+	_ = a.store.Event("system", model.EventPlanningCapacity, message)
 	return nil
 }
 
@@ -423,7 +423,7 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if cancelled {
 			changed = true
 			task.Status = model.StatusCancelled
-			_ = a.store.Event(task.ID, "operator", model.TaskActionCancel.String())
+			_ = a.store.Event(task.ID, model.EventOperator, model.TaskActionCancel.String())
 		}
 	}
 	return changed, nil

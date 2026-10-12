@@ -246,7 +246,7 @@ func planningErrors(t *testing.T, state *store.Store, entity string) []model.Eve
 	}
 	found := []model.Event{}
 	for _, event := range events {
-		if event.Kind == "planning_error" {
+		if event.Kind == model.EventPlanningError {
 			found = append(found, event)
 		}
 	}

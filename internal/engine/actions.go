@@ -58,7 +58,7 @@ func (a *App) CycleAction(id string, action model.CycleAction) error {
 	default:
 		return NotFound("Unknown cycle action")
 	}
-	_ = a.store.Event(id, "operator", action.String())
+	_ = a.store.Event(id, model.EventOperator, action.String())
 	return nil
 }
 
@@ -116,7 +116,7 @@ func (a *App) TaskAction(id string, action model.TaskAction) error {
 			a.runtime.cancelScanDone = false
 			a.runtimeMu.Unlock()
 		}
-		_ = a.store.Event(id, "operator", action.String())
+		_ = a.store.Event(id, model.EventOperator, action.String())
 	}
 	a.notify()
 	return actionErr
@@ -268,7 +268,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 			return err
 		}
 		*task = next
-		_ = a.store.Event(id, "operator", model.TaskActionReconcile.String())
+		_ = a.store.Event(id, model.EventOperator, model.TaskActionReconcile.String())
 		a.notify()
 		return nil
 	}
@@ -288,7 +288,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		return err
 	}
 	*task = next
-	_ = a.store.Event(id, "status", statusLabel(model.StatusPublishing))
+	_ = a.store.Event(id, model.EventStatus, statusLabel(model.StatusPublishing))
 	workCtx, cancel := a.registerTaskWorker(*task, reconciliationWorker)
 	defer cancel()
 	var published model.PullRequest
@@ -319,7 +319,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		recordTaskError(task, publishErr)
 		actionErr = a.transition(task, previousStatus)
 	}
-	_ = a.store.Event(id, "operator", model.TaskActionReconcile.String())
+	_ = a.store.Event(id, model.EventOperator, model.TaskActionReconcile.String())
 	return actionErr
 }
 

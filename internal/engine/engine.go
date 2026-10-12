@@ -182,7 +182,7 @@ func (a *App) connect(entity string) runner.Connector {
 	if a.connector != nil {
 		return a.connector
 	}
-	progress := func(message string) error { return a.store.Event(entity, "session_progress", message) }
+	progress := func(message string) error { return a.store.Event(entity, model.EventSessionProgress, message) }
 	return func(ctx context.Context, backend config.Backend, cfg config.Config, cwd string) (runner.Adapter, error) {
 		return runner.Connect(ctx, backend, cfg, cwd, entity, progress, a.sandbox)
 	}
@@ -208,12 +208,12 @@ func (a *App) fail(err error) {
 			}
 		}
 		if activity.count == len(activity.causes) {
-			if err := a.store.Event("system", "recovery_error", "Additional recovery causes are suppressed until recovery succeeds; the latest cause remains available in service health."); err == nil {
+			if err := a.store.Event("system", model.EventRecoveryError, "Additional recovery causes are suppressed until recovery succeeds; the latest cause remains available in service health."); err == nil {
 				activity.overflowRecorded = true
 			}
 			return
 		}
-		if err := a.store.Event("system", "recovery_error", message); err == nil {
+		if err := a.store.Event("system", model.EventRecoveryError, message); err == nil {
 			activity.causes[activity.count] = message
 			activity.count++
 		}
@@ -222,7 +222,7 @@ func (a *App) fail(err error) {
 	if control, loadErr := a.Control(); loadErr == nil {
 		_ = a.pauseLocked(&control, &message)
 	}
-	_ = a.store.Event("system", "error", message)
+	_ = a.store.Event("system", model.EventError, message)
 }
 
 func (a *App) Drained() bool {

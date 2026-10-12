@@ -77,7 +77,7 @@ func TestBaselineRetentionReportsOldCleanupFailure(t *testing.T) {
 		must0(t, err)
 		got := 0
 		for _, event := range events {
-			if event.Kind == "cleanup_error" {
+			if event.Kind == model.EventCleanupError {
 				got++
 			}
 		}

@@ -161,7 +161,7 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	}
 	events, err := s.Events(&first.ID)
 	must(t, err)
-	if len(events) != 1 || events[0].Kind != "status" || events[0].Message != "Executing" {
+	if len(events) != 1 || events[0].Kind != model.EventStatus || events[0].Message != "Executing" {
 		t.Fatalf("%+v", events)
 	}
 	reservations, err := s.PRReservations("Fixture/Project")
@@ -219,7 +219,7 @@ func TestEventsAreRedactedAndBounded(t *testing.T) {
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.RetainEvents = 5 })
 	for i := range 8 {
-		must(t, s.Event("t", "status", "token ghp_abcdefghijklmnop step "+string(rune('a'+i))))
+		must(t, s.Event("t", model.EventStatus, "token ghp_abcdefghijklmnop step "+string(rune('a'+i))))
 	}
 	events, err := s.Events(str("t"))
 	must(t, err)

@@ -310,9 +310,10 @@ export type Event = {
   id: number;
   at: string;
   entity_id: string;
-  kind: string;
+  kind: EventKind;
   message: string;
 };
+export type EventKind = 'attempt_policy' | 'automerge' | 'baseline' | 'baseline_error' | 'cleanup_error' | 'configuration' | 'error' | 'grounding' | 'housekeeping_error' | 'interrupted' | 'maintenance' | 'operator' | 'planning_capacity' | 'planning_error' | 'recovery' | 'recovery_error' | 'run_complete' | 'sandbox_evidence' | 'session_progress' | 'session_started' | 'status' | 'upgrade' | 'worker_error';
 export type EvidenceRevisions = {
   source: string;
   comparison_base: string | null;
@@ -852,3 +853,4 @@ export type Page<T> = {
 };
 export type ModelCatalog = { binary: string; models: Model[]; loaded: boolean; error?: string };
 export const ACTIVE_STATUSES: string[] = ['executing', 'reviewing', 'repairing', 'verifying', 'publishing'];
+export const ERROR_EVENT_KINDS: EventKind[] = ['error', 'planning_error', 'worker_error', 'recovery_error', 'cleanup_error', 'housekeeping_error', 'baseline_error'];

@@ -78,7 +78,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 
 	if inv.task == nil {
 		record := model.NewSession(session, inv.role, inv.route)
-		_ = a.store.Event(inv.cycleID, "session_started", fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
+		_ = a.store.Event(inv.cycleID, model.EventSessionStarted, fmt.Sprintf("%s: %s · %s", inv.role, session, inv.route))
 		// Planning roles run in their own goroutines, outside the task supervisor. Convert a turn panic before the
 		// session is finalized so the failed evidence is retained and the ordinary cycle failure path can join
 		// siblings and release ownership.

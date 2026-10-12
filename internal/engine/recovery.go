@@ -28,7 +28,7 @@ func (a *App) Recover() error {
 			if err := store.Put(a.store, store.ConfigKey, pinned); err != nil {
 				return err
 			}
-			_ = a.store.Event("system", "configuration", "Saved configuration now names the repository this deployment pins")
+			_ = a.store.Event("system", model.EventConfiguration, "Saved configuration now names the repository this deployment pins")
 		}
 	}
 
@@ -88,7 +88,7 @@ func (a *App) Recover() error {
 		if err := a.checkpointTask(&task); err != nil {
 			return err
 		}
-		_ = a.store.Event(task.ID, "recovery", *task.Error)
+		_ = a.store.Event(task.ID, model.EventRecovery, *task.Error)
 	}
 
 	if err := a.settleCancelledSessions(); err != nil {

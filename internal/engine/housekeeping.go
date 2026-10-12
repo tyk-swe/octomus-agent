@@ -75,7 +75,7 @@ func (a *App) startHousekeeping(cfg config.Config) {
 		}()
 		report := func(err error) {
 			if err != nil && a.ctx.Err() == nil {
-				_ = a.store.Event("system", "housekeeping_error", redact.Error(err))
+				_ = a.store.Event("system", model.EventHousekeepingError, redact.Error(err))
 			}
 		}
 		if cleanup {

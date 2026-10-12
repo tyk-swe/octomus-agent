@@ -528,7 +528,7 @@ func (a *App) mergeConfirmed(task *model.Task, observation model.PRObservation, 
 		return
 	}
 	a.clearMergeRecoveryError(mergeBarrierKey(observation.Repository, observation.PR.Number))
-	_ = a.store.Event(task.ID, "automerge", fmt.Sprintf("Squash merged pull request %d at %s", observation.PR.Number, commit))
+	_ = a.store.Event(task.ID, model.EventAutomerge, fmt.Sprintf("Squash merged pull request %d at %s", observation.PR.Number, commit))
 	live, err := a.Config()
 	if err != nil {
 		return
@@ -551,7 +551,7 @@ func (a *App) settleMerge(observation model.PRObservation, expected model.AutoMe
 		a.clearMergeRecoveryError(key)
 	}
 	if applied && status != model.AutoMergeWaiting {
-		_ = a.store.Event(expected.TaskID, "automerge", fmt.Sprintf("Automatic merge: %s — %s", status, reason))
+		_ = a.store.Event(expected.TaskID, model.EventAutomerge, fmt.Sprintf("Automatic merge: %s — %s", status, reason))
 		a.notify()
 	}
 }

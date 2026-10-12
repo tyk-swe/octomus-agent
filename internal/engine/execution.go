@@ -52,7 +52,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		return nil
 	}
 	if task.Status == model.StatusPublished {
-		_ = a.store.Event(task.ID, "error", executeErr.Error())
+		_ = a.store.Event(task.ID, model.EventError, executeErr.Error())
 		return executeErr
 	}
 	timedOut := result.Expired && !result.AlreadyCancelled
@@ -65,10 +65,10 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	operatorCancelled, _ := a.store.CancelMarked(task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
 		if err := a.checkpointTask(&task); err != nil {
-			_ = a.store.Event(task.ID, "worker_error", redact.Error(err))
+			_ = a.store.Event(task.ID, model.EventWorkerError, redact.Error(err))
 			return err
 		}
-		_ = a.store.Event(task.ID, "interrupted", message)
+		_ = a.store.Event(task.ID, model.EventInterrupted, message)
 		return nil
 	}
 	status := model.StatusBlocked
@@ -86,10 +86,10 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	}
 	model.FailRunning(task.Sessions, *task.Error)
 	if err := a.transition(&task, status); err != nil {
-		_ = a.store.Event(task.ID, "worker_error", redact.Error(err))
+		_ = a.store.Event(task.ID, model.EventWorkerError, redact.Error(err))
 		return err
 	}
-	_ = a.store.Event(task.ID, "error", message)
+	_ = a.store.Event(task.ID, model.EventError, message)
 	return nil
 }
 
@@ -251,7 +251,7 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 		next := task.Clone()
 		if task.Config.DeliveryMode == config.DeliveryModeMaintenance {
 			if footprintErr != nil {
-				_ = a.store.Event(task.ID, "maintenance", "Footprint measurement is incomplete; the delivery can publish but stays manual: "+redact.Error(footprintErr))
+				_ = a.store.Event(task.ID, model.EventMaintenance, "Footprint measurement is incomplete; the delivery can publish but stays manual: "+redact.Error(footprintErr))
 			}
 			next.MaintenanceFootprint = footprint
 		}
@@ -561,7 +561,7 @@ func (a *App) transition(task *model.Task, status model.Status) error {
 		return err
 	}
 	*task = next
-	_ = a.store.Event(task.ID, "status", statusLabel(status))
+	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(status))
 	return nil
 }
 
