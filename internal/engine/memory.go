@@ -55,7 +55,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 			targets = append(targets, pr.Branch)
 		}
 	}
-	records, err := a.Store.DecisionMemory(cfg.GitHubRepo, targets)
+	records, err := a.store.DecisionMemory(cfg.GitHubRepo, targets)
 	if err != nil {
 		return decisionMemory{}, err
 	}
@@ -64,7 +64,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		return decisionMemory{}, err
 	}
 	memory := decisionMemory{decisions: decisions, requests: []rediscoveryRequest{}}
-	requests, err := a.Store.RediscoveryRequests(cfg.GitHubRepo)
+	requests, err := a.store.RediscoveryRequests(cfg.GitHubRepo)
 	if err != nil {
 		return decisionMemory{}, err
 	}
@@ -90,7 +90,7 @@ func (a *App) enforceDecisionMemory(ctx context.Context, cfg config.Config, grou
 		if proposal.Decision != model.DecisionAccepted {
 			continue
 		}
-		records, err := a.Store.DecisionsForProblem(cfg.GitHubRepo, proposal.Target, proposal.ProblemIdentity())
+		records, err := a.store.DecisionsForProblem(cfg.GitHubRepo, proposal.Target, proposal.ProblemIdentity())
 		if err != nil {
 			return err
 		}

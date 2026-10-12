@@ -12,14 +12,14 @@ type routeSpec struct {
 // to make method discovery and route inventory review straightforward.
 var apiRoutes = []routeSpec{
 	{http.MethodGet, "/api/state", func(a *api) handlerFunc { return a.stateView }},
-	{http.MethodGet, "/api/tasks", func(a *api) handlerFunc { return a.history("task") }},
-	{http.MethodGet, "/api/cycles", func(a *api) handlerFunc { return a.history("cycle") }},
+	{http.MethodGet, "/api/tasks", func(a *api) handlerFunc { return history(a.app.TaskPage) }},
+	{http.MethodGet, "/api/cycles", func(a *api) handlerFunc { return history(a.app.CyclePage) }},
 	{http.MethodGet, "/api/cycles/{id}", func(a *api) handlerFunc { return a.cycleDetail }},
 	{http.MethodGet, "/api/cycles/{id}/evidence", func(a *api) handlerFunc { return a.cycleEvidence }},
 	{http.MethodPost, "/api/cycles/{id}/{action}", func(a *api) handlerFunc { return a.cycleAction }},
-	{http.MethodGet, "/api/proposals", func(a *api) handlerFunc { return a.proposalHistory }},
+	{http.MethodGet, "/api/proposals", func(a *api) handlerFunc { return history(a.app.ProposalPage) }},
 	{http.MethodGet, "/api/proposals/{cycle}/{id}", func(a *api) handlerFunc { return a.proposalDetail }},
-	{http.MethodGet, "/api/prs", func(a *api) handlerFunc { return a.history("pr") }},
+	{http.MethodGet, "/api/prs", func(a *api) handlerFunc { return history(a.app.PRPage) }},
 	{http.MethodGet, "/api/tasks/{id}", func(a *api) handlerFunc { return a.taskDetail }},
 	{http.MethodPost, "/api/tasks/{id}/{action}", func(a *api) handlerFunc { return a.taskAction }},
 	{http.MethodGet, "/api/config", func(a *api) handlerFunc { return a.getConfig }},

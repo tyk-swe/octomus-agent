@@ -412,3 +412,28 @@ func TestProposalListRedactsBeforeBound(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingRecordsAreJSONNotFound(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, t.TempDir(), "test")
+	for _, path := range []string{
+		"/api/tasks/missing",
+		"/api/cycles/missing",
+		"/api/cycles/missing/evidence",
+		"/api/baseline-checks/missing",
+		"/api/proposals/c/missing",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := call(t, router, "GET", path, "")
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status: %d %s", response.Code, response.Body.String())
+			}
+			if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("content type: %q", contentType)
+			}
+			if message, _ := decode(t, response)["error"].(string); message == "" {
+				t.Fatalf("error body: %s", response.Body.String())
+			}
+		})
+	}
+}

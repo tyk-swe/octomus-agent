@@ -138,7 +138,7 @@ func (a *App) tick() error {
 		}
 		id := control.Batch.ID
 		runID = &id
-		pending, unresolved, err := a.Store.BatchCounts(id)
+		pending, unresolved, err := a.store.BatchCounts(id)
 		if err != nil {
 			return err
 		}
@@ -148,7 +148,7 @@ func (a *App) tick() error {
 		}
 	}
 
-	tasks, err := a.Store.SchedulingTasks(runID)
+	tasks, err := a.store.SchedulingTasks(runID)
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func (a *App) tick() error {
 	}
 
 	if control.Mode == model.OperatingModeRunOnce {
-		pending, unresolved, err := a.Store.BatchCounts(control.Batch.ID)
+		pending, unresolved, err := a.store.BatchCounts(control.Batch.ID)
 		if err != nil {
 			return err
 		}
@@ -198,7 +198,7 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 	if message != nil {
 		control.Error = message
 	}
-	if err := a.Store.SaveControl(*control); err != nil {
+	if err := a.store.SaveControl(*control); err != nil {
 		return err
 	}
 	a.invalidatePRs()
@@ -206,14 +206,14 @@ func (a *App) pauseLocked(control *model.Control, message *string) error {
 }
 
 func (a *App) settleRunOnce(control model.Control, unresolved uint64) error {
-	waits, err := a.Store.BatchMergeWait(control.Batch.ID)
+	waits, err := a.store.BatchMergeWait(control.Batch.ID)
 	if err != nil {
 		return err
 	}
 	if waits > 0 {
 		if control.Batch.Phase != model.BatchPhaseMerging {
 			control.Batch.Phase = model.BatchPhaseMerging
-			if err := a.Store.SaveControl(control); err != nil {
+			if err := a.store.SaveControl(control); err != nil {
 				return err
 			}
 		}
@@ -233,7 +233,7 @@ func (a *App) finishRunOnce(control model.Control, unresolved uint64) error {
 	if err := a.pauseLocked(&control, nil); err != nil {
 		return err
 	}
-	_ = a.Store.Event("system", "run_complete", message)
+	_ = a.store.Event("system", "run_complete", message)
 	return nil
 }
 
@@ -247,7 +247,7 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 		return nil
 	}
 	a.runtimeMu.Unlock()
-	capacity, err := a.Store.PlanningCapacity(time.Now())
+	capacity, err := a.store.PlanningCapacity(time.Now())
 	if err != nil {
 		return err
 	}
@@ -292,13 +292,13 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 		case live.Mode == model.OperatingModeRunOnce:
 			message := redact.Error(err)
 			_ = a.pauseLocked(&live, &message)
-			_ = a.Store.Event("system", "planning_error", message)
+			_ = a.store.Event("system", "planning_error", message)
 		case live.Mode == model.OperatingModeContinuous:
 			message := redact.Error(err)
 			live.Error = &message
 			live.NextCycleAt = time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
-			_ = a.Store.SaveControl(live)
-			_ = a.Store.Event("system", "planning_error", message)
+			_ = a.store.SaveControl(live)
+			_ = a.store.Event("system", "planning_error", message)
 		}
 	})
 	return nil
@@ -311,13 +311,13 @@ func (a *App) waitForCapacity(control model.Control, capacity model.PlanningCapa
 	if control.Mode == model.OperatingModeContinuous {
 		control.Error = nil
 		control.NextCycleAt = capacity.NextResetAt
-		return a.Store.SaveControl(control)
+		return a.store.SaveControl(control)
 	}
 	message := capacity.Message()
 	if err := a.pauseLocked(&control, &message); err != nil {
 		return err
 	}
-	_ = a.Store.Event("system", "planning_capacity", message)
+	_ = a.store.Event("system", "planning_capacity", message)
 	return nil
 }
 
@@ -349,7 +349,7 @@ func (a *App) validateQueuedCycles(cfg config.Config, tasks []model.Task) (bool,
 		a.runtimeMu.Unlock()
 		if !checked {
 			var err error
-			cycleTasks, err = a.Store.TasksForCycle(cycleID)
+			cycleTasks, err = a.store.TasksForCycle(cycleID)
 			if err != nil {
 				return changed, err
 			}
@@ -406,7 +406,7 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if task.Status != model.StatusQueued || task.OutputCommit != nil || a.cleanupClaimed(cleanupTask, task.ID) {
 			continue
 		}
-		marked, err := a.Store.Marked("cancel", task.ID)
+		marked, err := a.store.Marked("cancel", task.ID)
 		if err != nil {
 			return changed, err
 		}
@@ -416,14 +416,14 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if !marked {
 			continue
 		}
-		cancelled, err := a.Store.CancelTask(task.ID)
+		cancelled, err := a.store.CancelTask(task.ID)
 		if err != nil {
 			return changed, err
 		}
 		if cancelled {
 			changed = true
 			task.Status = model.StatusCancelled
-			_ = a.Store.Event(task.ID, "operator", "cancel")
+			_ = a.store.Event(task.ID, "operator", "cancel")
 		}
 	}
 	return changed, nil
@@ -503,7 +503,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			waiting = true
 			continue
 		}
-		reservation, err := a.Store.HasPRReservation(task.ID)
+		reservation, err := a.store.HasPRReservation(task.ID)
 		if err != nil {
 			return started, waiting, err
 		}
@@ -524,7 +524,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			if a.ctx.Err() != nil {
 				return started, waiting, nil
 			}
-			admitted, err = a.Store.AdmitNewPRTask(task, *inventory)
+			admitted, err = a.store.AdmitNewPRTask(task, *inventory)
 			if err != nil {
 				return started, waiting, err
 			}
@@ -550,7 +550,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 
 func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, error, error) {
 	for _, id := range task.Proposal.Dependencies {
-		dependency, err := store.Get[model.Task](a.Store, "task", id)
+		dependency, err := store.Get[model.Task](a.store, "task", id)
 		if err != nil {
 			return false, nil, err
 		}

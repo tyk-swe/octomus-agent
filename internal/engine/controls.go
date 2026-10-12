@@ -86,7 +86,7 @@ func (a *App) ControlAction(action string) (*ControlResult, error) {
 	// failure must not report a successfully committed Resume as refused.
 	var planningCapacity *model.PlanningCapacity
 	if action == "resume" {
-		capacity, err := a.Store.PlanningCapacity(time.Now())
+		capacity, err := a.store.PlanningCapacity(time.Now())
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +127,7 @@ func (a *App) ControlAction(action string) (*ControlResult, error) {
 		return nil, NotFound("Unknown control")
 	}
 	// Activity is best-effort after the operator change has committed.
-	_ = a.Store.Event("system", "operator", action)
+	_ = a.store.Event("system", "operator", action)
 	body := &ControlResult{Control: control, PlanningCapacity: planningCapacity}
 	return body, nil
 }
@@ -152,7 +152,7 @@ func (a *App) enterContinuous(control *model.Control) error {
 	control.SetMode(model.OperatingModeContinuous)
 	control.Error = nil
 	control.NextCycleAt = 0
-	if err := a.Store.SaveControl(*control); err != nil {
+	if err := a.store.SaveControl(*control); err != nil {
 		return err
 	}
 	a.notify()
@@ -160,7 +160,7 @@ func (a *App) enterContinuous(control *model.Control) error {
 }
 
 func (a *App) startRunOnceBatch(control *model.Control) error {
-	capacity, started, err := a.Store.StartBatch(control, time.Now())
+	capacity, started, err := a.store.StartBatch(control, time.Now())
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func (a *App) startAudit(ctx context.Context) (string, error) {
 		a.endPreflight()
 		return "", err
 	}
-	_ = a.Store.Event(id, "operator", "Audit started")
+	_ = a.store.Event(id, "operator", "Audit started")
 	return id, nil
 }
 
@@ -235,7 +235,7 @@ func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
 	if control.Mode != model.OperatingModePaused {
 		return config.Config{}, model.Control{}, errNotPaused
 	}
-	capacity, err := a.Store.PlanningCapacity(time.Now())
+	capacity, err := a.store.PlanningCapacity(time.Now())
 	if err != nil {
 		return config.Config{}, model.Control{}, err
 	}
@@ -293,7 +293,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 			if live.Batch == nil || live.Batch.Phase != model.BatchPhaseDraining {
 				return "", errors.New("Run once is not ready to plan")
 			}
-			pending, unresolved, countErr := a.Store.BatchCounts(live.Batch.ID)
+			pending, unresolved, countErr := a.store.BatchCounts(live.Batch.ID)
 			if countErr != nil {
 				return "", countErr
 			}
@@ -301,7 +301,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 				return "", errors.New("Run-once work changed during planning preflight")
 			}
 		} else {
-			tasks, listErr := a.Store.SchedulingTasks(nil)
+			tasks, listErr := a.store.SchedulingTasks(nil)
 			if listErr != nil {
 				return "", listErr
 			}
@@ -333,7 +333,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []model.DecisionRecord{}, RunID: runID,
 	}
-	capacity, started, err := a.Store.BeginCycle(cycle, next, live, fingerprint, time.Now())
+	capacity, started, err := a.store.BeginCycle(cycle, next, live, fingerprint, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -457,7 +457,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix || old.DeliveryMode != c.DeliveryMode {
-		unresolved, err := a.Store.HasUnresolvedTasks()
+		unresolved, err := a.store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
 		}
@@ -465,11 +465,11 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 			return nil, codedConflict(UnresolvedWorkConflict, "Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
-	if err := a.Store.Put("settings", "config", c); err != nil {
+	if err := a.store.Put("settings", "config", c); err != nil {
 		return nil, err
 	}
 	a.invalidatePRs()
 	// Activity is best-effort after the configuration change has committed.
-	_ = a.Store.Event("system", "configuration", "Operator saved configuration")
+	_ = a.store.Event("system", "configuration", "Operator saved configuration")
 	return settingsView(c)
 }

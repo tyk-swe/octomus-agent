@@ -82,11 +82,11 @@ func shutdownApp(t *testing.T, app *App) {
 
 func fixtureDiagnostics(app *App) string {
 	state := "saved state: unavailable"
-	if app.Store != nil {
+	if app.store != nil {
 		saved := make(chan string, 1)
 		go func() {
-			tasks, taskErr := store.List[model.Task](app.Store, "task")
-			cycles, cycleErr := store.List[model.Cycle](app.Store, "cycle")
+			tasks, taskErr := store.List[model.Task](app.store, "task")
+			cycles, cycleErr := store.List[model.Cycle](app.store, "cycle")
 			snapshot := map[string]any{"tasks": tasks, "cycles": cycles}
 			if taskErr != nil || cycleErr != nil {
 				snapshot["read_error"] = fmt.Sprintf("tasks: %v; cycles: %v", taskErr, cycleErr)
@@ -136,12 +136,12 @@ func waitForCycle(t *testing.T, app *App, id string) model.Cycle {
 			var cycle *model.Cycle
 			if id != "" {
 				var err error
-				cycle, err = store.Get[model.Cycle](app.Store, "cycle", id)
+				cycle, err = store.Get[model.Cycle](app.store, "cycle", id)
 				if err != nil {
 					return err
 				}
 			} else {
-				cycles, err := store.List[model.Cycle](app.Store, "cycle")
+				cycles, err := store.List[model.Cycle](app.store, "cycle")
 				if err != nil {
 					return err
 				}

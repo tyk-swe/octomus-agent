@@ -30,7 +30,7 @@ func (a *App) finishTaskWorker(id string, cause error) {
 	a.runtimeMu.Lock()
 	job := a.runtime.tasks[id]
 	a.runtimeMu.Unlock()
-	current, loadErr := store.Get[model.Task](a.Store, "task", id)
+	current, loadErr := store.Get[model.Task](a.store, "task", id)
 	interrupted := job.kind == executionWorker && a.ctx.Err() != nil && current != nil && workspace.Initialized(*current)
 	if loadErr != nil {
 		a.setRecoveryError(loadErr)

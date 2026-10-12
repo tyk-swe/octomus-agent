@@ -95,10 +95,10 @@ func TestStartBaselineRefusesStale(t *testing.T) {
 	} else if !IsActionConflict(err) {
 		t.Fatalf("conflict kind: %v", err)
 	}
-	if running, err := app.Store.RunningBaselines(); err != nil || len(running) != 0 {
+	if running, err := app.store.RunningBaselines(); err != nil || len(running) != 0 {
 		t.Fatalf("rejected start persisted work: %d %v", len(running), err)
 	}
-	if latest, err := app.Store.LatestBaseline(); err != nil || latest != nil {
+	if latest, err := app.store.LatestBaseline(); err != nil || latest != nil {
 		t.Fatal("stale start created a baseline record")
 	}
 	if entries, err := os.ReadDir(filepath.Join(app.dataDir, "baselines")); err == nil && len(entries) != 0 {
@@ -126,10 +126,10 @@ func TestBaselineViewStaleness(t *testing.T) {
 	check.Revision = &revision
 	check.CompletedAt = &completed
 	check.WorkspaceRemoved = true
-	if err := app.Store.Put("baseline", check.ID, check); err != nil {
+	if err := app.store.Put("baseline", check.ID, check); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Store.Put("settings", "baseline_latest", check.ID); err != nil {
+	if err := app.store.Put("settings", "baseline_latest", check.ID); err != nil {
 		t.Fatal(err)
 	}
 	view, err := app.BaselineView(nil)
@@ -183,7 +183,7 @@ func TestBaselineViewStaleness(t *testing.T) {
 	}
 	changed := cfg.Clone()
 	changed.DefaultBranch = "moved"
-	if err := app.Store.Put("settings", "config", changed); err != nil {
+	if err := app.store.Put("settings", "config", changed); err != nil {
 		t.Fatal(err)
 	}
 	view, err = app.BaselineView(nil)
@@ -201,7 +201,7 @@ func TestBaselineViewStaleness(t *testing.T) {
 	}
 	noCommands := changed.Clone()
 	noCommands.VerificationCommands = []string{}
-	if err := app.Store.Put("settings", "config", noCommands); err != nil {
+	if err := app.store.Put("settings", "config", noCommands); err != nil {
 		t.Fatal(err)
 	}
 	view, err = app.BaselineView(nil)

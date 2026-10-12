@@ -26,7 +26,7 @@ func (a *App) CycleAction(id, action string) error {
 	a.wg.Add(1)
 	defer a.wg.Done()
 	defer a.gate.Unlock()
-	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
+	cycle, err := store.Get[model.Cycle](a.store, "cycle", id)
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func (a *App) CycleAction(id, action string) error {
 	switch action {
 	case "archive":
 		cycle.Lifecycle.ArchivedAt = new(model.Now())
-		if err := a.Store.Put("cycle", id, *cycle); err != nil {
+		if err := a.store.Put("cycle", id, *cycle); err != nil {
 			return err
 		}
 	case "discard":
@@ -59,7 +59,7 @@ func (a *App) CycleAction(id, action string) error {
 			return err
 		}
 	}
-	_ = a.Store.Event(id, "operator", action)
+	_ = a.store.Event(id, "operator", action)
 	return nil
 }
 
@@ -96,7 +96,7 @@ func (a *App) TaskAction(id, action string) error {
 		next.RediscoveryRequested = true
 		next.RediscoveryResult = nil
 		next.UpdatedAt = model.Now()
-		actionErr = a.Store.ResetTaskCancellation(next)
+		actionErr = a.store.ResetTaskCancellation(next)
 		if actionErr == nil {
 			*task = next
 		}
@@ -107,7 +107,7 @@ func (a *App) TaskAction(id, action string) error {
 		}
 		next.Lifecycle.ArchivedAt = new(model.Now())
 		next.UpdatedAt = model.Now()
-		actionErr = a.Store.ArchiveTask(next)
+		actionErr = a.store.ArchiveTask(next)
 		if actionErr == nil {
 			*task = next
 		}
@@ -120,7 +120,7 @@ func (a *App) TaskAction(id, action string) error {
 			a.runtime.cancelScanDone = false
 			a.runtimeMu.Unlock()
 		}
-		_ = a.Store.Event(id, "operator", action)
+		_ = a.store.Event(id, "operator", action)
 	}
 	a.notify()
 	return actionErr
@@ -133,10 +133,10 @@ func (a *App) cancelTask(id string) error {
 	if running {
 		job.cancel()
 	}
-	if err := a.Store.MarkCancel(id); err != nil {
+	if err := a.store.MarkCancel(id); err != nil {
 		return err
 	}
-	cancelled, err := a.Store.CancelTask(id)
+	cancelled, err := a.store.CancelTask(id)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func (a *App) retryTask(task *model.Task) error {
 	next.Status = model.StatusQueued
 	next.RunID = nil
 	next.UpdatedAt = model.Now()
-	if err := a.Store.RetryTask(next); err != nil {
+	if err := a.store.RetryTask(next); err != nil {
 		return err
 	}
 	*task = next
@@ -200,7 +200,7 @@ func (a *App) retryTask(task *model.Task) error {
 }
 
 func (a *App) eligibleTask(id, action string) (*model.Task, error) {
-	task, err := store.Get[model.Task](a.Store, "task", id)
+	task, err := store.Get[model.Task](a.store, "task", id)
 	if err != nil {
 		return nil, err
 	}
@@ -268,11 +268,11 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 			recordTaskError(&next, preflightErr)
 		}
 		next.UpdatedAt = model.Now()
-		if err := a.Store.ResetTaskCancellation(next); err != nil {
+		if err := a.store.ResetTaskCancellation(next); err != nil {
 			return err
 		}
 		*task = next
-		_ = a.Store.Event(id, "operator", "reconcile")
+		_ = a.store.Event(id, "operator", "reconcile")
 		a.notify()
 		return nil
 	}
@@ -288,11 +288,11 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	next := task.Clone()
 	next.Status = model.StatusPublishing
 	next.UpdatedAt = model.Now()
-	if err := a.Store.ResetTaskCancellation(next); err != nil {
+	if err := a.store.ResetTaskCancellation(next); err != nil {
 		return err
 	}
 	*task = next
-	_ = a.Store.Event(id, "status", statusLabel(model.StatusPublishing))
+	_ = a.store.Event(id, "status", statusLabel(model.StatusPublishing))
 	workCtx, cancel := a.registerTaskWorker(*task, reconciliationWorker)
 	defer cancel()
 	var published model.PullRequest
@@ -323,7 +323,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		recordTaskError(task, publishErr)
 		actionErr = a.transition(task, previousStatus)
 	}
-	_ = a.Store.Event(id, "operator", "reconcile")
+	_ = a.store.Event(id, "operator", "reconcile")
 	return actionErr
 }
 
@@ -357,7 +357,7 @@ func (a *App) discardTask(task *model.Task) error {
 			return err
 		}
 	}
-	current, err := store.Get[model.Task](a.Store, "task", task.ID)
+	current, err := store.Get[model.Task](a.store, "task", task.ID)
 	if err != nil {
 		return err
 	}
@@ -368,7 +368,7 @@ func (a *App) discardTask(task *model.Task) error {
 		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
 	}
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.Store.Put("task", current.ID, *current); err != nil {
+	if err := a.store.Put("task", current.ID, *current); err != nil {
 		return err
 	}
 	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
@@ -390,7 +390,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	if err := a.removeOwnedRoot(cleanupCycle, cycle.ID, root, filepath.Join(root, cycle.ID)); err != nil {
 		return err
 	}
-	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
+	current, err := store.Get[model.Cycle](a.store, "cycle", cycle.ID)
 	if err != nil {
 		return err
 	}
@@ -401,7 +401,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
 	}
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.Store.Put("cycle", current.ID, *current); err != nil {
+	if err := a.store.Put("cycle", current.ID, *current); err != nil {
 		return err
 	}
 	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt

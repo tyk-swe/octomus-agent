@@ -44,7 +44,8 @@ strict typed JSON boundaries for saved records and API requests.
   planning preflight and cycle start), `actions.go` (per-record cycle and task
   actions, reconciliation and owned-root removal), `views.go` (state, baseline,
   doctor, model-catalog and sandbox posture views and the containment
-  self-test), `capacity.go` (open-PR inventory claims and capacity),
+  self-test), `reads.go` (the HTTP API's read-only queries over saved state),
+  `capacity.go` (open-PR inventory claims and capacity),
   `observation.go` (default-branch and open-PR observation, context fingerprint),
   `housekeeping.go` (retention and storage measurement), `baseline.go`
   (clean-baseline checks, separate from task verification), `deployment.go`
@@ -99,8 +100,9 @@ strict typed JSON boundaries for saved records and API requests.
   read-only exports of saved records (`export.go` opens one snapshot and
   redacts, `usage.go` is the usage report, `evidence.go` the `RunEvidenceV1`
   export). `internal/httpapi`: authenticated controls and embedded dashboard
-  serving. `internal/schemas`: structured-output schemas and validation; its
-  tests hold each schema to the `internal/model` type that decodes its answers.
+  serving; handlers reach saved state only through `engine.App` methods.
+  `internal/schemas`: structured-output schemas and validation; its tests hold
+  each schema to the `internal/model` type that decodes its answers.
 - `internal/git`: `git.go` (exec plumbing on the trusted `repo.git`), `clone.go`
   (split clones and the deployment's remote clone), `remote.go` (origin validation,
   fetches and snapshots), `github.go` (gh inventory and PR reads), `publish.go`

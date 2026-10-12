@@ -53,7 +53,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 		StartedAt:         model.Now(),
 		Commands:          []model.BaselineCommand{},
 	}
-	if err := a.Store.BeginBaseline(check); err != nil {
+	if err := a.store.BeginBaseline(check); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(a.ctx)
@@ -72,7 +72,7 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 func (a *App) CancelBaseline(id string) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
-	check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id)
+	check, err := store.Get[model.BaselineCheck](a.store, "baseline", id)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (a *App) CancelBaseline(id string) error {
 		cancel = a.runtime.baseline.cancel
 	}
 	a.runtimeMu.Unlock()
-	if err := a.Store.Put("baseline_cancel", id, model.Now()); err != nil {
+	if err := a.store.Put("baseline_cancel", id, model.Now()); err != nil {
 		return err
 	}
 	if cancel == nil {
@@ -100,7 +100,7 @@ func (a *App) CancelBaseline(id string) error {
 			return err
 		}
 		// Like the worker path, activity is best-effort after terminal state commits.
-		_ = a.Store.Event(id, "baseline", baselineLabels[check.Status])
+		_ = a.store.Event(id, "baseline", baselineLabels[check.Status])
 		return nil
 	}
 	cancel()
@@ -178,7 +178,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	defer func() {
 		a.gate.Lock()
 		defer a.gate.Unlock()
-		check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id)
+		check, err := store.Get[model.BaselineCheck](a.store, "baseline", id)
 		if err == nil && check != nil && check.Status == model.BaselineStatusRunning {
 			err = a.abandonBaseline(check,
 				"Cancelled by the operator; the check worker exited unexpectedly",
@@ -194,7 +194,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 		a.runtimeMu.Unlock()
 		a.notify()
 	}()
-	check, err := store.Get[model.BaselineCheck](a.Store, "baseline", id)
+	check, err := store.Get[model.BaselineCheck](a.store, "baseline", id)
 	if err != nil || check == nil || check.Status != model.BaselineStatusRunning {
 		return
 	}
@@ -233,7 +233,7 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	} else {
 		status = result.Output
 	}
-	marked, markerErr := a.Store.Marked("baseline_cancel", id)
+	marked, markerErr := a.store.Marked("baseline_cancel", id)
 	switch {
 	case markerErr != nil:
 		status = model.BaselineStatusInterrupted
@@ -246,10 +246,10 @@ func (a *App) baselineWorker(ctx context.Context, id string) {
 	}
 	check.Status = status
 	check.CompletedAt = new(model.Now())
-	if err := a.Store.Put("baseline", id, *check); err != nil {
-		_ = a.Store.Event(id, "baseline_error", redact.Error(err))
+	if err := a.store.Put("baseline", id, *check); err != nil {
+		_ = a.store.Event(id, "baseline_error", redact.Error(err))
 	} else {
-		_ = a.Store.Event(id, "baseline", baselineLabels[status])
+		_ = a.store.Event(id, "baseline", baselineLabels[status])
 	}
 	a.gate.Unlock()
 	if err := a.removeBaselineWorkspace(check); err != nil {
@@ -277,7 +277,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 		return model.BaselineStatusRunning, err
 	}
 	check.Revision = &revision
-	if err := a.Store.Put("baseline", check.ID, *check); err != nil {
+	if err := a.store.Put("baseline", check.ID, *check); err != nil {
 		return model.BaselineStatusRunning, err
 	}
 	if err := a.observeDefaultBranch(c, revision, observedAt); err != nil {
@@ -340,7 +340,7 @@ func (a *App) executeBaseline(ctx context.Context, check *model.BaselineCheck) (
 			CreatedAt:       model.Now(),
 			Sandbox:         outcome.sandbox,
 		})
-		if err := a.Store.Put("baseline", check.ID, *check); err != nil {
+		if err := a.store.Put("baseline", check.ID, *check); err != nil {
 			return model.BaselineStatusRunning, err
 		}
 		if timedOut {
@@ -410,7 +410,7 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 		check.WorkspaceRemoved = true
 	}
 	check.CleanupError = cleanupError
-	current, err := store.Get[model.BaselineCheck](a.Store, "baseline", check.ID)
+	current, err := store.Get[model.BaselineCheck](a.store, "baseline", check.ID)
 	if err != nil {
 		return errors.Join(removeErr, err)
 	}
@@ -421,5 +421,5 @@ func (a *App) removeBaselineWorkspace(check *model.BaselineCheck) error {
 		current.WorkspaceRemoved = true
 	}
 	current.CleanupError = cleanupError
-	return errors.Join(removeErr, a.Store.Put("baseline", check.ID, *current))
+	return errors.Join(removeErr, a.store.Put("baseline", check.ID, *current))
 }

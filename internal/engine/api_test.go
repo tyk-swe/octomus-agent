@@ -85,7 +85,7 @@ func TestStateViewStatus(t *testing.T) {
 			if check.err {
 				control.Error = new("recorded planning failure")
 			}
-			if err := app.Store.SaveControl(control); err != nil {
+			if err := app.store.SaveControl(control); err != nil {
 				t.Fatal(err)
 			}
 			app.runtimeMu.Lock()
@@ -102,7 +102,7 @@ func TestStateViewStatus(t *testing.T) {
 					Status: model.CycleRunning, StartedAt: model.Now(),
 					Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 				}
-				if err := app.Store.Put("cycle", cycle.ID, cycle); err != nil {
+				if err := app.store.Put("cycle", cycle.ID, cycle); err != nil {
 					t.Fatal(err)
 				}
 			}

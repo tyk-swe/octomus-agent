@@ -10,7 +10,6 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
-	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -66,66 +65,37 @@ func first(values map[string][]string, key string) *string {
 	return &list[0]
 }
 
-func (a *api) history(kind string) handlerFunc {
+func history[T any](read func(store.HistoryQuery) (T, error)) handlerFunc {
 	return func(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 		query, err := historyQuery(r)
 		if err != nil {
 			return 0, nil, err
 		}
-		switch kind {
-		case "task":
-			page, err := a.app.Store.TaskPage(query)
-			return http.StatusOK, page, err
-		case "cycle":
-			page, err := a.app.Store.CyclePage(query)
-			return http.StatusOK, page, err
-		case "pr":
-			page, err := a.app.Store.PRPage(query)
-			return http.StatusOK, page, err
-		default:
-			return 0, nil, fmt.Errorf("Unknown history kind %q", kind)
-		}
+		page, err := read(query)
+		return http.StatusOK, page, err
 	}
-}
-
-func (a *api) proposalHistory(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	query, err := historyQuery(r)
-	if err != nil {
-		return 0, nil, err
-	}
-	page, err := a.app.Store.ProposalPage(query)
-	return http.StatusOK, page, err
 }
 
 func (a *api) proposalDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	detail, err := a.app.Store.ProposalDetail(r.PathValue("cycle"), r.PathValue("id"))
+	detail, err := a.app.ProposalDetail(r.PathValue("cycle"), r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
-	}
-	if detail == nil {
-		return 0, nil, engine.NotFound("Proposal not found")
 	}
 	return http.StatusOK, detail, nil
 }
 
 func (a *api) cycleDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	cycle, err := store.Get[model.Cycle](a.app.Store, "cycle", r.PathValue("id"))
+	cycle, err := a.app.CycleDetail(r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
-	}
-	if cycle == nil {
-		return 0, nil, engine.NotFound("Cycle not found")
 	}
 	return http.StatusOK, *cycle, nil
 }
 
 func (a *api) cycleEvidence(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	value, err := export.RunEvidence(a.app.Store, r.PathValue("id"))
+	value, err := a.app.RunEvidence(r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
-	}
-	if value == nil {
-		return 0, nil, engine.NotFound("Cycle not found")
 	}
 	return http.StatusOK, value, nil
 }
@@ -135,23 +105,11 @@ func (a *api) cycleAction(_ http.ResponseWriter, r *http.Request) (int, any, err
 }
 
 func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	task, err := store.Get[model.Task](a.app.Store, "task", r.PathValue("id"))
+	detail, err := a.app.TaskDetail(r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
-	if task == nil {
-		return 0, nil, engine.NotFound("Task not found")
-	}
-	live, err := a.app.Config()
-	if err != nil {
-		return 0, nil, err
-	}
-	value := engine.TaskDetail{
-		Task: *task, AllowedActions: task.AllowedActions(),
-		EffectiveAttemptPolicy: model.PolicyOf(task.ExecutionConfig()),
-		OperatingPolicy:        engine.OperatingPolicy{MaxSessionsPerDay: live.MaxSessionsPerDay, MaxWorkspaceBytes: live.MaxWorkspaceBytes},
-	}
-	return http.StatusOK, value, nil
+	return http.StatusOK, *detail, nil
 }
 
 func (a *api) taskAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -211,13 +169,6 @@ func (a *api) baselineLatest(_ http.ResponseWriter, _ *http.Request) (int, any, 
 
 func (a *api) baselineDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
-	check, err := store.Get[model.BaselineCheck](a.app.Store, "baseline", id)
-	if err != nil {
-		return 0, nil, err
-	}
-	if check == nil {
-		return 0, nil, engine.NotFound("Baseline check not found")
-	}
 	view, err := a.app.BaselineView(&id)
 	return http.StatusOK, view, err
 }
@@ -303,6 +254,6 @@ func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request) (int, any, er
 }
 
 func (a *api) events(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	events, err := a.app.Store.Events(first(r.URL.Query(), "entity"))
+	events, err := a.app.Events(first(r.URL.Query(), "entity"))
 	return http.StatusOK, events, err
 }
