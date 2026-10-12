@@ -112,7 +112,7 @@ func TestReconciliationSettlementRetainsPublicationFailure(t *testing.T) {
 	must0(t, err)
 	app := New(f.state, f.dataDir)
 	t.Cleanup(app.Shutdown)
-	err = app.TaskAction(task.ID, "reconcile")
+	err = app.TaskAction(task.ID, model.TaskActionReconcile)
 	if err == nil || !strings.Contains(err.Error(), "refuse publication settlement") {
 		t.Fatalf("publication settlement failure = %v", err)
 	}
@@ -298,7 +298,7 @@ func TestBrokerReadinessDoesNotBlockPause(t *testing.T) {
 		t.Fatal("tick never reached the broker read")
 	}
 	paused := make(chan error, 1)
-	go func() { paused <- control(app, "pause") }()
+	go func() { paused <- control(app, model.ControlPause) }()
 	select {
 	case err := <-paused:
 		must0(t, err)

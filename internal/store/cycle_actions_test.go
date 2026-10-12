@@ -13,7 +13,7 @@ func TestIndexedCycleActionsFollowPersistedLifecycle(t *testing.T) {
 	s := open(t, statePath(t))
 	cycle := cycleFor(task())
 	cycle.Status = model.CycleCompleted
-	check := func(expected []string) {
+	check := func(expected []model.CycleAction) {
 		t.Helper()
 		must(t, store.Put(s, store.Cycles.Key(cycle.ID), cycle))
 		page, err := s.CyclePage(store.HistoryQuery{})
@@ -27,12 +27,12 @@ func TestIndexedCycleActionsFollowPersistedLifecycle(t *testing.T) {
 			t.Fatalf("dashboard actions: %v", dashboard.Cycles[0].AllowedActions)
 		}
 	}
-	check([]string{"archive"})
+	check([]model.CycleAction{model.CycleActionArchive})
 	cycle.Lifecycle.ArchivedAt = new(model.Now())
-	check([]string{"discard"})
+	check([]model.CycleAction{model.CycleActionDiscard})
 	cycle.Lifecycle.DiscardedAt = new(model.Now())
-	check([]string{})
+	check([]model.CycleAction{})
 	cycle.Lifecycle = model.WorkspaceLifecycle{}
 	cycle.Status = model.CycleRunning
-	check([]string{})
+	check([]model.CycleAction{})
 }

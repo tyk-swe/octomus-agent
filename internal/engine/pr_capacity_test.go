@@ -117,7 +117,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	putTask(t, f, queued)
 	app := New(f.state, f.dataDir)
 	cleanupApp(t, app)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshLive(app); err != nil {
@@ -181,7 +181,7 @@ func TestSlowRefreshAuthorizesAdmission(t *testing.T) {
 	}
 	cleanupApp(t, app)
 	deferHousekeeping(app)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	expired := time.Now().Add(-(prAdmissionLifetime + time.Second))
@@ -229,7 +229,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	}
 	cleanupApp(t, app)
 	deferHousekeeping(app)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.tick(); err != nil {
@@ -308,7 +308,7 @@ func TestRestartKeepsRetriedTaskBehindCapacity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), []byte(pr), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.TaskAction(task.ID, "retry"); err != nil {
+	if err := first.TaskAction(task.ID, model.TaskActionRetry); err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {

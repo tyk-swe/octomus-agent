@@ -220,6 +220,7 @@ export type Cycle = {
   run_id?: string | null;
   lifecycle?: WorkspaceLifecycle;
 };
+export type CycleAction = 'archive' | 'discard';
 export type CycleEvidence = {
   id: string;
   number: number;
@@ -245,7 +246,7 @@ export type CycleSummary = {
   session_count: number;
   decisions: DecisionCounts;
   lifecycle: WorkspaceLifecycle;
-  allowed_actions: string[];
+  allowed_actions: CycleAction[];
 };
 export type DecisionCounts = {
   accepted: number;
@@ -780,10 +781,11 @@ export type Task = {
   lifecycle: WorkspaceLifecycle;
   maintenance_footprint: MaintenanceFootprint | null;
   auto_merge_snapshot: AutoMergeSnapshot | null;
-  allowed_actions: string[];
+  allowed_actions: TaskAction[];
   effective_attempt_policy: AttemptPolicy;
   operating_policy: OperatingPolicy;
 };
+export type TaskAction = 'cancel' | 'retry' | 'supersede' | 'archive' | 'discard' | 'reconcile';
 export type TaskEvidence = {
   id: string;
   cycle_id: string;

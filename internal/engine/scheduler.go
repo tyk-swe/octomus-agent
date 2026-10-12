@@ -423,7 +423,7 @@ func (a *App) cancelQueuedTasks(tasks []model.Task) (bool, error) {
 		if cancelled {
 			changed = true
 			task.Status = model.StatusCancelled
-			_ = a.store.Event(task.ID, "operator", "cancel")
+			_ = a.store.Event(task.ID, "operator", model.TaskActionCancel.String())
 		}
 	}
 	return changed, nil

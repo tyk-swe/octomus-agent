@@ -46,7 +46,7 @@ func TestRunOnceAcceptsPublishedDependency(t *testing.T) {
 			}
 			cleanupApp(t, app)
 			deferHousekeeping(app)
-			if err := control(app, "cycle"); err != nil {
+			if err := control(app, model.ControlCycle); err != nil {
 				t.Fatal(err)
 			}
 			if err := app.tick(); err != nil {
@@ -78,9 +78,9 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 					t.Fatalf("unauthenticated audit passed preflight: id=%q err=%v", id, err)
 				}
 			} else {
-				action := "cycle"
+				action := model.ControlCycle
 				if mode == "continuous" {
-					action = "resume"
+					action = model.ControlResume
 				}
 				if err := control(app, action); err != nil {
 					t.Fatal(err)

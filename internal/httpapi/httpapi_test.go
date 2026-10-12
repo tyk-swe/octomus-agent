@@ -437,3 +437,26 @@ func TestMissingRecordsAreJSONNotFound(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownActionsAreJSONNotFound(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, t.TempDir(), "test")
+	for path, message := range map[string]string{
+		"/api/tasks/x/bogus":  "Unknown task action",
+		"/api/cycles/x/bogus": "Unknown cycle action",
+		"/api/control/bogus":  "Unknown control",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := call(t, router, "POST", path, "{}")
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status: %d %s", response.Code, response.Body.String())
+			}
+			if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("content type: %q", contentType)
+			}
+			if got := decode(t, response)["error"]; got != message {
+				t.Fatalf("error: %v; want %q", got, message)
+			}
+		})
+	}
+}

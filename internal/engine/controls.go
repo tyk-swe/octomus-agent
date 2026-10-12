@@ -73,7 +73,7 @@ type capacityError struct {
 func (e *capacityError) Error() string { return e.capacity.Message() }
 func (e *capacityError) Unwrap() error { return model.BlockedBudgetExhausted }
 
-func (a *App) ControlAction(action string) (*ControlResult, error) {
+func (a *App) ControlAction(action model.ControlAction) (*ControlResult, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	control, err := a.Control()
@@ -86,7 +86,7 @@ func (a *App) ControlAction(action string) (*ControlResult, error) {
 	// Read ancillary reply data before changing operation mode: a response-query
 	// failure must not report a successfully committed Resume as refused.
 	var planningCapacity *model.PlanningCapacity
-	if action == "resume" {
+	if action == model.ControlResume {
 		capacity, err := a.store.PlanningCapacity(time.Now())
 		if err != nil {
 			return nil, err
@@ -94,7 +94,7 @@ func (a *App) ControlAction(action string) (*ControlResult, error) {
 		planningCapacity = &capacity
 	}
 	switch action {
-	case "audit":
+	case model.ControlAudit:
 		a.withoutGate(func() { _, err = a.startAudit(a.ctx) })
 		if err != nil {
 			return nil, err
@@ -104,15 +104,15 @@ func (a *App) ControlAction(action string) (*ControlResult, error) {
 			return nil, err
 		}
 		return &ControlResult{Control: control}, nil
-	case "pause":
+	case model.ControlPause:
 		if err := a.pauseLocked(&control, nil); err != nil {
 			return nil, err
 		}
-	case "resume":
+	case model.ControlResume:
 		if err := a.enterContinuous(&control); err != nil {
 			return nil, err
 		}
-	case "cycle":
+	case model.ControlCycle:
 		cfg, err := a.Config()
 		if err != nil {
 			return nil, err
@@ -128,13 +128,13 @@ func (a *App) ControlAction(action string) (*ControlResult, error) {
 		return nil, NotFound("Unknown control")
 	}
 	// Activity is best-effort after the operator change has committed.
-	_ = a.store.Event("system", "operator", action)
+	_ = a.store.Event("system", "operator", action.String())
 	body := &ControlResult{Control: control, PlanningCapacity: planningCapacity}
 	return body, nil
 }
 
-func (a *App) controlConflict(action string, control model.Control) error {
-	if action == "audit" || action == "cycle" || action == "resume" {
+func (a *App) controlConflict(action model.ControlAction, control model.Control) error {
+	if action == model.ControlAudit || action == model.ControlCycle || action == model.ControlResume {
 		if err := a.recoveryConflict(); err != nil {
 			return err
 		}

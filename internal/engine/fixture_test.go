@@ -158,13 +158,13 @@ func (f *fixture) pausedApp(t *testing.T, options ...Option) *App {
 func (f *fixture) newApp(t *testing.T, options ...Option) *App {
 	t.Helper()
 	app := f.pausedApp(t, options...)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	return app
 }
 
-func control(app *App, action string) error {
+func control(app *App, action model.ControlAction) error {
 	_, err := app.ControlAction(action)
 	return err
 }

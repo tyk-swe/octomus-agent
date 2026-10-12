@@ -201,7 +201,7 @@ func TestAuditStartsAfterDeploymentRepositoryChange(t *testing.T) {
 	if err := app.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if err := control(app, "audit"); err != nil {
+	if err := control(app, model.ControlAudit); err != nil {
 		t.Fatalf("audit after the deployment's repository changed: %v", err)
 	}
 	if cycle := waitOnlyCycle(t, app); cycle.Status != model.CycleCompleted || cycle.Repository != f.cfg.GitHubRepo {
@@ -214,7 +214,7 @@ func TestRunOnceCommitsPlan(t *testing.T) {
 	f := newFixture(t)
 	completePlan(t, f).queue(f)
 	app := f.pausedApp(t)
-	if err := control(app, "cycle"); err != nil {
+	if err := control(app, model.ControlCycle); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.tick(); err != nil {
@@ -268,9 +268,9 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			app := f.pausedApp(t)
-			action := "cycle"
+			action := model.ControlCycle
 			if mode == model.OperatingModeContinuous {
-				action = "resume"
+				action = model.ControlResume
 			}
 			if err := control(app, action); err != nil {
 				t.Fatal(err)

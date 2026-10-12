@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { CycleSummary, ProposalDetail, ProposalRow } from './types';
+  import type { CycleAction, CycleSummary, ProposalDetail, ProposalRow } from './types';
   /** A proposal row with the full detail this view has requested for it. */
   export type ProposalEntry = ProposalRow & {
     detail?: ProposalDetail;
@@ -50,7 +50,7 @@
     cycle: string;
     busy: boolean;
     pendingAction: string;
-    onaction: (cycle: string, action: 'archive' | 'discard') => Promise<void>;
+    onaction: (cycle: string, action: CycleAction) => Promise<void>;
     onrefresh: () => Promise<void>;
     oninspect: (cycle: string, proposal: string) => void;
     /** An operator interaction, which drops a pending focus redirect; background loads must not. */
@@ -164,7 +164,7 @@
       if (p.detailLoading === revision) p.detailLoading = undefined;
     }
   }
-  async function cycleAction(value: 'archive' | 'discard') {
+  async function cycleAction(value: CycleAction) {
     if (busy || refreshMessage) return;
     let applied = false;
     error = '';

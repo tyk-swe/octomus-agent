@@ -37,7 +37,7 @@ func TestRetryResetsRepairBudget(t *testing.T) {
 	reason := model.BlockedVerificationFailed
 	task.BlockedReason = &reason
 	putTask(t, f, task)
-	go func() { _ = app.TaskAction(task.ID, "retry") }()
+	go func() { _ = app.TaskAction(task.ID, model.TaskActionRetry) }()
 	waitForPreflights(t, f, 1)
 	releasePreflight(t, f)
 	var saved model.Task
@@ -66,7 +66,7 @@ func TestTaskActions(t *testing.T) {
 	reason := model.BlockedStaleBase
 	stale.BlockedReason = &reason
 	putTask(t, f, stale)
-	if err := app.TaskAction(stale.ID, "supersede"); err != nil {
+	if err := app.TaskAction(stale.ID, model.TaskActionSupersede); err != nil {
 		t.Fatal(err)
 	}
 	saved := loadTask(t, f.state, stale.ID)
@@ -77,17 +77,17 @@ func TestTaskActions(t *testing.T) {
 	done := checkpointedTask(t, f, f.cfg.DefaultBranch)
 	done.Status = model.StatusPublished
 	putTask(t, f, done)
-	if err := app.TaskAction(done.ID, "discard"); err == nil || !IsActionConflict(err) {
+	if err := app.TaskAction(done.ID, model.TaskActionDiscard); err == nil || !IsActionConflict(err) {
 		t.Fatalf("discard before archive = %v; want ineligible", err)
 	}
-	if err := app.TaskAction(done.ID, "archive"); err != nil {
+	if err := app.TaskAction(done.ID, model.TaskActionArchive); err != nil {
 		t.Fatal(err)
 	}
 	saved = loadTask(t, f.state, done.ID)
 	if saved.Lifecycle.ArchivedAt == nil {
 		t.Fatalf("archived task = %+v", saved)
 	}
-	if err := app.TaskAction(done.ID, "discard"); err != nil {
+	if err := app.TaskAction(done.ID, model.TaskActionDiscard); err != nil {
 		t.Fatal(err)
 	}
 	saved = loadTask(t, f.state, done.ID)
@@ -112,7 +112,7 @@ func TestRetryOnStaleBaseBlocks(t *testing.T) {
 	putTask(t, f, task)
 	git(t, f.repo, "commit", "--allow-empty", "-m", "External work")
 	git(t, f.repo, "push", "origin", f.cfg.DefaultBranch)
-	err := app.TaskAction(task.ID, "retry")
+	err := app.TaskAction(task.ID, model.TaskActionRetry)
 	if err == nil || model.BlockedReasonFromError(err) != model.BlockedStaleBase {
 		t.Fatalf("stale retry = %v; want the recorded stale-base failure", err)
 	}

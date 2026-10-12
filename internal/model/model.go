@@ -169,50 +169,50 @@ func (t Task) ExecutionConfig() config.Config {
 	}
 	return c
 }
-func (t Task) AllowedActions() []string {
+func (t Task) AllowedActions() []TaskAction {
 	if t.Lifecycle.ArchivedAt != nil {
 		if t.Lifecycle.DiscardedAt != nil {
-			return []string{}
+			return []TaskAction{}
 		}
-		return []string{"discard"}
+		return []TaskAction{TaskActionDiscard}
 	}
 	if t.Status == StatusPublished {
-		return []string{"archive"}
+		return []TaskAction{TaskActionArchive}
 	}
 	if t.Status == StatusCancelled {
-		actions := []string{"archive"}
+		actions := []TaskAction{TaskActionArchive}
 		if t.Lifecycle.DiscardedAt == nil && t.OutputCommit == nil && !t.RediscoveryRequested && len(t.SupersededBy) == 0 {
-			actions = append(actions, "supersede")
+			actions = append(actions, TaskActionSupersede)
 		}
 		return actions
 	}
 	if t.Lifecycle.DiscardedAt != nil || t.Status == StatusPublishing {
-		return []string{}
+		return []TaskAction{}
 	}
 	if !t.Status.Retryable() {
 		if t.OutputCommit == nil {
-			return []string{"cancel"}
+			return []TaskAction{TaskActionCancel}
 		}
-		return []string{}
+		return []TaskAction{}
 	}
-	actions := []string{}
+	actions := []TaskAction{}
 	if t.OutputCommit == nil {
-		actions = append(actions, "cancel")
+		actions = append(actions, TaskActionCancel)
 	}
-	actions = append(actions, "archive")
+	actions = append(actions, TaskActionArchive)
 	reason := BlockedUnknown
 	if t.BlockedReason != nil {
 		reason = *t.BlockedReason
 	}
 	switch reason {
 	case BlockedStaleBase, BlockedInvalidPlan, BlockedWorkspaceInvalid:
-		actions = append(actions, "supersede")
+		actions = append(actions, TaskActionSupersede)
 	case BlockedRemoteConflict, BlockedPublicationUncertain:
-		actions = append(actions, "reconcile")
+		actions = append(actions, TaskActionReconcile)
 	case BlockedDependencyBlocked, BlockedRunnerUnavailable:
-		actions = append(actions, "retry", "supersede")
+		actions = append(actions, TaskActionRetry, TaskActionSupersede)
 	default:
-		actions = append(actions, "retry")
+		actions = append(actions, TaskActionRetry)
 	}
 	return actions
 }

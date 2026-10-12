@@ -49,7 +49,7 @@ func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 func TestAuditControlConflicts(t *testing.T) {
 	t.Parallel()
 	app, _ := controlFixture(t, "audit")
-	for _, action := range []string{"audit", "cycle", "resume"} {
+	for _, action := range []model.ControlAction{model.ControlAudit, model.ControlCycle, model.ControlResume} {
 		if _, err := app.ControlAction(action); err == nil || !IsActionConflict(err) {
 			t.Fatalf("%s during an audit: %v; want a conflict", action, err)
 		}

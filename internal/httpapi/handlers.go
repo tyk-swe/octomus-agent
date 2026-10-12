@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,18 @@ func acknowledged(err error) (int, any, error) {
 		return 0, nil, err
 	}
 	return http.StatusOK, Acknowledgement{OK: true}, nil
+}
+
+// pathEnum parses a closed-vocabulary path word; an unknown word is a missing route.
+func pathEnum[T any, P interface {
+	*T
+	encoding.TextUnmarshaler
+}](r *http.Request, name, unknown string) (T, error) {
+	var value T
+	if err := P(&value).UnmarshalText([]byte(r.PathValue(name))); err != nil {
+		return value, engine.NotFound(unknown)
+	}
+	return value, nil
 }
 
 func (a *api) stateView(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
@@ -101,7 +114,11 @@ func (a *api) cycleEvidence(_ http.ResponseWriter, r *http.Request) (int, any, e
 }
 
 func (a *api) cycleAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	return acknowledged(a.app.CycleAction(r.PathValue("id"), r.PathValue("action")))
+	action, err := pathEnum[model.CycleAction](r, "action", "Unknown cycle action")
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(a.app.CycleAction(r.PathValue("id"), action))
 }
 
 func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -113,7 +130,11 @@ func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, erro
 }
 
 func (a *api) taskAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	return acknowledged(a.app.TaskAction(r.PathValue("id"), r.PathValue("action")))
+	action, err := pathEnum[model.TaskAction](r, "action", "Unknown task action")
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(a.app.TaskAction(r.PathValue("id"), action))
 }
 
 func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
@@ -178,7 +199,11 @@ func (a *api) baselineCancel(_ http.ResponseWriter, r *http.Request) (int, any, 
 }
 
 func (a *api) controlAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	body, err := a.app.ControlAction(r.PathValue("action"))
+	action, err := pathEnum[model.ControlAction](r, "action", "Unknown control")
+	if err != nil {
+		return 0, nil, err
+	}
+	body, err := a.app.ControlAction(action)
 	return http.StatusOK, body, err
 }
 

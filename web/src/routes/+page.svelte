@@ -2,7 +2,14 @@
   import { onMount, tick } from 'svelte';
   import { client, setToken, onUnauthorized } from '$lib/api';
   import { StateSession } from '$lib/stateSession';
-  import type { Snapshot, TaskRow, Page, ProposalRow, PRObservation } from '$lib/types';
+  import type {
+    CycleAction,
+    Snapshot,
+    TaskRow,
+    Page,
+    ProposalRow,
+    PRObservation
+  } from '$lib/types';
   import Badge from '$lib/Badge.svelte';
   import FilterTabs from '$lib/FilterTabs.svelte';
   import { clockTime, relative, safeUrl } from '$lib/format';
@@ -146,7 +153,7 @@
       : null
   );
   const canControl = $derived(controlEligibility(setupStatus));
-  async function cycleAction(cycle: string, action: 'archive' | 'discard') {
+  async function cycleAction(cycle: string, action: CycleAction) {
     const currentSession = sessionGeneration;
     busy = true;
     pendingAction = action;

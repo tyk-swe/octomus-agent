@@ -692,7 +692,7 @@ func TestMergeAttemptPausedDuringPutSerializes(t *testing.T) {
 	}
 	paused := make(chan error, 1)
 	go func() {
-		_, err := app.ControlAction("pause")
+		_, err := app.ControlAction(model.ControlPause)
 		paused <- err
 	}()
 	if err := os.Remove(filepath.Join(f.root, "merge-hold")); err != nil {
@@ -1096,7 +1096,7 @@ func TestDeliveryModeSwitchGuardedByUnresolvedTasks(t *testing.T) {
 	if err := patch("standard"); err == nil {
 		t.Fatal("a mode switch slipped past a failed unarchived task")
 	}
-	if err := app.TaskAction(queued.ID, "cancel"); err != nil {
+	if err := app.TaskAction(queued.ID, model.TaskActionCancel); err != nil {
 		t.Fatal(err)
 	}
 	if err := patch("standard"); err == nil {

@@ -82,24 +82,24 @@ func TestTaskAllowedActions(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		task Task
-		want []string
+		want []TaskAction
 	}{
-		{"archived and discarded", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at, DiscardedAt: &at}}, []string{}},
-		{"archived", Task{Status: StatusPublished, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at}}, []string{"discard"}},
-		{"archived failed with output", Task{Status: StatusFailed, OutputCommit: &commit, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at}}, []string{"discard"}},
-		{"published", Task{Status: StatusPublished, OutputCommit: &commit}, []string{"archive"}},
-		{"cancelled", Task{Status: StatusCancelled}, []string{"archive", "supersede"}},
-		{"cancelled with output", Task{Status: StatusCancelled, OutputCommit: &commit}, []string{"archive"}},
-		{"cancelled rediscovery requested", Task{Status: StatusCancelled, RediscoveryRequested: true}, []string{"archive"}},
-		{"cancelled superseded", Task{Status: StatusCancelled, SupersededBy: []string{"next"}}, []string{"archive"}},
-		{"cancelled discarded", Task{Status: StatusCancelled, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []string{"archive"}},
-		{"discarded failed", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []string{}},
-		{"publishing", Task{Status: StatusPublishing}, []string{}},
-		{"publishing with output", Task{Status: StatusPublishing, OutputCommit: &commit}, []string{}},
-		{"blocked with output", Task{Status: StatusBlocked, OutputCommit: &commit, BlockedReason: reason(BlockedStaleBase)}, []string{"archive", "supersede"}},
-		{"failed with output", Task{Status: StatusFailed, OutputCommit: &commit, BlockedReason: reason(BlockedRemoteConflict)}, []string{"archive", "reconcile"}},
-		{"failed without a reason", Task{Status: StatusFailed}, []string{"cancel", "archive", "retry"}},
-		{"blocked without a reason", Task{Status: StatusBlocked}, []string{"cancel", "archive", "retry"}},
+		{"archived and discarded", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at, DiscardedAt: &at}}, []TaskAction{}},
+		{"archived", Task{Status: StatusPublished, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at}}, []TaskAction{TaskActionDiscard}},
+		{"archived failed with output", Task{Status: StatusFailed, OutputCommit: &commit, Lifecycle: WorkspaceLifecycle{ArchivedAt: &at}}, []TaskAction{TaskActionDiscard}},
+		{"published", Task{Status: StatusPublished, OutputCommit: &commit}, []TaskAction{TaskActionArchive}},
+		{"cancelled", Task{Status: StatusCancelled}, []TaskAction{TaskActionArchive, TaskActionSupersede}},
+		{"cancelled with output", Task{Status: StatusCancelled, OutputCommit: &commit}, []TaskAction{TaskActionArchive}},
+		{"cancelled rediscovery requested", Task{Status: StatusCancelled, RediscoveryRequested: true}, []TaskAction{TaskActionArchive}},
+		{"cancelled superseded", Task{Status: StatusCancelled, SupersededBy: []string{"next"}}, []TaskAction{TaskActionArchive}},
+		{"cancelled discarded", Task{Status: StatusCancelled, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []TaskAction{TaskActionArchive}},
+		{"discarded failed", Task{Status: StatusFailed, Lifecycle: WorkspaceLifecycle{DiscardedAt: &at}}, []TaskAction{}},
+		{"publishing", Task{Status: StatusPublishing}, []TaskAction{}},
+		{"publishing with output", Task{Status: StatusPublishing, OutputCommit: &commit}, []TaskAction{}},
+		{"blocked with output", Task{Status: StatusBlocked, OutputCommit: &commit, BlockedReason: reason(BlockedStaleBase)}, []TaskAction{TaskActionArchive, TaskActionSupersede}},
+		{"failed with output", Task{Status: StatusFailed, OutputCommit: &commit, BlockedReason: reason(BlockedRemoteConflict)}, []TaskAction{TaskActionArchive, TaskActionReconcile}},
+		{"failed without a reason", Task{Status: StatusFailed}, []TaskAction{TaskActionCancel, TaskActionArchive, TaskActionRetry}},
+		{"blocked without a reason", Task{Status: StatusBlocked}, []TaskAction{TaskActionCancel, TaskActionArchive, TaskActionRetry}},
 	} {
 		if got := tc.task.AllowedActions(); got == nil || !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%s: AllowedActions() = %#v; want %#v", tc.name, got, tc.want)
@@ -107,7 +107,7 @@ func TestTaskAllowedActions(t *testing.T) {
 	}
 
 	for _, status := range []Status{StatusQueued, StatusExecuting, StatusReviewing, StatusRepairing, StatusVerifying} {
-		if got := (Task{Status: status}).AllowedActions(); !reflect.DeepEqual(got, []string{"cancel"}) {
+		if got := (Task{Status: status}).AllowedActions(); !reflect.DeepEqual(got, []TaskAction{TaskActionCancel}) {
 			t.Errorf("%s: AllowedActions() = %#v; want [cancel]", status, got)
 		}
 		if got := (Task{Status: status, OutputCommit: &commit}).AllowedActions(); got == nil || len(got) != 0 {
@@ -115,23 +115,23 @@ func TestTaskAllowedActions(t *testing.T) {
 		}
 	}
 
-	recovery := map[BlockedReason][]string{
-		BlockedStaleBase:            {"supersede"},
-		BlockedInvalidPlan:          {"supersede"},
-		BlockedWorkspaceInvalid:     {"supersede"},
-		BlockedRemoteConflict:       {"reconcile"},
-		BlockedPublicationUncertain: {"reconcile"},
-		BlockedDependencyBlocked:    {"retry", "supersede"},
-		BlockedRunnerUnavailable:    {"retry", "supersede"},
+	recovery := map[BlockedReason][]TaskAction{
+		BlockedStaleBase:            {TaskActionSupersede},
+		BlockedInvalidPlan:          {TaskActionSupersede},
+		BlockedWorkspaceInvalid:     {TaskActionSupersede},
+		BlockedRemoteConflict:       {TaskActionReconcile},
+		BlockedPublicationUncertain: {TaskActionReconcile},
+		BlockedDependencyBlocked:    {TaskActionRetry, TaskActionSupersede},
+		BlockedRunnerUnavailable:    {TaskActionRetry, TaskActionSupersede},
 	}
 	for _, status := range []Status{StatusFailed, StatusBlocked} {
 		for i := range blockedReasonNames {
 			r := BlockedReason(i)
 			tail, ok := recovery[r]
 			if !ok {
-				tail = []string{"retry"}
+				tail = []TaskAction{TaskActionRetry}
 			}
-			want := append([]string{"cancel", "archive"}, tail...)
+			want := append([]TaskAction{TaskActionCancel, TaskActionArchive}, tail...)
 			if got := (Task{Status: status, BlockedReason: &r}).AllowedActions(); !reflect.DeepEqual(got, want) {
 				t.Errorf("%s %s: AllowedActions() = %#v; want %#v", status, r.String(), got, want)
 			}
