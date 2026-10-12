@@ -6,8 +6,10 @@ export type ResourceState<T> = {
 };
 
 // One owner for a resource's request identity, retained content and disposal.
-// Coalescing lets slow evidence finish while remembering only the newest key;
-// forced reads invalidate any request started before an accepted mutation.
+// Coalescing lets slow evidence finish while remembering only the newest key, and a
+// request for the loading key supersedes whatever queued behind it, so only the newest
+// requested key can become the confirmed fresh state; retained content stays visible as
+// stale until then. Forced reads invalidate any request started before an accepted mutation.
 export class Resource<T, K = string> {
   private state: ResourceState<T> = { value: null, loading: false, stale: false, error: '' };
   private flight: { key: K; controller: AbortController; promise: Promise<boolean> } | null = null;
@@ -45,7 +47,12 @@ export class Resource<T, K = string> {
   refresh(key: K, force = false): Promise<boolean> {
     if (this.disposed) return Promise.resolve(false);
     if (this.flight && !force) {
-      if (this.flight.key === key) return this.flight.promise;
+      if (this.flight.key === key) {
+        // This request is the newest one, so any key queued behind the loading read is
+        // obsolete intent: letting it run afterwards would confirm a superseded key.
+        this.queued = null;
+        return this.flight.promise;
+      }
       if (this.coalesce) {
         this.queued = { key };
         this.publish({ stale: this.state.value !== null });

@@ -99,6 +99,36 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `GET /api/proposals` scrubs proposal text before cutting it to its 2,000-character
   bound, so a credential straddling the cut no longer leaks in part.
 - Bearer tokens stay redacted when a runner's cut stderr tail splits the `Bearer` line.
+- The gitlink refusal redacts a work-tree path before bounding it, so a credential crossing
+  the diagnostic limit is no longer reported in part; the limit counts characters and marks
+  the cut.
+- A cancellation the store refused is no longer discarded when the worker exits or its
+  orphaned task is recovered: the durable cancellation marker settles the task as cancelled
+  with the worker's own cause kept in an error event, instead of reporting it as blocked, and
+  a task that already reached an output checkpoint still stays `publication_uncertain`.
+- A runner child that has not ended when its cleanup budget does is reported as the
+  sandbox's own failure rather than a plain error: a replacement child is still refused
+  before it starts, and the task is blocked as a runner failure an operator can retry,
+  instead of an unclassified failure.
+- The broker's account of a sandbox that actually ran is kept when a runner fails to
+  establish its session: with no session record yet to carry it, it becomes a
+  `sandbox_evidence` activity event on the task or cycle instead of being dropped with the
+  released child.
+- Operations on the shared trusted checkout are serialized: concurrent fetches no longer
+  race each other's refs or the automatic maintenance a task's clone was copying, which
+  failed with `failed to copy file ... objects/maintenance.lock: No such file or
+  directory`. Clones of the checkout still run together, other repositories and task
+  workspaces are unaffected, and a cancelled task or cycle stops waiting instead of
+  holding its worker open.
+- A nested repository that a runner committed itself no longer reaches review,
+  verification or publication. The gitlink refusal covers the reviewed change set against
+  its comparison base as well as the snapshot's own staged commit, so a submodule the base
+  already carries stays allowed while an added or retargeted gitlink blocks the task as
+  `workspace_invalid`.
+- Coalesced dashboard reads let only the newest requested revision become confirmed fresh
+  state: a request for the revision that is already loading drops the older queued read, so
+  an obsolete in-flight intent can no longer confirm a superseded revision as current.
+  Retained content stays visible and marked stale until the newest read succeeds.
 
 ### Removed
 

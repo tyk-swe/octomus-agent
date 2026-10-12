@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { Resource } from '../src/lib/resource';
+import { Resource, type ResourceState } from '../src/lib/resource';
 import { StateSession } from '../src/lib/stateSession';
 import type { Snapshot } from '../src/lib/types';
 
@@ -12,6 +12,152 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+// A coalescing resource whose every read the test resolves by hand, so a request's
+// identity (which key was read, in which order) is directly observable.
+//
+// The invariant these tests hold it to: only the newest requested key may own the final
+// fresh state. Retained older evidence may stay visible, but marked stale, and obsolete
+// queued intent must never run afterwards and become authoritative.
+function coalescing<T>() {
+  const reads: { key: string; read: ReturnType<typeof deferred<T>> }[] = [];
+  let current: ResourceState<T> = { value: null, loading: false, stale: false, error: '' };
+  const resource = new Resource<T>(
+    (key: string) => {
+      const read = deferred<T>();
+      reads.push({ key, read });
+      return read.promise;
+    },
+    (state) => {
+      current = state;
+    },
+    true
+  );
+  return {
+    resource,
+    reads,
+    keys: () => reads.map((entry) => entry.key),
+    state: () => current
+  };
+}
+
+test('the newest requested key owns the final fresh state when an older key is requested again', async () => {
+  const { resource, reads, keys, state } = coalescing<string>();
+  const first = resource.refresh('A');
+  expect(resource.refresh('B')).toBe(first);
+  // A is requested again while its own read is pending: it is the newest request, so
+  // the queued B is obsolete intent and must not become authoritative afterwards.
+  expect(resource.refresh('A')).toBe(first);
+  reads[0].read.resolve('A evidence');
+  expect(await first).toBe(true);
+  expect(keys()).toEqual(['A']);
+  expect(state()).toMatchObject({ value: 'A evidence', loading: false, stale: false, error: '' });
+});
+
+test('coalescing keeps only the newest queued key across a longer sequence', async () => {
+  const { resource, reads, keys, state } = coalescing<string>();
+  const first = resource.refresh('A');
+  void resource.refresh('B');
+  void resource.refresh('A');
+  void resource.refresh('C');
+  reads[0].read.resolve('A evidence');
+  expect(await first).toBe(true);
+  expect(keys()).toEqual(['A', 'C']);
+  reads[1].read.resolve('C evidence');
+  expect(await resource.refresh('C')).toBe(true);
+  expect(state()).toMatchObject({ value: 'C evidence', loading: false, stale: false, error: '' });
+
+  // Repeated same-key requests share one read, and none of them outlive it.
+  const repeated = resource.refresh('C');
+  expect(resource.refresh('C')).toBe(repeated);
+  expect(resource.refresh('C')).toBe(repeated);
+  expect(keys()).toEqual(['A', 'C', 'C']);
+  reads[2].read.resolve('C again');
+  expect(await repeated).toBe(true);
+  expect(state()).toMatchObject({ value: 'C again', stale: false, error: '' });
+
+  // A repeat of the loading key supersedes a queued different key.
+  const held = resource.refresh('D');
+  void resource.refresh('E');
+  expect(resource.refresh('D')).toBe(held);
+  reads[3].read.resolve('D evidence');
+  expect(await held).toBe(true);
+  expect(keys()).toEqual(['A', 'C', 'C', 'D']);
+  expect(state()).toMatchObject({ value: 'D evidence', loading: false, stale: false, error: '' });
+});
+
+test('a failed read for the newest key keeps retained evidence stale and never confirms a superseded key', async () => {
+  const { resource, reads, keys, state } = coalescing<string>();
+  const initial = resource.refresh('A');
+  reads[0].read.resolve('A evidence');
+  expect(await initial).toBe(true);
+
+  const held = resource.refresh('A');
+  void resource.refresh('B');
+  expect(resource.refresh('A')).toBe(held);
+  reads[1].read.reject(new Error('Confirming read failed'));
+  expect(await held).toBe(false);
+  expect(keys()).toEqual(['A', 'A']);
+  expect(state()).toMatchObject({
+    value: 'A evidence',
+    loading: false,
+    stale: true,
+    error: 'Confirming read failed'
+  });
+
+  const retry = resource.refresh('A');
+  reads[2].read.resolve('A confirmed');
+  expect(await retry).toBe(true);
+  expect(state()).toMatchObject({ value: 'A confirmed', stale: false, error: '' });
+});
+
+test('forced refresh, invalidate, cancel and dispose discard queued intent and ignore late responses', async () => {
+  const { resource, reads, keys, state } = coalescing<string>();
+  const initial = resource.refresh('A');
+  reads[0].read.resolve('A evidence');
+  expect(await initial).toBe(true);
+
+  // A forced read replaces the pending read and the intent queued behind it.
+  const first = resource.refresh('A');
+  void resource.refresh('B');
+  const forced = resource.refresh('C', true);
+  expect(forced).not.toBe(first);
+  reads[1].read.resolve('late A');
+  expect(await first).toBe(false);
+  reads[2].read.resolve('C evidence');
+  expect(await forced).toBe(true);
+  expect(keys()).toEqual(['A', 'A', 'C']);
+  expect(state()).toMatchObject({ value: 'C evidence', loading: false, stale: false, error: '' });
+
+  // Invalidate keeps retained content visible as stale and drops the queued key.
+  const heldB = resource.refresh('B');
+  void resource.refresh('D');
+  resource.invalidate();
+  expect(state()).toMatchObject({ value: 'C evidence', stale: true, loading: false });
+  reads[3].read.resolve('late B');
+  expect(await heldB).toBe(false);
+  expect(state().value).toBe('C evidence');
+  expect(keys()).toEqual(['A', 'A', 'C', 'B']);
+
+  // Cancel abandons the read and the intent queued behind it.
+  const heldE = resource.refresh('E');
+  void resource.refresh('F');
+  resource.cancel();
+  expect(state().loading).toBe(false);
+  reads[4].read.resolve('late E');
+  expect(await heldE).toBe(false);
+  expect(keys()).toEqual(['A', 'A', 'C', 'B', 'E']);
+
+  // Dispose refuses new reads and ignores every response already in flight.
+  const heldG = resource.refresh('G');
+  void resource.refresh('H');
+  resource.dispose();
+  expect(await resource.refresh('I')).toBe(false);
+  reads[5].read.resolve('late G');
+  expect(await heldG).toBe(false);
+  expect(keys()).toEqual(['A', 'A', 'C', 'B', 'E', 'G']);
+  expect(state().value).toBe('C evidence');
+});
 
 test('a pending keyed replacement marks retained content stale until it succeeds', async () => {
   const reads: ReturnType<typeof deferred<string>>[] = [];

@@ -26,6 +26,8 @@ func (a *App) registerTaskWorker(task model.Task, kind taskWorkerKind) (context.
 // raises the recovery barrier before the ownership claim is released. Ordinary
 // initialized execution stays active on shutdown for restart recovery;
 // reconciliation always preserves an uncertain publication for operator action.
+// Settlement also reconciles a durable cancellation marker the worker's own last
+// write may have replaced, so a committed cancellation is never forgotten.
 func (a *App) finishTaskWorker(id string, cause error) {
 	a.runtimeMu.Lock()
 	job := a.runtime.tasks[id]
@@ -34,11 +36,13 @@ func (a *App) finishTaskWorker(id string, cause error) {
 	interrupted := job.kind == executionWorker && a.ctx.Err() != nil && current != nil && workspace.Initialized(*current)
 	if loadErr != nil {
 		a.setRecoveryError(loadErr)
-	} else if current != nil && current.Status.Active() && !interrupted {
+	} else if current != nil && !interrupted {
 		if cause == nil || errors.Is(cause, context.Canceled) {
 			cause = errors.New("Task worker exited unexpectedly; inspect the preserved workspace")
 		}
-		a.settleExitedTask(current, cause)
+		if err := a.settleExitedTask(current, cause); err != nil {
+			a.setRecoveryError(err)
+		}
 	}
 	a.runtimeMu.Lock()
 	delete(a.runtime.tasks, id)

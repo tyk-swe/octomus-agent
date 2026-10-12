@@ -77,7 +77,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	}
 	if status == model.StatusCancelled {
 		task.BlockedReason = nil
-		task.Error = new("Cancelled by the operator")
+		task.Error = new(cancelledByOperator)
 	} else {
 		recordTaskError(&task, taskErr)
 		if result.Expired {
@@ -152,6 +152,12 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 	for {
 		revision, err := gitops.Snapshot(ctx, cfg, ws, task.Proposal.Title)
 		if err != nil {
+			return err
+		}
+		// The snapshot refuses the gitlink it is about to commit. A runner that committed its own work leaves
+		// nothing staged, so the same refusal is applied to the change set this revision carries: only the
+		// comparison base tells which gitlinks are new or retargeted rather than already reviewed.
+		if err := gitops.RefuseCommittedGitlinks(ctx, cfg, ws, task.ComparisonBase, revision); err != nil {
 			return err
 		}
 		if revision == task.SourceRevision {
@@ -598,13 +604,49 @@ func recordTaskError(task *model.Task, err error) {
 	task.Error = new(redact.Error(err))
 }
 
-// Caller holds the gate until the exited worker releases its runtime claim.
-// Keep new work blocked when a publication checkpoint cannot be settled yet.
-func (a *App) settleExitedTask(task *model.Task, cause error) {
-	model.FailRunning(task.Sessions, redact.Error(cause))
-	if err := a.setTaskError(task, cause); err != nil {
-		a.setRecoveryError(err)
+// cancelledByOperator is the durable reason an operator cancellation records.
+const cancelledByOperator = "Cancelled by the operator"
+
+// taskCancellationApplies reports whether a durable operator cancellation still governs this task. A task that reached
+// an output checkpoint is excluded: publication cannot be undone, so it stays uncertain for explicit reconciliation,
+// exactly as restart recovery decides the same marker. The caller must hold no lock; this is a read.
+func (a *App) taskCancellationApplies(task model.Task) (bool, error) {
+	if task.OutputCommit != nil {
+		return false, nil
 	}
+	return a.store.CancelMarked(task.ID)
+}
+
+// settleExitedTask commits what a worker's exit leaves in the durable record. The caller holds the gate, so settlement
+// is serialized with operator cancellation.
+//
+// A committed cancellation marker outranks the worker's own terminal decision: that decision is made outside the gate,
+// so the worker can write its status after the cancellation committed, and the marker would otherwise be forgotten by
+// every later pass. Restart recovery and the queued-cancellation scan already treat the same marker as authoritative.
+// The worker's own cause stays in its error event, and a committed terminal status with no marker still stands.
+//
+// The error is returned so the caller can raise the recovery barrier at the worker join or fail the recovery scan.
+func (a *App) settleExitedTask(task *model.Task, cause error) error {
+	model.FailRunning(task.Sessions, redact.Error(cause))
+	cancelled, err := a.taskCancellationApplies(*task)
+	if err != nil {
+		return err
+	}
+	if cancelled && task.Status != model.StatusCancelled {
+		next := task.Clone()
+		next.BlockedReason = nil
+		next.Error = new(cancelledByOperator)
+		if err := a.transition(&next, model.StatusCancelled); err != nil {
+			return err
+		}
+		_ = a.store.Event(task.ID, model.EventError, redact.Error(cause))
+		*task = next
+		return nil
+	}
+	if !task.Status.Active() {
+		return nil
+	}
+	return a.setTaskError(task, cause)
 }
 
 func sourcePtrEqual(a, b *string) bool {

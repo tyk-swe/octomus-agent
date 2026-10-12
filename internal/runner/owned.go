@@ -103,9 +103,19 @@ func killed(err error) bool {
 	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL
 }
 
+// joinOwned joins the two owners of one released runner child within cleanupBudget: the child's exit and the end of
+// its output stream.
 func joinOwned(waitCh <-chan error, readerDone <-chan struct{}, stuck string) error {
+	return joinOwnedWithin(cleanupBudget, waitCh, readerDone, stuck)
+}
+
+// joinOwnedWithin joins a released child within budget. A child that still holds its process group or its sandbox
+// stream when that budget ends did not end in a way Octomus can confirm, so the child's owner reports the sandbox's
+// own failure rather than a plain error: it refuses to start replacement work on an unsettled child, and the task is
+// recorded as a runner failure instead of an unclassified one.
+func joinOwnedWithin(budget time.Duration, waitCh <-chan error, readerDone <-chan struct{}, stuck string) error {
 	var errs error
-	timer := time.NewTimer(cleanupBudget)
+	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	for waitCh != nil || readerDone != nil {
 		select {
@@ -117,7 +127,7 @@ func joinOwned(waitCh <-chan error, readerDone <-chan struct{}, stuck string) er
 		case <-readerDone:
 			readerDone = nil
 		case <-timer.C:
-			return errors.Join(errs, errors.New(stuck))
+			return errors.Join(errs, &sandbox.Error{Err: errors.New(stuck), Started: true})
 		}
 	}
 	return errs
