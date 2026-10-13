@@ -3,7 +3,6 @@ package engine
 // A runner that commits its own work: the nested repository it committed must not reach review or publication.
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,7 +112,7 @@ func TestPublicationReplayRejectsUnvalidatedChangeSets(t *testing.T) {
 				if entry == "reconciliation" {
 					must0(t, app.TaskAction(task.ID, model.TaskActionReconcile))
 				} else {
-					must0(t, app.superviseTask(context.Background(), task))
+					must0(t, app.superviseTask(testTaskWorker(t, app, &task), task))
 				}
 				saved := loadTask(t, f.state, task.ID)
 				if !blockedAs(saved, model.BlockedWorkspaceInvalid) {

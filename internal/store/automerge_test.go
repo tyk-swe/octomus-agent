@@ -52,7 +52,7 @@ func publishAtCheckpoint(t *testing.T, s *store.Store, task model.Task, p model.
 	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	published := task.Clone()
 	published.Status = model.StatusPublished
-	_, err := s.CompletePublication(published, p, merge)
+	_, err := s.CompletePublication(savedPublicationTask(t, s, published.ID), published, p, merge)
 	must(t, err)
 }
 
@@ -112,7 +112,7 @@ func TestCompletePublicationRollsBackTogether(t *testing.T) {
 	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	published := task.Clone()
 	published.Status = model.StatusPublished
-	if _, err := s.CompletePublication(published, p, merge); err == nil {
+	if _, err := s.CompletePublication(savedPublicationTask(t, s, published.ID), published, p, merge); err == nil {
 		t.Fatal("the injected failure did not roll the publication back")
 	}
 	saved, err := store.Get(s, store.Tasks.Key(task.ID))
@@ -142,7 +142,7 @@ func TestArchiveRollsBackWithMergeRevocation(t *testing.T) {
 	must(t, err)
 	archived := before.Clone()
 	archived.Lifecycle.ArchivedAt = new(model.Now())
-	if err := s.ArchiveTask(archived); err == nil {
+	if err := archiveTaskFixture(t, s, archived); err == nil {
 		t.Fatal("archival did not attempt coupled merge revocation")
 	}
 	saved, err := store.Get(s, store.Tasks.Key(task.ID))
@@ -160,7 +160,7 @@ func TestCompletePublicationRejectsStaleCheckpoints(t *testing.T) {
 	queued.Status = model.StatusQueued
 	queued.OutputCommit = nil
 	must(t, store.Put(s, store.Tasks.Key(task.ID), queued))
-	if _, err := s.CompletePublication(task, p, merge); err == nil {
+	if _, err := s.CompletePublication(savedPublicationTask(t, s, task.ID), task, p, merge); err == nil {
 		t.Fatal("a task that never checkpointed accepted a publication")
 	}
 	if saved, _ := store.Get(s, store.Tasks.Key(task.ID)); saved == nil || saved.Status != model.StatusQueued {
@@ -173,7 +173,7 @@ func TestCompletePublicationRejectsStaleCheckpoints(t *testing.T) {
 	other.Status = model.StatusPublished
 	otherHead := "b" + strings.Repeat("0", 39)
 	other.OutputCommit = &otherHead
-	if _, err := s.CompletePublication(other, p, merge); err == nil {
+	if _, err := s.CompletePublication(savedPublicationTask(t, s, other.ID), other, p, merge); err == nil {
 		t.Fatal("a publication with a different output overwrote the checkpoint")
 	}
 	if saved, _ := store.Get(s, store.Tasks.Key(task.ID)); saved == nil || saved.Status != model.StatusPublishing {
@@ -409,7 +409,7 @@ func TestRevokeTaskMergesAndCandidatePaging(t *testing.T) {
 		t.Fatalf("paged candidates = %d of 12", len(seen))
 	}
 	owner.Lifecycle.ArchivedAt = new(model.Now())
-	must(t, s.ArchiveTask(owner))
+	must(t, archiveTaskFixture(t, s, owner))
 	candidates, err := s.MergeCandidates(0, 100)
 	must(t, err)
 	if len(candidates) != 11 {
@@ -614,7 +614,7 @@ func TestCompletePublicationRefusesUnresolvedIntent(t *testing.T) {
 	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	published := task.Clone()
 	published.Status = model.StatusPublished
-	if _, err := s.CompletePublication(published, p, merge); err == nil {
+	if _, err := s.CompletePublication(savedPublicationTask(t, s, published.ID), published, p, merge); err == nil {
 		t.Fatal("a republished task overwrote an unresolved merge intent")
 	}
 	recorded := prMerge(t, s, 60)
@@ -631,7 +631,7 @@ func TestCompletePublicationRefusesUnresolvedIntent(t *testing.T) {
 	must(t, store.Put(s, store.PRs.Key("fixture/project:64"), model.PRObservation{
 		Repository: "fixture/project", ObservedAt: model.Now(), PR: observed, AutoMerge: &raw,
 	}))
-	if _, err := s.CompletePublication(published, observed, merge); err == nil {
+	if _, err := s.CompletePublication(savedPublicationTask(t, s, published.ID), published, observed, merge); err == nil {
 		t.Fatal("a republished task overwrote an uncommitted intent")
 	}
 }
@@ -647,7 +647,7 @@ func TestRevokeTaskMergesRetainsInFlightIntent(t *testing.T) {
 		t.Fatal("claim failed")
 	}
 	task.Lifecycle.ArchivedAt = new(model.Now())
-	must(t, s.ArchiveTask(task))
+	must(t, archiveTaskFixture(t, s, task))
 	recorded := prMerge(t, s, 61)
 	if recorded == nil || recorded.Authorized || recorded.Status != model.AutoMergeMerging ||
 		recorded.AttemptID == nil || *recorded.AttemptID != "attempt-1" {
@@ -732,7 +732,7 @@ func TestRevokeTaskMergesPreservesTerminalOutcome(t *testing.T) {
 			attemptedAt := before.AttemptedAt
 
 			task.Lifecycle.ArchivedAt = new(model.Now())
-			must(t, s.ArchiveTask(task))
+			must(t, archiveTaskFixture(t, s, task))
 
 			after := prMerge(t, s, test.number)
 			if after == nil {
@@ -903,7 +903,7 @@ func TestCompletePublicationSnapshotRollsBackWithFailure(t *testing.T) {
 	must(t, store.Put(s, store.Tasks.Key(taskB.ID), checkpoint))
 	published := taskB.Clone()
 	published.Status = model.StatusPublished
-	if _, err := s.CompletePublication(published, pB, mergeB); err == nil {
+	if _, err := s.CompletePublication(savedPublicationTask(t, s, published.ID), published, pB, mergeB); err == nil {
 		t.Fatal("the injected failure did not roll back")
 	}
 	old, err := store.Get(s, store.Tasks.Key(taskA.ID))
@@ -937,4 +937,33 @@ func TestUnfinishedBranchWorkCancelledReleases(t *testing.T) {
 	if !pending {
 		t.Fatal("a queued replacement did not hold the branch")
 	}
+}
+
+func savedTaskForArchive(t *testing.T, s *store.Store, id string) model.Task {
+	t.Helper()
+	saved, err := store.Get(s, store.Tasks.Key(id))
+	if err != nil || saved == nil {
+		t.Fatalf("archive predecessor: %v", err)
+	}
+	return *saved
+}
+
+func savedPublicationTask(t *testing.T, s *store.Store, id string) model.Task {
+	t.Helper()
+	saved, err := store.Get(s, store.Tasks.Key(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil {
+		return model.Task{ID: id}
+	}
+	return *saved
+}
+
+func archiveTaskFixture(t *testing.T, s *store.Store, proposed model.Task) error {
+	t.Helper()
+	expected := savedTaskForArchive(t, s, proposed.ID)
+	next := expected.Clone()
+	next.Lifecycle = proposed.Lifecycle
+	return s.ArchiveTask(expected, next)
 }

@@ -366,7 +366,7 @@ func TestSessionRecoveryPreservesEstablishedAndUnknownThreads(t *testing.T) {
 			}
 			clients := runner.New(context.Background(), f.cfg, connect)
 			defer clients.Close()
-			_, err := app.invoke(context.Background(), clients, invocation{
+			_, err := app.invoke(testTaskWorker(t, app, &task), clients, invocation{
 				cycleID: task.CycleID, task: &task, role: "repair", route: f.routes.Repair, workspace: f.repo,
 				session: &task.RepairSession,
 			})
@@ -396,7 +396,7 @@ func TestFirstTurnCheckpointFailureStopsWork(t *testing.T) {
 	app := f.pausedApp(t)
 	clients := runner.New(context.Background(), f.cfg, f.script.Connector())
 	defer clients.Close()
-	_, err := app.invoke(context.Background(), clients, invocation{
+	_, err := app.invoke(testTaskWorker(t, app, &task), clients, invocation{
 		cycleID: task.CycleID, task: &task, role: "executor", route: f.routes.Executor, workspace: f.repo,
 		session: &task.ExecutionSession,
 	})
@@ -424,7 +424,7 @@ func TestSessionReplacementRequiresAdmission(t *testing.T) {
 	app := f.pausedApp(t)
 	clients := runner.New(context.Background(), f.cfg, f.script.Connector())
 	defer clients.Close()
-	_, err := app.invoke(context.Background(), clients, invocation{
+	_, err := app.invoke(testTaskWorker(t, app, &task), clients, invocation{
 		cycleID: task.CycleID, task: &task, role: "repair", route: f.routes.Repair, workspace: f.repo,
 		session: &task.RepairSession,
 	})

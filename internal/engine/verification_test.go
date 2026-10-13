@@ -50,7 +50,7 @@ func TestVerificationMutationFails(t *testing.T) {
 		{"git -c user.name=x -c user.email=x@example.com commit --allow-empty -m moved", "true"},
 	} {
 		app, task, revision := verificationFixture(t, commands)
-		_, err := app.verifyRevision(context.Background(), &task, revision)
+		_, err := app.verifyRevision(testTaskVerifier(t, app, &task), &task, revision)
 		if err == nil || model.BlockedReasonFromError(err) != model.BlockedWorkspaceInvalid {
 			t.Fatalf("commands %v: err = %v, want workspace_invalid", commands, err)
 		}
@@ -83,7 +83,7 @@ func TestVerificationUsesReviewedCommit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	failures, err := app.verifyRevision(context.Background(), &task, revision)
+	failures, err := app.verifyRevision(testTaskVerifier(t, app, &task), &task, revision)
 	if err != nil || len(failures) != 0 {
 		t.Fatalf("verification = %v, %v; ignored files in the task work tree must not reach the checkout", failures, err)
 	}
@@ -154,7 +154,7 @@ func TestEvidenceRedactsAdjacentSecrets(t *testing.T) {
 				t.Run("verification/"+tc.name, func(t *testing.T) {
 					t.Parallel()
 					app, task, revision := verificationFixture(t, []string{tc.before + boundary.emit})
-					if _, err := app.verifyRevision(context.Background(), &task, revision); err != nil {
+					if _, err := app.verifyRevision(testTaskVerifier(t, app, &task), &task, revision); err != nil {
 						t.Fatal(err)
 					}
 					saved := loadTask(t, app.store, task.ID)
@@ -195,7 +195,7 @@ func TestEvidenceRedactsCrossStream(t *testing.T) {
 			t.Parallel()
 			command := tc.before + crossStreamCommand
 			app, task, revision := verificationFixture(t, []string{command})
-			failures, err := app.verifyRevision(context.Background(), &task, revision)
+			failures, err := app.verifyRevision(testTaskVerifier(t, app, &task), &task, revision)
 			if err != nil {
 				t.Fatal(err)
 			}

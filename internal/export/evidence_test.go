@@ -653,7 +653,7 @@ func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
 	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
 	published := delivered.Clone()
 	published.Status = model.StatusPublished
-	published, err := s.CompletePublication(published, pr, merge)
+	published, err := s.CompletePublication(savedTaskForArchive(t, s, published.ID), published, pr, merge)
 	must(t, err)
 
 	intent := merge.Clone()
@@ -672,7 +672,7 @@ func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
 		t.Fatal("the confirmed merge did not settle")
 	}
 	published.Lifecycle.ArchivedAt = new(model.Now())
-	must(t, s.ArchiveTask(published))
+	must(t, s.ArchiveTask(savedTaskForArchive(t, s, published.ID), published))
 
 	value := exported(t, s, "cycle-a")
 	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
@@ -723,7 +723,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	checkpoint := delivered.Clone()
 	checkpoint.Status = model.StatusPublishing
 	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
-	_, err := s.CompletePublication(func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA)
+	_, err := s.CompletePublication(savedTaskForArchive(t, s, delivered.ID), func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA)
 	must(t, err)
 	applied, err := s.SettleMerge("fixture/project", 5, *mergeA, model.AutoMergeManual, "The diff touches a sensitive path", "", nil, true)
 	if err != nil || !applied {
@@ -745,7 +745,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	prB := pr
 	prB.Head = "out00002"
 	must(t, store.Put(s, store.Tasks.Key(superseding.ID), func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublishing; return p }()))
-	_, err = s.CompletePublication(func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB)
+	_, err = s.CompletePublication(savedTaskForArchive(t, s, superseding.ID), func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB)
 	must(t, err)
 
 	value := exported(t, s, "cycle-a")
@@ -811,4 +811,13 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	if got := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason"); got != "The diff touches a sensitive path" {
 		t.Fatalf("the snapshot did not stand alone without the current record: %v", got)
 	}
+}
+
+func savedTaskForArchive(t *testing.T, s *store.Store, id string) model.Task {
+	t.Helper()
+	saved, err := store.Get(s, store.Tasks.Key(id))
+	if err != nil || saved == nil {
+		t.Fatalf("archive predecessor: %v", err)
+	}
+	return *saved
 }

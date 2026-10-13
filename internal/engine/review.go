@@ -23,7 +23,7 @@ import (
 func (a *App) reviewRevision(ctx context.Context, task *model.Task, client *runner.Runners, revision string) (model.Review, error) {
 	cfg := task.ExecutionConfig()
 	ws := task.Workspace
-	if err := a.transition(task, model.StatusReviewing); err != nil {
+	if err := a.transitionTask(ctx, task, model.StatusReviewing); err != nil {
 		return model.Review{}, err
 	}
 	route, ok := cfg.Roles["code_reviewer"]

@@ -36,7 +36,7 @@ func controlFixture(t *testing.T, scenario string) (*App, model.Control) {
 	app.runtimeMu.Lock()
 	switch scenario {
 	case "task":
-		app.runtime.tasks["synthetic-task"] = taskJob{branch: "octomus/x", cancel: func() {}}
+		app.runtime.tasks["synthetic-task"] = &taskJob{branch: "octomus/x", cancel: func() {}}
 	case "execution":
 		app.runtime.cycle = &cycleJob{id: "cycle", mode: model.CycleModeExecution, cancel: func() {}}
 	case "audit":
@@ -91,7 +91,7 @@ func TestStateViewStatus(t *testing.T) {
 			app.runtimeMu.Lock()
 			switch check.runtime {
 			case "task":
-				app.runtime.tasks["synthetic-task"] = taskJob{branch: "octomus/x", cancel: func() {}}
+				app.runtime.tasks["synthetic-task"] = &taskJob{branch: "octomus/x", cancel: func() {}}
 			case "audit preflight":
 				app.runtime.startPreflight(model.CycleModeAudit)
 			}

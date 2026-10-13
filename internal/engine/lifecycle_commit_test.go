@@ -22,6 +22,7 @@ func TestTaskTransitionCommitOutcome(t *testing.T) {
 		t.Run(refusal, func(t *testing.T) {
 			f := newFixture(t)
 			task := executionTask(t, f, f.cfg.DefaultBranch)
+			task.Status = model.StatusExecuting
 			putTask(t, f, task)
 			before := task.Clone()
 			db := f.rawDB(t)
@@ -35,7 +36,7 @@ func TestTaskTransitionCommitOutcome(t *testing.T) {
 				t.Fatal(err)
 			}
 			app := f.pausedApp(t)
-			err := app.transition(&task, model.StatusReviewing)
+			err := app.transitionTask(testTaskWorker(t, app, &task), &task, model.StatusReviewing)
 			saved := loadTask(t, f.state, task.ID)
 			if refusal == "task" {
 				if err == nil || !wirejson.Equal(task, before) || !wirejson.Equal(saved, before) {
@@ -134,7 +135,7 @@ func TestExecutionSettlementRetainsPublicationFailure(t *testing.T) {
 	must0(t, err)
 	app := New(f.state, f.dataDir)
 	t.Cleanup(app.Shutdown)
-	must0(t, app.superviseTask(context.Background(), task))
+	must0(t, app.superviseTask(testTaskWorker(t, app, &task), task))
 	current := loadTask(t, f.state, task.ID)
 	if current.Status != model.StatusBlocked || current.BlockedReason == nil || *current.BlockedReason != model.BlockedPublicationUncertain || current.Error == nil || !strings.Contains(*current.Error, "refuse publication settlement") {
 		t.Fatalf("execution lost uncertain outcome or storage diagnostic: %+v", current)
@@ -228,7 +229,7 @@ func TestOrphanRecoveryDoesNotAdmitBetweenPages(t *testing.T) {
 	for i := 0; i <= store.PageLimit; i++ {
 		task := queuedTask(cfg, fmt.Sprintf("orphan-%d", i), "tyk/exited", "tyk/exited")
 		task.Status = model.StatusExecuting
-		must0(t, state.SaveTask(task))
+		must0(t, store.Put(state, store.Tasks.Key(task.ID), task))
 	}
 	app := New(state, t.TempDir())
 	cleanupApp(t, app)

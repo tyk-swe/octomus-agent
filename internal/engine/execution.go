@@ -34,7 +34,12 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		}
 		operatorCancelled, err := a.store.CancelMarked(task.ID)
 		if err == nil && !operatorCancelled {
-			err = a.transition(current, model.StatusQueued)
+			next := current.Clone()
+			next.Status = model.StatusQueued
+			err = a.commitWorkerTaskLocked(ctx, &next, model.TaskRecovery)
+			if err == nil {
+				_ = a.store.Event(next.ID, model.EventStatus, statusLabel(next.Status))
+			}
 		}
 		a.gate.Unlock()
 		if err != nil || !operatorCancelled {
@@ -64,7 +69,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 	shuttingDown := a.ctx.Err() != nil
 	operatorCancelled, _ := a.store.CancelMarked(task.ID)
 	if shuttingDown && !operatorCancelled && !timedOut && task.Status.Active() && workspace.Initialized(task) {
-		if err := a.checkpointTask(&task); err != nil {
+		if err := a.checkpointTask(ctx, &task); err != nil {
 			_ = a.store.Event(task.ID, model.EventWorkerError, redact.Error(err))
 			return err
 		}
@@ -85,7 +90,7 @@ func (a *App) superviseTask(ctx context.Context, task model.Task) error {
 		}
 	}
 	model.FailRunning(task.Sessions, *task.Error)
-	if err := a.transition(&task, status); err != nil {
+	if err := a.transitionTask(ctx, &task, status); err != nil {
 		_ = a.store.Event(task.ID, model.EventWorkerError, redact.Error(err))
 		return err
 	}
@@ -119,7 +124,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		// that conservative allowance, then count completed repairs directly.
 		task.RepairRounds = new(task.AttemptReviews())
 	}
-	if err := a.checkpointTask(task); err != nil {
+	if err := a.checkpointTask(ctx, task); err != nil {
 		return err
 	}
 	if task.OutputCommit != nil {
@@ -207,7 +212,7 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 			progress.AwaitingReview = false
 			// Consume the completed repair before another turn can start. Recovery may review this same revision
 			// again after a shutdown here, but must not count that repair a second time.
-			if err := a.checkpointTask(task); err != nil {
+			if err := a.checkpointTask(ctx, task); err != nil {
 				return err
 			}
 			if progress.NoProgressRounds >= cfg.MaxNoProgressRounds {
@@ -265,10 +270,12 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 			return fmt.Errorf("Publication requires a clean maintenance-qualified review at the output revision: %w", model.BlockedInvalidReview)
 		}
 		next.OutputCommit = &revision
-		if err := a.transition(&next, model.StatusPublishing); err != nil {
+		next.Status = model.StatusPublishing
+		if err := a.commitWorkerTaskLocked(ctx, &next, model.TaskAuthorizePublication); err != nil {
 			return err
 		}
 		*task = next
+		_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
 		return nil
 	}()
 	if err != nil {
@@ -278,7 +285,9 @@ func (a *App) publishReviewed(ctx context.Context, task *model.Task, revision st
 	if err != nil {
 		return err
 	}
-	return a.published(task, p)
+	a.gate.Lock()
+	defer a.gate.Unlock()
+	return a.publishedWorkerLocked(ctx, task, p)
 }
 
 func (a *App) publishedDependency(id string) (model.Task, error) {
@@ -411,7 +420,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 			return model.BlockedStaleBase
 		}
 		task.SourceRevision = current
-		if err := a.checkpointTask(task); err != nil {
+		if err := a.commitWorkerTask(ctx, task, model.TaskPrepare); err != nil {
 			return err
 		}
 	}
@@ -436,7 +445,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 	if task.Workspace == "" {
 		ws := a.taskWorkspace(task.ID)
 		task.Workspace = ws
-		if err := a.checkpointTask(task); err != nil {
+		if err := a.commitWorkerTask(ctx, task, model.TaskPrepare); err != nil {
 			return err
 		}
 		if err := gitops.CloneAt(ctx, cfg, ws, task.SourceRevision); err != nil {
@@ -450,7 +459,7 @@ func (a *App) initializeTask(ctx context.Context, task *model.Task) error {
 		} else {
 			task.ComparisonBase = task.SourceRevision
 		}
-		return a.checkpointTask(task)
+		return a.commitWorkerTask(ctx, task, model.TaskPrepare)
 	}
 	return a.checkWorkspace(ctx, task)
 }
@@ -486,7 +495,7 @@ func executorPrompt(task *model.Task, cfg config.Config) string {
 
 func (a *App) repair(ctx context.Context, task *model.Task, client *runner.Runners, review model.Review, verificationErrors []string) error {
 	cfg := task.ExecutionConfig()
-	if err := a.transition(task, model.StatusRepairing); err != nil {
+	if err := a.transitionTask(ctx, task, model.StatusRepairing); err != nil {
 		return err
 	}
 	prompt, err := repairPrompt(task, cfg, review, verificationErrors)
@@ -539,7 +548,7 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 	if err != nil {
 		return err
 	}
-	committed, err := a.store.CompletePublication(next, p, merge)
+	committed, err := a.store.CompletePublication(*task, next, p, merge)
 	if err != nil {
 		return err
 	}
@@ -551,30 +560,23 @@ func (a *App) published(task *model.Task, p model.PullRequest) error {
 	return nil
 }
 
-// checkpointTask persists working evidence. Pending observations (including a
-// completed repair) stay available to the supervisor if storage refuses them;
-// only the successful write advances the checkpoint timestamp.
-func (a *App) checkpointTask(task *model.Task) error {
-	next := *task
-	next.UpdatedAt = model.Now()
-	if err := a.store.SaveTask(next); err != nil {
-		return err
-	}
-	*task = next
-	return nil
-}
-
-// transition changes caller-owned lifecycle state only after it commits. Status
-// activity is ancillary: its failure must never report a committed operation as
-// refused, nor keep an admitted task from acquiring its worker.
+// transition is the gate-held scheduler/settlement path, never a worker checkpoint.
 func (a *App) transition(task *model.Task, status model.Status) error {
+	expected := task.Clone()
 	next := task.Clone()
 	next.Status = status
-	if err := a.checkpointTask(&next); err != nil {
+	change := model.TaskSettlement
+	if status == model.StatusExecuting {
+		change = model.TaskAdmission
+	}
+	if status == model.StatusQueued {
+		change = model.TaskRecovery
+	}
+	if err := a.commitTaskLocked(expected, &next, change); err != nil {
 		return err
 	}
 	*task = next
-	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(status))
+	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
 	return nil
 }
 
@@ -593,10 +595,12 @@ func (a *App) taskWorkspace(taskID string) string {
 func (a *App) setTaskError(task *model.Task, err error) error {
 	next := task.Clone()
 	recordTaskError(&next, err)
-	if err := a.transition(&next, model.StatusBlocked); err != nil {
+	next.Status = model.StatusBlocked
+	if err := a.commitTaskLocked(*task, &next, model.TaskSettlement); err != nil {
 		return err
 	}
 	*task = next
+	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
 	return nil
 }
 
@@ -627,33 +631,39 @@ func (a *App) taskCancellationApplies(task model.Task) (bool, error) {
 // settleExitedTask commits what a worker's exit leaves in the durable record. The caller holds the gate, so settlement
 // is serialized with operator cancellation.
 //
-// A committed cancellation marker outranks the worker's own terminal decision: that decision is made outside the gate,
-// so the worker can write its status after the cancellation committed, and the marker would otherwise be forgotten by
-// every later pass. Restart recovery and the queued-cancellation scan already treat the same marker as authoritative.
-// The worker's own cause stays in its error event, and a committed terminal status with no marker still stands.
+// Cancellation markers also settle historical or refused cancellation writes.
+// The worker's cause stays in an ancillary event, and terminal state without a
+// marker stands. New worker checkpoints cannot overwrite cancellation.
 //
 // The error is returned so the caller can raise the recovery barrier at the worker join or fail the recovery scan.
 func (a *App) settleExitedTask(task *model.Task, cause error) error {
-	model.FailRunning(task.Sessions, redact.Error(cause))
-	cancelled, err := a.taskCancellationApplies(*task)
+	expected := task.Clone()
+	next := task.Clone()
+	model.FailRunning(next.Sessions, redact.Error(cause))
+	cancelled, err := a.taskCancellationApplies(next)
 	if err != nil {
 		return err
 	}
-	if cancelled && task.Status != model.StatusCancelled {
-		next := task.Clone()
-		next.BlockedReason = nil
-		next.Error = new(cancelledByOperator)
-		if err := a.transition(&next, model.StatusCancelled); err != nil {
-			return err
-		}
+	if cancelled {
+		next.Status = model.StatusCancelled
+		next.Error, next.BlockedReason = new(cancelledByOperator), nil
+	} else if next.Status.Active() {
+		recordTaskError(&next, cause)
+		next.Status = model.StatusBlocked
+	} else if wirejson.Equal(expected, next) {
+		return nil
+	}
+	if err := a.commitTaskLocked(expected, &next, model.TaskSettlement); err != nil {
+		return err
+	}
+	*task = next
+	if next.Status != expected.Status {
+		_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
+	}
+	if cancelled {
 		_ = a.store.Event(task.ID, model.EventError, redact.Error(cause))
-		*task = next
-		return nil
 	}
-	if !task.Status.Active() {
-		return nil
-	}
-	return a.setTaskError(task, cause)
+	return nil
 }
 
 func sourcePtrEqual(a, b *string) bool {

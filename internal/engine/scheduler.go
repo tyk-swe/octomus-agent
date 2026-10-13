@@ -42,6 +42,9 @@ func (a *App) tick() error {
 	if a.ctx.Err() != nil {
 		return nil
 	}
+	if err := a.settlePendingTasks(); err != nil {
+		return a.blockRecovery(err)
+	}
 	// A failed terminal write can outlive its planning worker, including while paused.
 	if err := a.interruptOrphanedCycles(); err != nil {
 		return a.blockRecovery(err)

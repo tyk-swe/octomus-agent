@@ -16,7 +16,7 @@ const (
 
 // CompletePublication returns the committed task, including any preserved merge snapshot.
 // An error leaves its input and every coupled publication record unchanged.
-func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge *model.AutoMergeState) (model.Task, error) {
+func (s *Store) CompletePublication(expected, task model.Task, p model.PullRequest, merge *model.AutoMergeState) (model.Task, error) {
 	task = task.Clone()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -57,12 +57,13 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 				old.ComparisonBase == state.ComparisonBase &&
 				old.Branch == state.HeadBranch &&
 				old.Config.DefaultBranch == state.BaseBranch {
+				oldExpected := old.Clone()
 				old.AutoMergeSnapshot = &model.AutoMergeSnapshot{
 					Repository: previous.Repository,
 					PRNumber:   previous.PR.Number,
 					State:      state,
 				}
-				if err := txPut(c, Tasks.Key(old.ID), old); err != nil {
+				if _, err := txCommitTask(c, oldExpected, old, model.TaskMergeSnapshot); err != nil {
 					return err
 				}
 			}
@@ -79,7 +80,7 @@ func (s *Store) CompletePublication(task model.Task, p model.PullRequest, merge 
 			PR:            p,
 			AutoMerge:     merge,
 		}
-		if err := txPut(c, Tasks.Key(task.ID), task); err != nil {
+		if _, err := txCommitTask(c, expected, task, model.TaskPublication); err != nil {
 			return err
 		}
 		if err := txPut(c, PRs.Key(recordID), observation); err != nil {

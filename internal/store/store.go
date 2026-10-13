@@ -260,7 +260,7 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 			return err
 		}
 		for _, task := range tasks {
-			if err := txPut(c, Tasks.Key(task.ID), task); err != nil {
+			if err := insertTask(c, task); err != nil {
 				return err
 			}
 		}
@@ -553,18 +553,30 @@ func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, erro
 	return model.PlanningCapacity{Day: day, Limit: limit, Used: uint64(used), Remaining: remaining, Required: required, NextResetAt: nextReset, Status: status}, nil
 }
 
+// CancelTask settles the task after the separately durable marker commits.
 func (s *Store) CancelTask(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result, err := s.conn.ExecContext(background, `UPDATE records SET data=json_set(data,'$.status','cancelled','$.updated_at',?2)
-             WHERE kind='task' AND id=?1
-               AND json_extract(data,'$.status') NOT IN ('publishing','published')
-               AND json_extract(data,'$.output_commit') IS NULL`, id, model.Now())
-	if err != nil {
-		return false, err
-	}
-	changed, err := result.RowsAffected()
-	return changed > 0, err
+	changed := false
+	err := s.transaction(true, func(c *sql.Conn) error {
+		var current model.Task
+		found, err := txGet(c, Tasks.Key(id), &current)
+		if err != nil {
+			return err
+		}
+		if !found || current.OutputCommit != nil || current.Status == model.StatusPublishing || current.Status == model.StatusPublished {
+			return nil
+		}
+		next := current.Clone()
+		next.Status, next.UpdatedAt = model.StatusCancelled, model.Now()
+		next.Error, next.BlockedReason = new("Cancelled by the operator"), nil
+		if _, err := txCommitTask(c, current, next, model.TaskCancel); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed && err == nil, err
 }
 
 func storedConfig(c *sql.Conn) (config.Config, error) {
@@ -612,10 +624,12 @@ func updateLineageTask(c *sql.Conn, id string, check func(*model.Task) error) er
 	if task.Lifecycle.ArchivedAt != nil {
 		return fmt.Errorf("Rediscovery request %s was archived before the plan committed", id)
 	}
+	expected := task.Clone()
 	if err := check(&task); err != nil {
 		return err
 	}
-	return txPut(c, Tasks.Key(id), task)
+	_, err = txCommitTask(c, expected, task, model.TaskLineage)
+	return err
 }
 
 func queryStrings(c *sql.Conn, query string, args ...any) ([]string, error) {

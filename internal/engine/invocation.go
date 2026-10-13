@@ -99,7 +99,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 					turnErr = errors.Join(fmt.Errorf("Planning role %s panicked: %v", inv.role, panicked), clients.Release())
 				}
 			}()
-			answer, summary, turnErr = a.turn(clients, inv, session)
+			answer, summary, turnErr = a.turn(ctx, clients, inv, session)
 		}()
 		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
 		if inv.task == nil {
@@ -140,10 +140,10 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		// A successful resume establishes that the runner retained this thread.
 		record.FirstTurnStarted = new(true)
 	}
-	if err := a.checkpointTask(task); err != nil {
+	if err := a.checkpointTask(ctx, task); err != nil {
 		return "", err
 	}
-	answer, summary, err := a.turn(clients, inv, session)
+	answer, summary, err := a.turn(ctx, clients, inv, session)
 	// The sandbox record stays with the session whether or not the turn succeeded; the caller saves the task.
 	if record, recordErr := findSession(task, session, inv.role); recordErr == nil {
 		record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
@@ -161,7 +161,7 @@ func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocatio
 		inv.completed()
 	}
 	record.MarkCompleted(redact.Text(summary))
-	return answer, a.checkpointTask(task)
+	return answer, a.checkpointTask(ctx, task)
 }
 
 // A missing, never-started thread has no runner state to resume. Retain its failed
@@ -190,7 +190,7 @@ func (a *App) startInvocation(ctx context.Context, clients *runner.Runners, inv 
 	}
 	record.MarkFailed(redact.Text(strings.TrimSpace(record.Summary + "\nNever-started session is missing; a fresh session is required: " + err.Error())))
 	*inv.session = nil
-	if saveErr := a.checkpointTask(inv.task); saveErr != nil {
+	if saveErr := a.checkpointTask(ctx, inv.task); saveErr != nil {
 		return "", false, errors.Join(err, saveErr)
 	}
 	if err := a.admit(ctx, inv.cycleID, inv.task, inv.role, inv.route); err != nil {
@@ -209,7 +209,7 @@ func (a *App) startInvocation(ctx context.Context, clients *runner.Runners, inv 
 	return session, false, nil
 }
 
-func (a *App) turn(clients *runner.Runners, inv invocation, session string) (answer, summary string, err error) {
+func (a *App) turn(ctx context.Context, clients *runner.Runners, inv invocation, session string) (answer, summary string, err error) {
 	var started func() error
 	if inv.task != nil {
 		started = func() error {
@@ -221,7 +221,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 				return nil
 			}
 			record.FirstTurnStarted = new(true)
-			return a.checkpointTask(inv.task)
+			return a.checkpointTask(ctx, inv.task)
 		}
 	}
 	answer, err = clients.Turn(session, inv.route, inv.workspace, inv.prompt, inv.schema, started)
@@ -239,7 +239,7 @@ func (a *App) turn(clients *runner.Runners, inv invocation, session string) (ans
 			return "", "", err
 		}
 		record.Summary = redact.Text(answer)
-		if err := a.checkpointTask(inv.task); err != nil {
+		if err := a.checkpointTask(ctx, inv.task); err != nil {
 			return "", "", err
 		}
 	}

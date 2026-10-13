@@ -22,7 +22,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 	cfg := task.ExecutionConfig()
 	ws := task.Workspace
 	verificationErrors := []string{}
-	if err := a.transition(task, model.StatusVerifying); err != nil {
+	if err := a.transitionTask(ctx, task, model.StatusVerifying); err != nil {
 		return nil, err
 	}
 	if err := ensureWorkspaceAt(ctx, cfg, ws, revision); err != nil {
@@ -56,7 +56,7 @@ func (a *App) verifyRevision(ctx context.Context, task *model.Task, revision str
 			Command: command, Success: outcome.intactErr == nil && outcome.intact && !failed, Output: output, Revision: revision, CreatedAt: model.Now(),
 			Sandbox: outcome.sandbox,
 		})
-		if err := a.checkpointTask(task); err != nil {
+		if err := a.checkpointTask(ctx, task); err != nil {
 			return nil, err
 		}
 		if outcome.intactErr != nil {

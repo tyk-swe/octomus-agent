@@ -584,3 +584,33 @@ func assertUnpublished(t *testing.T, f *fixture, task model.Task) {
 		t.Fatalf("task authorized publication: %+v", task)
 	}
 }
+
+func testTaskWorker(t *testing.T, app *App, task *model.Task) context.Context {
+	t.Helper()
+	// Direct worker tests seed queued records; model scheduler admission first.
+	app.gate.Lock()
+	if task.Status == model.StatusQueued {
+		if err := app.transition(task, model.StatusExecuting); err != nil {
+			app.gate.Unlock()
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := app.registerTaskWorker(*task, executionWorker)
+	app.gate.Unlock()
+	t.Cleanup(func() {
+		cancel()
+		app.gate.Lock()
+		app.finishTaskWorker(task.ID, nil)
+		app.gate.Unlock()
+	})
+	return ctx
+}
+
+func testTaskVerifier(t *testing.T, app *App, task *model.Task) context.Context {
+	t.Helper()
+	task.Status = model.StatusReviewing
+	if err := store.Put(app.store, store.Tasks.Key(task.ID), *task); err != nil {
+		t.Fatal(err)
+	}
+	return testTaskWorker(t, app, task)
+}

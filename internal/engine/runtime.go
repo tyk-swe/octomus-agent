@@ -31,6 +31,9 @@ type taskJob struct {
 	branch string
 	cancel context.CancelFunc
 	kind   taskWorkerKind
+	// Checkpoints are owned by gate, never runtimeMu.
+	committed model.Task
+	pending   *model.Task
 }
 
 type taskWorkerKind uint8
@@ -56,7 +59,8 @@ type mergeJob struct {
 type runtimeState struct {
 	cycle               *cycleJob
 	preflight           *model.CycleMode
-	tasks               map[string]taskJob
+	tasks               map[string]*taskJob
+	settlements         map[string]*taskJob
 	checkedCycles       map[string]struct{}
 	prRefresh           *prRefreshJob
 	prObservation       *freshPRs
@@ -83,7 +87,7 @@ type runtimeState struct {
 }
 
 func (r *runtimeState) idle() bool {
-	return !r.planning() && len(r.tasks) == 0 && r.baseline == nil && r.mergeWorker == nil
+	return !r.planning() && len(r.tasks) == 0 && len(r.settlements) == 0 && r.baseline == nil && r.mergeWorker == nil
 }
 
 func (r *runtimeState) planning() bool { return r.cycle != nil || r.preflight != nil }
@@ -114,8 +118,11 @@ func (a *App) endPreflight() {
 // Caller holds runtimeMu. The copy must complete before any store call, matching
 // the recovery scans that exclude in-flight workers and claimed cleanups.
 func (a *App) ownedTaskIDs() []string {
-	excluded := make([]string, 0, len(a.runtime.tasks)+len(a.runtime.cleanups))
+	excluded := make([]string, 0, len(a.runtime.tasks)+len(a.runtime.settlements)+len(a.runtime.cleanups))
 	for id := range a.runtime.tasks {
+		excluded = append(excluded, id)
+	}
+	for id := range a.runtime.settlements {
 		excluded = append(excluded, id)
 	}
 	for key := range a.runtime.cleanups {

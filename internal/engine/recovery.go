@@ -61,6 +61,7 @@ func (a *App) Recover() error {
 			return err
 		}
 		for _, task := range tasks {
+			expected := task.Clone()
 			markedCancelled, err := a.store.CancelMarked(task.ID)
 			if err != nil {
 				return err
@@ -88,7 +89,7 @@ func (a *App) Recover() error {
 				task.BlockedReason = &reason
 				task.Error = new(message)
 			}
-			if err := a.checkpointTask(&task); err != nil {
+			if err := a.commitTaskLocked(expected, &task, model.TaskRecovery); err != nil {
 				return err
 			}
 			_ = a.store.Event(task.ID, model.EventRecovery, *task.Error)
@@ -189,8 +190,9 @@ func (a *App) settleCancelledSessions() error {
 		return err
 	}
 	for i := range tasks {
+		expected := tasks[i].Clone()
 		model.InterruptRunning(tasks[i].Sessions)
-		if err := a.checkpointTask(&tasks[i]); err != nil {
+		if err := a.commitTaskLocked(expected, &tasks[i], model.TaskSettlement); err != nil {
 			return err
 		}
 	}

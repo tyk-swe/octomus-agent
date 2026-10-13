@@ -17,6 +17,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/runner/runnertest"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -273,7 +274,8 @@ func TestSavedTimeoutsRejectedBeforeWork(t *testing.T) {
 			case "planning", "audit":
 				err = app.preflight(context.Background(), cfg, entry == "audit")
 			case "queued task":
-				err = app.execute(context.Background(), &task)
+				must0(t, store.Put(state, store.Tasks.Key(task.ID), task))
+				err = app.execute(testTaskWorker(t, app, &task), &task)
 			case "retry":
 				err = app.retryPreflight(context.Background(), &task)
 			case "baseline":

@@ -526,7 +526,7 @@ func TestPublicationCheckpointReplayKeepsFrozenEvidence(t *testing.T) {
 	checkpoint := saved.Clone()
 	checkpoint.Status = model.StatusPublishing
 	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), checkpoint))
-	replay := saved.Clone()
+	replay := checkpoint.Clone()
 	if err := app.published(&replay, observation.PR); err != nil {
 		t.Fatalf("checkpoint replay failed: %v", err)
 	}
@@ -1478,7 +1478,7 @@ func TestMergeWaitsForInFlightBranchOwner(t *testing.T) {
 	sibling.Status = model.StatusCancelled
 	putTask(t, f, sibling)
 	app.runtimeMu.Lock()
-	app.runtime.tasks[sibling.ID] = taskJob{branch: saved.Branch, cancel: func() {}}
+	app.runtime.tasks[sibling.ID] = &taskJob{branch: saved.Branch, cancel: func() {}}
 	app.runtimeMu.Unlock()
 	app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, observation)
 	if len(mergeAttempts(t, f)) != 0 {
@@ -1514,7 +1514,7 @@ func TestMergeFinalGateRejectsLateBranchOwner(t *testing.T) {
 	original := unfinishedBranchWork
 	unfinishedBranchWork = func(s *store.Store, repository, branch, taskID string) (bool, error) {
 		app.runtimeMu.Lock()
-		app.runtime.tasks["late-sibling"] = taskJob{branch: saved.Branch, cancel: func() {}}
+		app.runtime.tasks["late-sibling"] = &taskJob{branch: saved.Branch, cancel: func() {}}
 		app.runtimeMu.Unlock()
 		return s.UnfinishedBranchWork(repository, branch, taskID)
 	}

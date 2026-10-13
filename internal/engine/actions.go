@@ -90,7 +90,7 @@ func (a *App) TaskAction(id string, action model.TaskAction) error {
 		next.RediscoveryRequested = true
 		next.RediscoveryResult = nil
 		next.UpdatedAt = model.Now()
-		actionErr = a.store.ResetTaskCancellation(next)
+		actionErr = a.store.ResetTaskCancellation(*task, next)
 		if actionErr == nil {
 			*task = next
 		}
@@ -101,7 +101,7 @@ func (a *App) TaskAction(id string, action model.TaskAction) error {
 		}
 		next.Lifecycle.ArchivedAt = new(model.Now())
 		next.UpdatedAt = model.Now()
-		actionErr = a.store.ArchiveTask(next)
+		actionErr = a.store.ArchiveTask(*task, next)
 		if actionErr == nil {
 			*task = next
 		}
@@ -173,7 +173,7 @@ func (a *App) retryTask(task *model.Task) error {
 		}
 		if preflightErr != nil {
 			recordTaskError(&next, preflightErr)
-			if err := a.checkpointTask(&next); err == nil {
+			if err := a.commitTaskLocked(original, &next, model.TaskInspect); err == nil {
 				*task = next
 			}
 			return preflightErr
@@ -188,7 +188,7 @@ func (a *App) retryTask(task *model.Task) error {
 	next.Status = model.StatusQueued
 	next.RunID = nil
 	next.UpdatedAt = model.Now()
-	if err := a.store.RetryTask(next); err != nil {
+	if err := a.store.RetryTask(original, next); err != nil {
 		return err
 	}
 	*task = next
@@ -220,6 +220,8 @@ func (a *App) eligibleTask(id string, action model.TaskAction) (*model.Task, err
 	if action != model.TaskActionCancel {
 		a.runtimeMu.Lock()
 		_, running := a.runtime.tasks[id]
+		_, settling := a.runtime.settlements[id]
+		running = running || settling
 		a.runtimeMu.Unlock()
 		if running {
 			return nil, conflictError("Wait for active task work to finish")
@@ -264,7 +266,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 			recordTaskError(&next, preflightErr)
 		}
 		next.UpdatedAt = model.Now()
-		if err := a.store.ResetTaskCancellation(next); err != nil {
+		if err := a.store.ResetTaskCancellation(*task, next); err != nil {
 			return err
 		}
 		*task = next
@@ -284,7 +286,7 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	next := task.Clone()
 	next.Status = model.StatusPublishing
 	next.UpdatedAt = model.Now()
-	if err := a.store.ResetTaskCancellation(next); err != nil {
+	if err := a.store.ResetTaskCancellation(*task, next); err != nil {
 		return err
 	}
 	*task = next
@@ -314,10 +316,19 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	})
 
 	if publishErr == nil {
-		actionErr = a.published(task, published)
+		actionErr = a.publishedWorkerLocked(workCtx, task, published)
 	} else {
 		recordTaskError(task, publishErr)
-		actionErr = a.transition(task, previousStatus)
+		actionErr = func() error {
+			next := task.Clone()
+			next.Status = previousStatus
+			if err := a.commitWorkerTaskLocked(workCtx, &next, model.TaskSettlement); err != nil {
+				return err
+			}
+			*task = next
+			_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
+			return nil
+		}()
 	}
 	_ = a.store.Event(id, model.EventOperator, model.TaskActionReconcile.String())
 	return actionErr
@@ -363,8 +374,9 @@ func (a *App) discardTask(task *model.Task) error {
 	if current.Status.Active() || current.Status == model.StatusQueued {
 		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
 	}
+	expected := current.Clone()
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.store.SaveTask(*current); err != nil {
+	if err := a.commitTaskLocked(expected, current, model.TaskDiscard); err != nil {
 		return err
 	}
 	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt

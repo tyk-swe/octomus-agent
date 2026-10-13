@@ -163,7 +163,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		next = task.Clone()
 		next.Status = model.StatusExecuting
 		next.UpdatedAt = model.Now()
-		if err := txPut(c, Tasks.Key(next.ID), next); err != nil {
+		if _, err := txCommitTask(c, canonical, next, model.TaskAdmission); err != nil {
 			return err
 		}
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now(), false); err != nil {
