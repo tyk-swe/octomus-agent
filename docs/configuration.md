@@ -129,10 +129,10 @@ orchestrator, discovery and proposal reviewer routes; execution needs every rout
 
 | Field | Shipped default | Accepted values | What it controls |
 | --- | --- | --- | --- |
-| `delivery_mode` | `standard` | `standard` or `maintenance` | Standard publishes reviewed pull requests for manual merge. Maintenance excludes the `features` category and allows small reviewed deliveries to squash-merge themselves when fresh remote checks and protections allow it. |
+| `delivery_mode` | `standard` | `standard` or `maintenance` | Standard publishes reviewed pull requests for manual merge. Maintenance excludes the `features` category, requires at least one enabled non-feature category, and allows small reviewed deliveries to squash-merge themselves when fresh remote checks and protections allow it. |
 | `auto_merge_max_lines` | 500 | 1–10,000 | Full-PR changed lines a maintenance delivery may merge automatically. |
 | `auto_merge_max_files` | 10 | 1–100 | Full-PR changed files a maintenance delivery may merge automatically. |
-| `auto_merge_excluded_paths` | None | Up to 100 repository-relative names or subtree prefixes, each at most 4,096 bytes | Additional paths whose changes keep a maintenance delivery manual. CI/workflow rules, security policies, deployment settings and migrations are always manual. |
+| `auto_merge_excluded_paths` | None | Up to 100 unique repository-relative names or subtree prefixes, each at most 4,096 bytes, without whitespace, `..` or glob characters | Additional paths whose changes keep a maintenance delivery manual. CI/workflow rules, security policies, deployment settings and migrations are always manual. |
 
 Maintenance mode is opt-in and delivery mode changes are refused while unresolved
 unarchived tasks remain. Every publication still requires a clean full-diff review and

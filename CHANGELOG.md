@@ -55,6 +55,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Schema version 9 indexes exact decision identities and version 10 restores complete
   summary text from raw records. Both upgrade version 8 behind the verified automatic
   backup and leave raw records and notification history untouched.
+- Task mutations are validated inside the store transaction against the exact saved
+  predecessor, the durable cancellation marker and a per-operation lifecycle policy, so
+  admission, workers, retry, recovery, publication, lineage and cleanup can change only
+  their own fields and cannot overwrite committed review, verification, session or
+  repair-accounting evidence.
 - Decision admission checks the complete stored history for each repository, target and
   problem identity; planning prompts still carry at most 100 decisions.
 - A definitively missing Codex thread is replaced only when no accepted first turn is
@@ -102,14 +107,18 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The gitlink refusal redacts a work-tree path before bounding it, so a credential crossing
   the diagnostic limit is no longer reported in part; the limit counts characters and marks
   the cut.
-- A cancellation the store refused is no longer discarded when the worker exits or its
-  orphaned task is recovered: the durable cancellation marker settles the task as cancelled
-  with the worker's own cause kept in an error event, instead of reporting it as blocked, and
-  a task that already reached an output checkpoint still stays `publication_uncertain`.
+- Cancellation records its durable marker before stopping a running worker, and a
+  cancellation or worker settlement the store refused is no longer discarded when the
+  worker exits or its orphaned task is recovered: the marker settles the task as cancelled
+  with the worker's own cause kept in an error event instead of reporting it as blocked,
+  refused settlement evidence is retained in memory for recovery ahead of orphan and
+  retention scans, and a task that already reached an output checkpoint still stays
+  `publication_uncertain`.
 - A runner child that has not ended when its cleanup budget does is reported as the
-  sandbox's own failure rather than a plain error: a replacement child is still refused
-  before it starts, and the task is blocked as a runner failure an operator can retry,
-  instead of an unclassified failure.
+  sandbox's own failure rather than a plain error, and the runner manager remembers that
+  failure across later requests and releases: a replacement child is refused before it
+  starts, and the task is blocked as a runner failure an operator can retry, instead of an
+  unclassified failure.
 - The broker's account of a sandbox that actually ran is kept when a runner fails to
   establish its session: with no session record yet to carry it, it becomes a
   `sandbox_evidence` activity event on the task or cycle instead of being dropped with the
@@ -122,13 +131,37 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   holding its worker open.
 - A nested repository that a runner committed itself no longer reaches review,
   verification or publication. The gitlink refusal covers the reviewed change set against
-  its comparison base as well as the snapshot's own staged commit, so a submodule the base
-  already carries stays allowed while an added or retargeted gitlink blocks the task as
-  `workspace_invalid`.
+  its comparison base as well as the snapshot's own staged commit, and publication replay
+  and **Reconcile publication** also require a saved comparison base and re-check the
+  committed change set, so a submodule the base already carries stays allowed while an
+  added or retargeted gitlink blocks the task as `workspace_invalid`.
+- Maintenance merge precheck writes (waiting status, authority revocation or terminal
+  observation) that fail before any merge request is recorded are retried or cleared by
+  recovery once the record reflects the decision or has moved on, instead of leaving a
+  stale merge barrier behind. Archiving an authorizing task revokes its remaining merge
+  authority while preserving a recorded `merged` or `closed` outcome, its provenance
+  (`confirmed` or `observed`) and its merge commit.
+- Task dispatch checks every prerequisite in `dependencies` before waiting on an earlier
+  unfinished one, so a later unresolved prerequisite blocks the task as
+  `dependency_blocked` immediately.
+- Starting a clean-baseline check is refused with `recovery_pending` while saved-state
+  recovery is unfinished, and startup recovery drains every page of active tasks before
+  the scheduler starts.
+- State upgrades take and verify the pre-upgrade backup before configuring WAL, so opening
+  an older database never rewrites its header before the backup exists.
+- Fork pull-request heads are resolved with `git ls-remote --refs origin` and fetched by
+  exact commit SHA (`+<sha>:refs/octomus/pr/<number>`), and `gh` commands pin
+  `GH_HOST=github.com` to match origin validation.
+- Secret files (`*_FILE`) over 64 KiB are refused instead of truncated, `--assets` answers
+  `404` for missing static asset files instead of serving `200.html`, and empty-changeset
+  detection uses `git diff --shortstat` so changes to whitespace-only or non-UTF-8 paths
+  are recognized.
 - Coalesced dashboard reads let only the newest requested revision become confirmed fresh
   state: a request for the revision that is already loading drops the older queued read, so
   an obsolete in-flight intent can no longer confirm a superseded revision as current.
-  Retained content stays visible and marked stale until the newest read succeeds.
+  Retained content stays visible and marked stale until the newest read succeeds, relative
+  timestamps continue to age on a shared timer while polling fails, and replacing a locked
+  `categories` preview clears hidden empty entries before saving.
 
 ### Removed
 
@@ -228,7 +261,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clean-baseline check already required.
 - Grounding fetches fork PR heads into the trusted checkout, and planning agents inspect
   them by SHA instead of fetching from GitHub.
-
 - Refreshed dashboard and login styling, clearer setup-state explanations, and audit-first
   guidance for installations without a recorded cycle. The public dashboard screenshot
   reflects the current interface using synthetic data.

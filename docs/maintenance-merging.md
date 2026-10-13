@@ -80,7 +80,7 @@ for setup and access details.
 | Setting | Purpose |
 | --- | --- |
 | `OCTOMUS_MERGE_TOKEN` | Dedicated merger token, supplied to the trusted service process |
-| `OCTOMUS_MERGE_TOKEN_FILE` | Alternative one-line secret file; do not also set the token variable |
+| `OCTOMUS_MERGE_TOKEN_FILE` | Alternative one-line secret file (at most 64 KiB); do not also set the token variable |
 | `OCTOMUS_MERGE_RULESET_ID` | Positive numeric ID of the active repository ruleset above |
 
 These are deployment settings, not dashboard fields. Only the two dedicated `gh`
@@ -118,6 +118,13 @@ checks the repository, source branch, reviewed head, destination and merge commi
 before recording **confirmed**. If that read fails or disagrees, the outcome stays
 **uncertain** for reconciliation. Recovery observes the remote before another attempt;
 a matching completed merge can be recorded as **observed** without repeating the write.
+A failed write that settles an in-flight or unconfirmed merge mutation stays a
+service-wide recovery barrier until a remote read reconciles it, while a failed precheck
+write (waiting status, authority revocation or terminal observation) is retried or
+cleared once the saved record reflects the decision or has moved on. Archiving the
+authorizing task revokes its remaining merge authority while preserving a recorded
+`merged` or `closed` outcome, its provenance (`confirmed` or `observed`) and its merge
+commit.
 
 The test fixture models this update rule, including a retarget inside the merge
 operation; live repository-policy setup remains an operator action.

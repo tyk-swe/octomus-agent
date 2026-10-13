@@ -85,11 +85,11 @@ Controls live at the module that owns each boundary and fail closed when a check
 | Boundary | Owner | Refusal condition |
 | --- | --- | --- |
 | Untrusted children | `internal/sandbox`, `internal/process` | No configured backend, invalid sandbox request or lost broker refuses the operation. |
-| Egress | `internal/egress` | No live lease, unlisted host or non-public resolution refuses the tunnel. |
-| Trusted Git and workspace | `internal/git`, `internal/workspace` | Foreign metadata, unsafe paths, hooks or indirect cleanup targets refuse the operation. |
+| Egress | `internal/egress` | No live lease, unlisted host, mismatched or encrypted SNI, or non-public resolution refuses the tunnel. |
+| Trusted Git and workspace | `internal/git`, `internal/workspace` | Foreign metadata, added or retargeted gitlinks, unsafe paths, hooks or indirect cleanup targets refuse the operation. |
 | Operator edge | `internal/httpapi` | Invalid token, method, content type or bounded-body violation never reaches controls. |
 | Runner protocol and configuration | `internal/runner`, `internal/config`, `internal/wirejson` | Unsupported route, message, identity or schema fails the session or operation. |
-| Publication and evidence | `internal/git`, `internal/store`, `internal/export` | Branch/revision/lease checks or typed export checks fail before delivery. |
+| Publication and evidence | `internal/git`, `internal/model`, `internal/store`, `internal/export` | Branch/revision/lease checks, task lifecycle and predecessor checks, or typed export checks fail before delivery. |
 
 ## Residual risk
 

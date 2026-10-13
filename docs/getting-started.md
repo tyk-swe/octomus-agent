@@ -1,6 +1,6 @@
 # Getting started
 
-Octomus is a self-hosted preview for one operator and one repository. [Deployment](deployment.md)
+Octomus is a self-hosted service for one operator and one repository. [Deployment](deployment.md)
 is the source for Docker, the checksum-verifying release installer, the dedicated VM and
 ongoing operations.
 
@@ -41,7 +41,7 @@ For a dedicated host without Docker, follow [Dedicated VM without a sandbox](dep
 
 Open **Configuration** and provide:
 
-- the repository and GitHub identity;
+- the repository and GitHub identity (already pinned in Docker);
 - explicit Codex or OpenCode routes for planning, review, execution and repair; and
 - at least one meaningful verification command for execution.
 

@@ -21,7 +21,9 @@ The same nine caveats ship inside each export as `limitations`:
 1. Recorded review and check evidence only; no live checks were performed.
 2. Planning completion is not task completion — a completed cycle records decisions.
 3. Deferred is not rejected.
-4. A recorded PR describes delivery, not merge. Published is not merged.
+4. A recorded PR describes delivery, not merge. Published is not merged. Automatic merge
+   evidence is the saved durable record: `confirmed` means the service's own squash-merge
+   response, while `observed` records the remote outcome without naming an actor.
 5. Audit acceptance is a recommendation; audit cycles never create an execution queue,
    so an accepted audit proposal has no linked task by design.
 6. Saved session routes are **requested** routes. Runtime model identity is not
@@ -109,8 +111,8 @@ RunEvidenceV1
   schema_version, generated_at, kind, review_required_before_sharing,
   review_requirement, limitations[9], gaps[]
   cycle
-    id, number, mode, status, started_at, completed_at, repository,
-    grounding_revision
+    id, number, mode, delivery_mode, status, started_at, completed_at,
+    repository, grounding_revision
     planning: status, planning_finished, proposal_count, decisions{},
               creates_execution_queue, error_recorded, reviewer_batches_saved
   proposals[]
@@ -119,7 +121,8 @@ RunEvidenceV1
     reviewer_verdicts[]: reviewer, state, decision, reason, note
     linked_tasks[]
       id, cycle_id, proposal_id, status, branch, attempts, blocked_reason,
-      error_recorded, created_at, updated_at, gaps[]
+      error_recorded, created_at, updated_at, delivery_mode,
+      maintenance_footprint, auto_merge, gaps[]
       revisions: source, comparison_base, default_branch, output
       sessions[]: id, role, status, requested_route, started_at
       latest_review: rounds_recorded, clean, clean_at_output_revision, latest
@@ -156,7 +159,8 @@ matching completed reviewer session is marked `unconfirmed` in its note.
 `clean` requires `completed=true`, a non-blank summary and zero findings.
 `clean_at_output_revision` additionally requires that the round's revision equals the
 task's recorded output revision. The review summary text is not exported; only
-`summary_present` and the structured findings are.
+`summary_present`, `trusted_diff_complete`, any structured `maintenance` assessment and
+the structured findings are.
 
 ### Required commands
 

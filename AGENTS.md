@@ -27,17 +27,20 @@ Packages are listed with their role and entry points; read the package for the r
 - `internal/engine`: scheduler and cycle orchestration, the only layer HTTP reaches
   saved state through. `engine.go` constructs the App; `scheduler.go`, `planning.go`,
   `execution.go`, `review.go`, `verification.go`, `recovery.go` and `automerge.go` are
-  the runtime stages; `controls.go`, `actions.go` and `eligibility.go` own operator
+  the runtime stages; `task_commit.go` and `task_worker.go` own task checkpoints and
+  worker settlement; `controls.go`, `actions.go` and `eligibility.go` own operator
   actions; `reads.go` and `api_views.go` own the API's queries and response types.
 - `internal/runner`: runner-neutral model discovery and routing (`runner.go`) over the
   Codex app-server (`codex.go`) and OpenCode HTTP/SSE (`opencode.go`) adapters.
   `runnertest` is the scripted adapter tests inject through `WithRunnerConnector`.
 - `internal/config`, `internal/model`: policy and durable record types, with the
-  action and event vocabularies in `model/actions.go` and `model/events.go`.
+  action, event and task-lifecycle contracts in `model/actions.go`, `model/events.go`
+  and `model/task_lifecycle.go`.
 - `internal/store`: SQLite records, transactions and read models. `schema.sql` is the
   complete fresh DDL and its triggers maintain projections, counts and the attention
   outbox; `schema.go` and `migrations/` run the backup-then-migrate upgrade, exercised
-  by the `testdata/state-v*.db` goldens; `keys.go` types the record keys.
+  by the `testdata/state-v*.db` goldens; `keys.go` types the record keys and
+  `task_lifecycle.go` guards task transitions.
 - `internal/wirejson`: strict typed JSON boundaries for saved records and API requests.
 - `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
   `--sandbox off`, `Remote` for the broker), plus the in-sandbox helper and containment
@@ -50,9 +53,10 @@ Packages are listed with their role and entry points; read the package for the r
   exports (`RunEvidenceV1`, usage report). `internal/schemas`: structured-output schemas.
 - `internal/httpapi`: authenticated controls and embedded dashboard serving;
   `routes.go` is the route table.
-- `internal/git`: orchestrator git and GitHub plumbing, publication, and the guarded
-  maintenance merge. `internal/process`: process-group children and bounded capture.
-  `internal/workspace`: managed-directory safety.
+- `internal/git`: orchestrator git and GitHub plumbing, shared-checkout coordination
+  (`checkout.go`), publication, and the guarded maintenance merge. `internal/process`:
+  process-group children and bounded capture. `internal/workspace`: managed-directory
+  safety.
 - `internal/testutil`: shared test helpers, including the POSIX-shell `git`/`gh`
   dispatcher and the sandbox tests' unix-socket servers.
 - `web`: `embed.go` embeds the build. `src/routes/+page.svelte` is the dashboard shell;
@@ -68,7 +72,7 @@ Packages are listed with their role and entry points; read the package for the r
 - `tests`: `e2e.py` holds the service scenarios over `harness.py` and `fixtures/`
   (deterministic Codex, OpenCode, GitHub and provider peers with real local Git; an
   unknown scenario name lists them); `distribution.py` checks the shipped executable;
-  `e2e_sandbox.py` runs the compose stack with images from `docker/`;
+  `e2e_sandbox.py` runs the compose stack with images from `tests/docker/`;
   `production_images.py` and `productionimage/` accept the retained release images;
   `test_*.py` are Python unit tests for the harness, setup and release tooling.
 - `scripts`: `package.sh` archives exactly the files in `release-files.txt`;

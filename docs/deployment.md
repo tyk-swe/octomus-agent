@@ -94,9 +94,10 @@ State lives in named volumes:
 - `octomus-tools`: the broker's helper binary and optional public CA bundle, recreated on start.
 
 `setup.sh` gives the secret files under `secrets/` to the container user (uid 10001) at
-mode 0600. The control plane reads them only at start, and `docker compose up -d` does
-not notice a changed one. To rotate one, install the new value with the same owner and
-mode, then recreate the control plane:
+mode 0600; each secret file (`*_FILE`) must hold one non-empty line of at most 64 KiB.
+The control plane reads them only at start, and `docker compose up -d` does not notice a
+changed one. To rotate one, install the new value with the same owner and mode, then
+recreate the control plane:
 
 ```bash
 sudo install -o 10001 -g 10001 -m 0600 /path/to/new-token secrets/github_token
@@ -424,12 +425,12 @@ systemd, or `OCTOMUS_IMAGE` and `OCTOMUS_SANDBOX_IMAGE` in `deploy/docker/.env` 
 Docker) and start the service.
 
 When the release's schema is newer, the first start (the service or `--doctor`) checks
-the saved version before changing anything. It then writes an integrity-checked, mode
-0600 copy `state.db.v<old>-backup-<UTC yyyymmddThhmmssZ>` beside `state.db`, never
-overwriting an earlier backup, and only then applies each migration in its own
-transaction. The start logs `Upgraded state database from schema version …` (`docker
-compose logs octomus`, `journalctl -u octomus-agent`) and records an `upgrade` activity
-event.
+the saved version before any schema or journal change. It then writes an
+integrity-checked, mode 0600 copy `state.db.v<old>-backup-<UTC yyyymmddThhmmssZ>` beside
+`state.db`, never overwriting an earlier backup, and only then configures WAL and applies
+each migration in its own transaction. The start logs `Upgraded state database from
+schema version …` (`docker compose logs octomus`, `journalctl -u octomus-agent`) and
+records an `upgrade` activity event.
 
 A failed migration rolls back alone: the database stays at the version that step started
 from, the error names the backup, and starting again retries with a fresh backup. If the
@@ -491,9 +492,9 @@ table in `internal/httpapi/routes.go` is authoritative.
   (media type case-insensitive, parameters allowed), even without a body such as
   `POST /api/control/pause`; otherwise the answer is `415 {"error":"Use application/json"}`.
 - Checks run in order: an unknown path answers `404 {"error":"Unknown API route"}` before
-  authentication; a missing or wrong token answers `401` after the failed-authentication
-  backoff; then the content type is checked; a known path with the wrong method answers
-  `405` with an `Allow` header and an empty body.
+  authentication; a missing, duplicate or wrong `Authorization` header answers `401` after
+  the failed-authentication backoff; then the content type is checked; a known path with
+  the wrong method answers `405` with an `Allow` header and an empty body.
 - Handler errors are JSON `{"error":"…"}`: `404` for an unknown task, cycle, proposal,
   baseline check (when read) or action name, `409` for a conflict with current state
   (including a superseded configuration revision, and cancelling a baseline check that
@@ -561,8 +562,8 @@ octomus-agent --data-dir PATH --usage-report
 octomus-agent --data-dir PATH --doctor
 octomus-agent --data-dir PATH --doctor --audit
 octomus-agent --data-dir PATH --export-run CYCLE_ID
-octomus-agent --help
-octomus-agent --version
+octomus-agent -h | --help
+octomus-agent -V | --version
 ```
 
 `--data-dir` defaults to `.octomus` in the working directory and `--listen` to
@@ -573,8 +574,8 @@ for the service `OCTOMUS_TOKEN` (or `OCTOMUS_TOKEN_FILE`), which it requires.
 | Flag | Purpose |
 | --- | --- |
 | `--sandbox docker\|off` (`OCTOMUS_SANDBOX`) | `docker` (default) runs every runner and verification command through the broker at `OCTOMUS_SANDBOXD_SOCKET`; `off` runs them on this host. An explicit flag overrides the environment; an invalid default without one refuses the command |
-| `--help`, `--version` | Always work, without starting the service or writing state |
-| `--assets`, `OCTOMUS_ASSETS` | Serve a directory containing `200.html` instead of the embedded dashboard |
+| `-h`, `--help`, `-V`, `--version` | Always work, without starting the service or writing state |
+| `--assets`, `OCTOMUS_ASSETS` | Serve a directory containing `200.html` instead of the embedded dashboard; missing static asset files return `404` while SPA routes fall back to `200.html` |
 | `--sandboxd`, `--egress` | Serve the broker and the egress gateway, configured from the environment in [compose.yaml](../deploy/docker/compose.yaml) |
 | `--sandboxd-check` | Ask the broker over its socket whether it serves sandboxes; its HEALTHCHECK runs it and the control plane waits for it |
 | `--healthcheck` | Ask the service at `--listen` (or `OCTOMUS_LISTEN`) for `/healthz`, using loopback for wildcard addresses |
