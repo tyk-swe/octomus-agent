@@ -554,8 +554,8 @@ for (const mode of ['execution', 'audit'] as const) {
   });
 }
 
-// A paused, idle service whose automatic merge check is still running must not offer Audit, Run once
-// or configuration editing: runtime.idle requires mergeWorker=nil. Clearing the field restores them.
+// A paused service with an active automatic merge check reports Audit, Run once and configuration
+// editing as unavailable. A fresh capability snapshot restores them after the check finishes.
 test('an active automatic merge check locks planning controls and configuration, then recovers', async ({
   page,
   isMobile
@@ -565,6 +565,22 @@ test('an active automatic merge check locks planning controls and configuration,
     idle(snapshot);
     snapshot.status = 'paused';
     snapshot.auto_merge = { active: merging, counts: {} };
+    if (merging) {
+      snapshot.capabilities.cycle = {
+        allowed: false,
+        reason:
+          'Run once requires paused operation with no active work. Pause the service and wait for active work to finish.'
+      };
+      snapshot.capabilities.audit = {
+        allowed: false,
+        reason:
+          'Audits require paused operation with no active work. Pause the service and wait for active work to finish.'
+      };
+      snapshot.capabilities.configure = {
+        allowed: false,
+        reason: 'Pause and wait for active work to finish before changing configuration.'
+      };
+    }
     snapshot.tasks = [];
     snapshot.attention_tasks = [];
     snapshot.counts = {};
