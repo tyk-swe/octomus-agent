@@ -37,9 +37,11 @@
 <article class="proposal-card">
   <div class="row-between">
     <div class="proposal-meta">
-      <Badge label={proposal.decision} tone={decisionTone(proposal.decision)} /><span
-        >{cycleLabel({ mode: proposal.mode, number: proposal.cycle })}</span
-      ><span class="tier">{proposal.tier}</span>
+      <Badge label={proposal.decision} tone={decisionTone(proposal.decision)} />
+      {#if proposal.id.startsWith('request-')}<span class="operator-request">Operator request</span
+        >{/if}<span>{cycleLabel({ mode: proposal.mode, number: proposal.cycle })}</span><span
+        class="tier">{proposal.tier}</span
+      >
     </div>
     <span class="category">{proposal.category}</span>
   </div>

@@ -21,6 +21,7 @@ var (
 	Baselines = Kind[model.BaselineCheck]{"baseline"}
 	PRs       = Kind[model.PRObservation]{"pr"}
 	Decisions = Kind[model.DecisionRecord]{"decision"}
+	Requests  = Kind[model.OperatorRequest]{"request"}
 )
 
 // Setting names one record of the settings kind; the engine declares its own.

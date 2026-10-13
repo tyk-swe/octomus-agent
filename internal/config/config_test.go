@@ -209,6 +209,37 @@ func TestDeliveryModeDefaultsStandardAndEffectiveCategories(t *testing.T) {
 	}
 }
 
+func TestPlanningGuidanceValidation(t *testing.T) {
+	const message = "Planning guidance must be UTF-8 text of at most 4096 bytes without control characters other than newlines and tabs"
+	cfg := Default()
+	for _, guidance := range []string{
+		"",
+		"Prioritise test coverage in internal/store.\nAvoid changes under web/.\t",
+		strings.Repeat("a", 4094) + "\n\t",
+	} {
+		cfg.PlanningGuidance = guidance
+		if err := cfg.Validate(false); err != nil {
+			t.Fatalf("valid guidance rejected: %v", err)
+		}
+	}
+	for _, guidance := range []string{
+		strings.Repeat("a", 4097),
+		"line\rbreak",
+		"bell\x07rings",
+		"\xff\xfe",
+	} {
+		cfg.PlanningGuidance = guidance
+		err := cfg.Validate(false)
+		if err == nil || err.Error() != message {
+			t.Fatalf("guidance %q: %v; want %q", guidance, err, message)
+		}
+	}
+	cfg.PlanningGuidance = ""
+	if err := cfg.Validate(false); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAutoMergeExcludedPathsValidation(t *testing.T) {
 	cfg := Default()
 	valid := []string{"internal/access/", "docs", "generated/bindings/", "dir.with.dots/", "a-b_c"}

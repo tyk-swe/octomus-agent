@@ -24,7 +24,8 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
   `review.go`, `verification.go`, `recovery.go`, `automerge.go` and `automerge_barriers.go`
   run the stages; `task_commit.go` and `task_worker.go` own task checkpoints and worker
   settlement; `controls.go`, `actions.go` and `eligibility.go` own operator actions;
-  `reads.go` and `api_views.go` own API queries and response types.
+  `requests.go` owns operator work requests; `reads.go` and `api_views.go` own API queries
+  and response types.
 - `internal/runner`: model discovery and routing (`runner.go`) over Codex app-server
   (`codex.go`) and OpenCode HTTP/SSE (`opencode.go`); `runnertest` is the scripted test
   adapter (`WithRunnerConnector`).
@@ -33,7 +34,8 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
 - `internal/store`: SQLite records, transactions and read models (`pages.go`, `queries.go`).
   `schema.sql` is the fresh DDL with projection/count/outbox triggers; `schema.go` and
   `migrations/` upgrade `testdata/state-v*.db` goldens; `keys.go` types record keys;
-  `task_lifecycle.go` guards task transitions.
+  `task_lifecycle.go` guards task transitions; `requests.go` stores operator work
+  requests and their guarded updates; `insights.go` reads usage/outcome summaries.
 - `internal/wirejson`: strict typed JSON boundaries for saved records and API requests.
 - `internal/sandbox`: untrusted child launcher (`Host` for `--sandbox off`, `Remote` for
   the broker), in-sandbox helper and containment probe. `wire` is the broker protocol;
@@ -48,7 +50,9 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
   and bounded capture. `internal/workspace`: managed-directory safety.
 - `internal/testutil`: shared test helpers (`git`/`gh` dispatcher and unix-socket servers).
 - `web`: `embed.go` embeds the build; `src/routes/+page.svelte` is the shell; `src/lib`
-  holds views and state owners (`stateSession.ts`, `resource.ts`, `configurationDraft.ts`).
+  holds views (`Requests.svelte` operator requests, `Insights.svelte` usage insights) and
+  state owners
+  (`stateSession.ts`, `resource.ts`, `configurationDraft.ts`).
   Regenerate `src/lib/types.ts` with
   `OCTOMUS_UPDATE_API_CONTRACT=1 go test ./web -run TestAPIContractGenerated`.
 - `web/tests`: Playwright specs against `tests/serve_ui.py` (`synthetic.ts`). `mobile`

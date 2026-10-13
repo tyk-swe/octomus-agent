@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
@@ -263,6 +264,9 @@ func (c Config) validateMode(ready, audit bool) error {
 	if err := validExcludedPaths(c.AutoMergeExcludedPaths); err != nil {
 		return err
 	}
+	if !validGuidance(c.PlanningGuidance) {
+		return errors.New("Planning guidance must be UTF-8 text of at most 4096 bytes without control characters other than newlines and tabs")
+	}
 	exact := func(routes map[string]Route, keys []string) bool {
 		if len(routes) != len(keys) {
 			return false
@@ -314,6 +318,15 @@ func (c Config) validateMode(ready, audit bool) error {
 		}
 	}
 	return nil
+}
+
+func validGuidance(guidance string) bool {
+	if len(guidance) > 4096 || !utf8.ValidString(guidance) {
+		return false
+	}
+	return !strings.ContainsFunc(guidance, func(r rune) bool {
+		return unicode.IsControl(r) && r != '\n' && r != '\t'
+	})
 }
 
 func validExcludedPaths(paths []string) error {

@@ -493,6 +493,21 @@
             Features stay in the saved category selection but are never eligible while maintenance
             delivery is active.
           </p>{/if}
+        <div class="form-grid">
+          <label class="full"
+            >Planning guidance<textarea
+              id="planning-guidance"
+              bind:value={config.planning_guidance}
+              rows="4"
+              readonly={locked('planning_guidance')}
+              placeholder="Prioritise test coverage in internal/store. Avoid changes under web/."
+            ></textarea>{@render previewNote('planning_guidance', 'guidance', false)}<small
+              >Optional. Shown to planning agents and reviewers as your preference for what to
+              prioritise or avoid; it never bypasses review, verification or limits. At most 4,096
+              bytes.</small
+            ></label
+          >
+        </div>
       </section>
       <section class="panel settings-section">
         <div class="section-heading">

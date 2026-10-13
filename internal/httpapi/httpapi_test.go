@@ -298,6 +298,9 @@ func TestHTTPBoundaries(t *testing.T) {
 			rejection{"GET", history + "?limit=-1", "", "Invalid query string: "})
 	}
 	rejections = append(rejections, rejection{"POST", "/api/doctor?mode=bogus", "{}", "Invalid query string: invalid value for `mode`"})
+	for _, path := range []string{"/api/insights?days=x", "/api/insights?days=14"} {
+		rejections = append(rejections, rejection{"GET", path, "", "Invalid query string: days must be 7, 30 or 90"})
+	}
 	for _, check := range rejections {
 		response := call(t, router, check.method, check.path, check.body)
 		if response.Code != http.StatusBadRequest || response.Header().Get("Content-Type") != "text/plain; charset=utf-8" ||
@@ -410,6 +413,70 @@ func TestProposalListRedactsBeforeBound(t *testing.T) {
 				t.Errorf("%s returned credential text: ...%s...", path, body[max(0, at-40):min(len(body), at+len(secret)+20)])
 			}
 		}
+	}
+}
+
+func TestInsightsEndpoint(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, "", "test")
+	wantDays := map[string]int{"/api/insights": 30, "/api/insights?days=7": 7, "/api/insights?days=90": 90}
+	for path, want := range wantDays {
+		response := call(t, router, "GET", path, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, response.Code, response.Body.String())
+		}
+		view := decode(t, response)
+		if days, _ := view["days"].(float64); int(days) != want {
+			t.Fatalf("%s days: %v", path, view["days"])
+		}
+		if daily, _ := view["daily"].([]any); len(daily) != want {
+			t.Fatalf("%s daily rows: %d", path, len(daily))
+		}
+	}
+}
+
+func TestOperatorRequestEndpoints(t *testing.T) {
+	app, state := testApp(t)
+	cfg := config.Default()
+	cfg.GitHubRepo = "fixture/project"
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
+		t.Fatal(err)
+	}
+	router := Router(app, token, "", "test")
+	if response := request(t, router, "GET", "/api/requests", "", false); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated: %d", response.Code)
+	}
+	response := call(t, router, "POST", "/api/requests", `{"title":"Add the feature","description":"Create feature.txt","target":"main"}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", response.Code, response.Body.String())
+	}
+	created := decode(t, response)
+	id, _ := created["id"].(string)
+	if id == "" || created["status"] != "pending" || created["target"] != "main" {
+		t.Fatalf("created record: %v", created)
+	}
+	response = call(t, router, "POST", "/api/requests", `{"title":"x","description":"y","target":"main","bogus":true}`)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown field: %d %s", response.Code, response.Body.String())
+	}
+	response = call(t, router, "GET", "/api/requests", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("view: %d", response.Code)
+	}
+	view := decode(t, response)
+	pending, _ := view["pending"].([]any)
+	if len(pending) != 1 || pending[0].(map[string]any)["id"] != id || view["seed_limit"] != float64(10) {
+		t.Fatalf("view: %v", view)
+	}
+	response = call(t, router, "POST", "/api/requests/"+id+"/withdraw", "{}")
+	if response.Code != http.StatusOK || decode(t, response)["ok"] != true {
+		t.Fatalf("withdraw: %d %s", response.Code, response.Body.String())
+	}
+	if response := call(t, router, "POST", "/api/requests/"+id+"/bogus", "{}"); response.Code != http.StatusNotFound {
+		t.Fatalf("unknown action: %d", response.Code)
+	}
+	if response := call(t, router, "POST", "/api/requests/"+id+"/withdraw", "{}"); response.Code != http.StatusConflict {
+		t.Fatalf("second withdraw: %d %s", response.Code, response.Body.String())
 	}
 }
 

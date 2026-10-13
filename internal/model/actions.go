@@ -36,6 +36,20 @@ func (a *CycleAction) UnmarshalText(text []byte) error {
 	return wirejson.ParseEnum(a, text, cycleActionNames)
 }
 
+type RequestAction uint8
+
+const (
+	RequestActionWithdraw RequestAction = 0
+)
+
+var requestActionNames = []string{"withdraw"}
+
+func (a RequestAction) String() string               { return wirejson.EnumName(a, requestActionNames) }
+func (a RequestAction) MarshalText() ([]byte, error) { return wirejson.EnumText(a, requestActionNames) }
+func (a *RequestAction) UnmarshalText(text []byte) error {
+	return wirejson.ParseEnum(a, text, requestActionNames)
+}
+
 type ControlAction uint8
 
 const (

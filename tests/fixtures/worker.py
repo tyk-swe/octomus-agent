@@ -132,8 +132,15 @@ def respond(prompt, cwd, thread, file):
             else:
                 accepted = {**proposal(), 'id': 'rediscover-' + identity, 'reconsiders': [identity], 'reason': 'Fresh evidence supports replacing stale work.'}
                 answer['proposals'].append(accepted)
-        if ids and prompt.startswith('Act as final orchestrator'):
+        operator = sorted(set(re.findall(r'request-([0-9a-f-]{36})', prompt)))
+        for identity in operator:
+            if prompt.startswith('Adversarial proposal'):
+                answer['assessments'].append({'id': 'request-' + identity, 'decision': 'accepted', 'reason': 'Repository evidence supports the operator request.'})
+            else:
+                answer['proposals'].append({**proposal(), 'id': 'request-' + identity, 'reason': 'Repository evidence supports the operator request.'})
+        if (ids or operator) and prompt.startswith('Act as final orchestrator'):
             for candidate in answer['proposals']:
-                if not candidate['reconsiders']:
-                    candidate.update(decision='rejected', reason='Absorbed into the rediscovery task.')
+                if not candidate['reconsiders'] and not candidate['id'].startswith('request-'):
+                    reason = 'Absorbed into the operator request.' if operator else 'Absorbed into the rediscovery task.'
+                    candidate.update(decision='rejected', reason=reason)
     return answer

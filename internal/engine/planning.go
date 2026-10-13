@@ -101,6 +101,10 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 			return err
 		}
 	}
+	seeded, dismissed, err := a.seedOperatorRequests(cfg, cycle)
+	if err != nil {
+		return err
+	}
 	reservations, err := a.store.PRReservations(cfg.GitHubRepo)
 	if err != nil {
 		return err
@@ -110,7 +114,11 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err != nil {
 		return err
 	}
-	contextBytes, err := wirejson.Marshal(map[string]any{"grounding": cycle.Grounding, "decision_memory": decisions, "pr_capacity": capacity})
+	requested := []any{}
+	for _, r := range seeded {
+		requested = append(requested, map[string]any{"id": r.ProposalID(), "title": redact.Text(r.Title), "description": redact.Text(r.Description), "target": r.Target})
+	}
+	contextBytes, err := wirejson.Marshal(map[string]any{"grounding": cycle.Grounding, "decision_memory": decisions, "pr_capacity": capacity, "operator_requests": requested})
 	if err != nil {
 		return err
 	}
@@ -118,13 +126,13 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err != nil {
 		return err
 	}
-	if err := a.discover(ctx, cfg, cycle, ground, string(contextBytes)); err != nil {
+	if err := a.discover(ctx, cfg, cycle, ground, string(contextBytes), len(seeded) > 0); err != nil {
 		return err
 	}
-	if err := a.reviewProposals(ctx, cfg, cycle, ground, string(contextBytes)); err != nil {
+	if err := a.reviewProposals(ctx, cfg, cycle, ground, string(contextBytes), len(seeded) > 0); err != nil {
 		return err
 	}
-	proposals, err := a.consolidate(ctx, cfg, cycle, ground, string(contextBytes))
+	proposals, err := a.consolidate(ctx, cfg, cycle, ground, string(contextBytes), len(seeded) > 0)
 	if err != nil {
 		return err
 	}
@@ -138,13 +146,20 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if err := validateProposals(cfg, proposals, *cycle.Grounding, history); err != nil {
 		return err
 	}
-	if err := a.enforceDecisionMemory(ctx, cfg, *cycle.Grounding, proposals, memory.requests); err != nil {
+	operator := map[string]struct{}{}
+	for _, r := range seeded {
+		operator[r.ProposalID()] = struct{}{}
+	}
+	if err := a.enforceDecisionMemory(ctx, cfg, *cycle.Grounding, proposals, memory.requests, operator); err != nil {
 		return err
 	}
 	if cycle.Mode == model.CycleModeExecution {
 		if err := checkRediscoveries(memory.requests, proposals); err != nil {
 			return err
 		}
+	}
+	if err := checkOperatorRequests(seeded, proposals); err != nil {
+		return err
 	}
 	cycle.Proposals = proposals
 	cycle.DecisionMemory, err = a.recordDecisions(ctx, cfg, *cycle)
@@ -154,9 +169,40 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	if cycle.Mode == model.CycleModeAudit {
 		cycle.Status = plannedStatus(proposals)
 		cycle.CompletedAt = new(model.Now())
-		return a.commitPlan(*cycle, nil)
+		return a.commitPlan(*cycle, nil, requestSettlements(*cycle, seeded, dismissed, nil, model.Now()))
 	}
-	return a.commitTasks(cfg, cycle)
+	return a.commitTasks(cfg, cycle, seeded, dismissed)
+}
+
+// seedOperatorRequests admits pending operator requests as request-<id> candidates within
+// the planning bound, oldest first. A request whose target is no longer eligible is not a
+// candidate: it is settled by the orchestrator's own reason instead.
+func (a *App) seedOperatorRequests(cfg config.Config, cycle *model.Cycle) (seeded, dismissed []model.OperatorRequest, err error) {
+	seeded, dismissed = []model.OperatorRequest{}, []model.OperatorRequest{}
+	room := maxPlanningProposals - len(cycle.Proposals) - int(cfg.DiscoveryAgents)
+	limit := min(model.RequestSeedLimit, max(room, 0))
+	if limit <= 0 {
+		return seeded, dismissed, nil
+	}
+	pending, err := a.store.PendingRequests(cfg.GitHubRepo, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, r := range pending {
+		if _, err := resolveTarget(cfg, cycle.Grounding.PRs, r.Target); err != nil {
+			dismissed = append(dismissed, r)
+			continue
+		}
+		seeded = append(seeded, r)
+		cycle.Proposals = append(cycle.Proposals, model.Proposal{
+			ID: r.ProposalID(), Title: redact.Text(r.Title), Problem: redact.Text(r.Description),
+			Evidence: []string{}, Benefit: "Requested by the operator", Category: "", Target: r.Target,
+			Tier: "", Scope: "", Dependencies: []string{}, Prompt: redact.Text(r.Description),
+			Decision: model.DecisionCandidate, Reason: "Operator requested this work; assess it against repository evidence",
+			ProblemKey: "", RelevantPaths: []string{}, Reconsiders: []string{},
+		})
+	}
+	return seeded, dismissed, nil
 }
 
 func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryRequest) error {
@@ -183,13 +229,40 @@ func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryReques
 	return nil
 }
 
-func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
+func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task, requests []store.RequestUpdate) error {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	if err := a.ctx.Err(); err != nil {
 		return err
 	}
-	return a.store.CommitPlan(a.ctx, cycle, tasks)
+	if err := a.store.CommitPlan(a.ctx, cycle, tasks, requests); err != nil {
+		return err
+	}
+	// Activity is best-effort after the plan's request settlements committed.
+	for _, update := range requests {
+		a.requestEvent(cycle, update.Next)
+	}
+	return nil
+}
+
+func (a *App) requestEvent(cycle model.Cycle, r model.OperatorRequest) {
+	if r.Assessment == nil {
+		return
+	}
+	var message string
+	if cycle.Mode == model.CycleModeAudit {
+		message = fmt.Sprintf("Assessed in audit cycle %d: %s", cycle.Number, r.Assessment.Decision)
+	} else {
+		switch r.Assessment.Decision {
+		case model.DecisionAccepted:
+			message = fmt.Sprintf("Accepted in execution cycle %d", cycle.Number)
+		case model.DecisionRejected:
+			message = fmt.Sprintf("Rejected in execution cycle %d", cycle.Number)
+		default:
+			message = fmt.Sprintf("Deferred in execution cycle %d", cycle.Number)
+		}
+	}
+	_ = a.store.Event(r.ID, model.EventRequest, message)
 }
 
 func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPRInventory, error) {
@@ -305,7 +378,7 @@ func prAgeReached(createdAt string, threshold uint64, now time.Time) bool {
 }
 
 func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle, recorded string) (string, error) {
-	outcome := a.role(ctx, cfg, cycle.ID, cycle.Grounding.Revision, "grounding", "orchestrator", groundingPrompt+maintenancePolicy(cfg)+recorded, schemas.GroundingSchema())
+	outcome := a.role(ctx, cfg, cycle.ID, cycle.Grounding.Revision, "grounding", "orchestrator", groundingPrompt+planningPolicy(cfg)+recorded, schemas.GroundingSchema())
 	if err := a.attachOutcomes(cycle, []roleOutcome{outcome}); err != nil {
 		return "", err
 	}
@@ -319,7 +392,7 @@ func (a *App) summarizeGrounding(ctx context.Context, cfg config.Config, cycle *
 	return document.Context, nil
 }
 
-func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) error {
+func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string, requested bool) error {
 	scopes := discoveryScopes
 	if cfg.DeliveryMode == config.DeliveryModeMaintenance {
 		scopes = maintenanceDiscoveryScopes
@@ -333,8 +406,12 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 	if cycle.Mode == model.CycleModeExecution {
 		reconsiders = discoveryReconsidersExecution
 	}
+	note := ""
+	if requested {
+		note = operatorDiscoveryNote
+	}
 	outcomes := runRoles(int(cfg.DiscoveryAgents), func(i int) roleOutcome {
-		return a.role(ctx, cfg, cycleID, revision, fmt.Sprintf("discovery-%d", i), "discovery", discoveryPrompt(cfg, cycle, i, perAgent, reconsiders, ground, recorded), schemas.ProposalSchema())
+		return a.role(ctx, cfg, cycleID, revision, fmt.Sprintf("discovery-%d", i), "discovery", discoveryPrompt(cfg, cycle, i, perAgent, reconsiders, ground, recorded)+note, schemas.ProposalSchema())
 	})
 	if err := a.attachOutcomes(cycle, outcomes); err != nil {
 		return err
@@ -343,6 +420,11 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 		var document model.ProposalDocument
 		if err := json.Unmarshal([]byte(outcome.answer), &document); err != nil {
 			return err
+		}
+		for _, proposal := range document.Proposals {
+			if strings.HasPrefix(proposal.ID, model.RequestProposalPrefix) {
+				return fmt.Errorf("Discovery returned reserved proposal identity %q", proposal.ID)
+			}
 		}
 		cycle.Proposals = append(cycle.Proposals, document.Proposals...)
 	}
@@ -362,10 +444,14 @@ func (a *App) discover(ctx context.Context, cfg config.Config, cycle *model.Cycl
 	return a.saveCycle(cycle)
 }
 
-func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) error {
+func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string, requested bool) error {
 	candidates, err := wirejson.Marshal(cycle.Proposals)
 	if err != nil {
 		return err
+	}
+	note := ""
+	if requested {
+		note = operatorReviewNote
 	}
 	slots := model.ReviewerSlots()
 	prompts := make([]string, len(slots))
@@ -374,7 +460,7 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 		if !ok {
 			return fmt.Errorf("Missing review focus for %s", slot)
 		}
-		prompts[i] = fmt.Sprintf("%s%s Candidates: %s. Grounding: %s. Context: %s", focus, maintenancePolicy(cfg), candidates, ground, recorded)
+		prompts[i] = fmt.Sprintf("%s%s%s Candidates: %s. Grounding: %s. Context: %s", focus, planningPolicy(cfg), note, candidates, ground, recorded)
 	}
 	cycleID, revision := cycle.ID, cycle.Grounding.Revision
 	outcomes := runRoles(len(slots), func(i int) roleOutcome {
@@ -396,7 +482,7 @@ func (a *App) reviewProposals(ctx context.Context, cfg config.Config, cycle *mod
 	return a.saveCycle(cycle)
 }
 
-func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string) ([]model.Proposal, error) {
+func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.Cycle, ground, recorded string, requested bool) ([]model.Proposal, error) {
 	candidates, err := wirejson.Marshal(cycle.Proposals)
 	if err != nil {
 		return nil, err
@@ -413,7 +499,11 @@ func (a *App) consolidate(ctx context.Context, cfg config.Config, cycle *model.C
 	if cycle.Mode == model.CycleModeExecution {
 		rediscovery = rediscoveryExecution
 	}
-	outcome := a.role(ctx, cfg, cycle.ID, cycle.Grounding.Revision, "consolidation", "orchestrator", consolidationPrompt(cfg, rediscovery, tiers, candidates, reviews, ground, recorded), schemas.ProposalSchema())
+	note := ""
+	if requested {
+		note = operatorConsolidationNote
+	}
+	outcome := a.role(ctx, cfg, cycle.ID, cycle.Grounding.Revision, "consolidation", "orchestrator", consolidationPrompt(cfg, rediscovery, tiers, candidates, reviews, ground, recorded)+note, schemas.ProposalSchema())
 	if err := a.attachOutcomes(cycle, []roleOutcome{outcome}); err != nil {
 		return nil, err
 	}
@@ -527,7 +617,43 @@ func (a *App) saveCycle(cycle *model.Cycle) error {
 	return store.Put(a.store, store.Cycles.Key(cycle.ID), *cycle)
 }
 
-func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {
+// requestSettlements builds the guarded request updates a successful plan commits:
+// every seeded and dismissed request records the fresh assessment, and only an execution
+// cycle also changes status (accepted links the new task, rejected is final, deferred
+// stays pending). Audits update the assessment alone.
+func requestSettlements(cycle model.Cycle, seeded, dismissed []model.OperatorRequest, taskIDs map[string]string, now string) []store.RequestUpdate {
+	decisions := map[string]model.Proposal{}
+	for _, p := range cycle.Proposals {
+		decisions[p.ID] = p
+	}
+	settle := func(r model.OperatorRequest, decision, reason string) store.RequestUpdate {
+		next := r.Clone()
+		next.UpdatedAt = now
+		next.Assessment = &model.RequestAssessment{CycleID: cycle.ID, Mode: cycle.Mode, Decision: decision, Reason: redact.Text(reason), At: now}
+		if cycle.Mode == model.CycleModeExecution {
+			switch decision {
+			case model.DecisionAccepted:
+				next.Status = model.RequestAccepted
+				taskID := taskIDs[r.ProposalID()]
+				next.TaskID = &taskID
+			case model.DecisionRejected:
+				next.Status = model.RequestRejected
+			}
+		}
+		return store.RequestUpdate{Expected: r, Next: next}
+	}
+	updates := make([]store.RequestUpdate, 0, len(seeded)+len(dismissed))
+	for _, r := range seeded {
+		p := decisions[r.ProposalID()]
+		updates = append(updates, settle(r, p.Decision, p.Reason))
+	}
+	for _, r := range dismissed {
+		updates = append(updates, settle(r, model.DecisionRejected, fmt.Sprintf("Target %q is no longer an owned open pull request or the default branch", r.Target)))
+	}
+	return updates
+}
+
+func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle, seeded, dismissed []model.OperatorRequest) error {
 	if cycle.Grounding == nil {
 		return errors.New("Planning cycle is missing its grounding")
 	}
@@ -559,7 +685,7 @@ func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {
 	}
 	cycle.Status = plannedStatus(cycle.Proposals)
 	cycle.CompletedAt = new(model.Now())
-	return a.commitPlan(*cycle, planned)
+	return a.commitPlan(*cycle, planned, requestSettlements(*cycle, seeded, dismissed, ids, model.Now()))
 }
 
 func newPlannedTask(cfg config.Config, cycle *model.Cycle, original, proposal model.Proposal, taskID string, target *model.PullRequest) model.Task {

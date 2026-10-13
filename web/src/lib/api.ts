@@ -17,6 +17,10 @@ import type {
   ProposalDetail,
   ProposalRow,
   RunEvidenceV1,
+  RequestsView,
+  Insights,
+  OperatorRequest,
+  RequestAction,
   SandboxSelfTest,
   SettingsView,
   Snapshot,
@@ -128,6 +132,13 @@ export const client = {
     request<Acknowledgement>(`/cycles/${id(cycle)}/${action}`, 'POST'),
   proposal: (cycle: string, proposal: string, signal?: AbortSignal) =>
     request<ProposalDetail>(`/proposals/${id(cycle)}/${id(proposal)}`, 'GET', undefined, signal),
+  requests: (signal?: AbortSignal) => request<RequestsView>('/requests', 'GET', undefined, signal),
+  createRequest: (body: { title: string; description: string; target: string }) =>
+    request<OperatorRequest>('/requests', 'POST', body),
+  requestAction: (requestID: string, action: RequestAction) =>
+    request<Acknowledgement>(`/requests/${id(requestID)}/${id(action)}`, 'POST'),
+  insights: (days: number, signal?: AbortSignal) =>
+    request<Insights>(`/insights?days=${days}`, 'GET', undefined, signal),
   evidence: (cycle: string, signal?: AbortSignal) =>
     request<RunEvidenceV1>(`/cycles/${id(cycle)}/evidence`, 'GET', undefined, signal),
   events: (entity: string, signal?: AbortSignal) =>

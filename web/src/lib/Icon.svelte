@@ -3,6 +3,7 @@
     overview: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
     queue: 'M9 6h12M9 12h12M9 18h12M3 6h.01M3 12h.01M3 18h.01',
     proposals: 'M9 18h6M10 22h4M8 14c-5-5-2-12 4-12s9 7 4 12l-1 2H9z',
+    inbox: 'M3 13h5l2 3h4l2-3h5M5 5h14l2 8v6H3v-6z',
     prs: 'M6 8v12M6 4v.01M18 16V8c0-2-2-3-4-3h-2m3-3-3 3 3 3M3 4a3 3 0 1 0 6 0 3 3 0 1 0-6 0M15 19a3 3 0 1 0 6 0 3 3 0 1 0-6 0',
     settings:
       'M12 8a4 4 0 1 0 0 8 4 4 0 1 0 0-8M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2',
@@ -17,6 +18,7 @@
     external: 'M14 3h7v7m0-7L10 14M10 3H3v18h18v-7',
     search: 'm16 16 5 5M18 10a8 8 0 1 1-16 0 8 8 0 1 1 16 0',
     activity: 'M2 12h5l3-8 4 16 3-8h5',
+    chart: 'M3 3v18h18M7 15v3M12 10v8M17 6v12',
     shield: 'm12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6zM8 12l3 3 5-6',
     code: 'm8 6-6 6 6 6m8-12 6 6-6 6M14 3l-4 18',
     refresh: 'M20 8a9 9 0 1 0 1 7M20 2v6h-6',

@@ -74,6 +74,9 @@ func TestEnumWireNames(t *testing.T) {
 	enumRoundTrip[OperatingMode](t, []string{"paused", "run_once", "continuous"})
 	enumRoundTrip[BatchPhase](t, []string{"draining", "planning", "executing", "merging"})
 	enumRoundTrip[AutoMergeStatus](t, []string{"waiting", "manual", "merging", "uncertain", "merged", "closed"})
+	enumRoundTrip[RequestStatus](t, []string{"pending", "accepted", "rejected", "withdrawn"})
+	enumRoundTrip[RequestAction](t, []string{"withdraw"})
+	enumRoundTrip[EventKind](t, eventKindNames)
 }
 
 func TestTaskAllowedActions(t *testing.T) {

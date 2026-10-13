@@ -145,6 +145,26 @@ test('configuration keeps drafts and catalogs across views, discards locally, an
   await expect(branch).toHaveValue('externally-saved-main');
 });
 
+test('planning guidance saves only its own field', async ({ page, isMobile }) => {
+  const state = await configurationFixture(page);
+  await login(page);
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const guidance = page.locator('#planning-guidance');
+  await expect(guidance).toHaveValue('');
+  await guidance.fill('Prioritise test coverage in internal/store. Avoid changes under web/.');
+  await page.getByRole('button', { name: 'Save configuration' }).click();
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.writes.at(-1)!.config).toEqual({
+    planning_guidance: 'Prioritise test coverage in internal/store. Avoid changes under web/.'
+  });
+  expect(state.saved!.planning_guidance).toBe(
+    'Prioritise test coverage in internal/store. Avoid changes under web/.'
+  );
+  await expect(guidance).toHaveValue(
+    'Prioritise test coverage in internal/store. Avoid changes under web/.'
+  );
+});
+
 test('setup checklist distinguishes entered, saved, checked, stale and failed states without starting work', async ({
   page,
   isMobile

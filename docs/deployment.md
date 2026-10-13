@@ -285,6 +285,10 @@ and limits while paused, then run **Check connection**.
 - **Stale context:** **Supersede and rediscover** seeds the next execution cycle with a
   replacement request (withdrawn if archived first). **Reconcile publication** re-runs
   publication checks on a saved output commit without a model turn.
+- **Request work:** asks planning for specific work from the dashboard's Requests view;
+  pending requests enter the next cycle as ordinary candidates and are settled with the
+  plan (accepted links the task, rejected is final, deferred stays pending). Withdraw is
+  refused while planning runs.
 - **Restart:** initialized in-flight tasks queue for automatic recovery within the retry
   budget (uninitialized or retry-exhausted tasks block; exhausted output-checkpoint tasks
   block as `publication_uncertain` for **Reconcile publication**).
@@ -447,7 +451,11 @@ table in `internal/httpapi/routes.go` is authoritative.
 | `POST` | `/api/cycles/{id}/{action}` | `archive` or `discard` | 200 |
 | `GET` | `/api/proposals` | Proposal page without prompts or evidence, with per-decision counts | 200 |
 | `GET` | `/api/proposals/{cycle}/{id}` | One proposal | 200 |
+| `GET` | `/api/requests` | Pending and decided operator requests plus eligible targets | 200 |
+| `POST` | `/api/requests` | `{"title":"…","description":"…","target":"…"}` files a request | 201 |
+| `POST` | `/api/requests/{id}/{action}` | `withdraw` | 200 |
 | `GET` | `/api/prs` | Observed pull-request page | 200 |
+| `GET` | `/api/insights` | Read-only usage and outcome summary for the last 7, 30 or 90 UTC days (`days`, default 30) | 200 |
 | `GET` | `/api/config` | Display-safe configuration, its `revision` and `transformed_fields` | 200 |
 | `PUT` | `/api/config` | `{"expected_revision":"…","config":{…}}` replaces the supplied top-level fields | 200 |
 | `POST` | `/api/baseline-checks` | `{"expected_revision":"…"}` starts a clean-baseline check | 202 |

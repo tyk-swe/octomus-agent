@@ -645,6 +645,15 @@
   min-width: 23px;
   text-align: center;
 }
+.operator-request {
+  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #d6dfc4;
+  background: #eef3e2;
+  color: #4c5c38;
+  font-weight: 500;
+}
 .dot-separator {
   color: #5f6855;
 }

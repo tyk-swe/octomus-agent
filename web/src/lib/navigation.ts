@@ -32,12 +32,26 @@ export const NAVIGATION: {
     noun: 'proposals'
   },
   {
+    id: 'requests',
+    label: 'Requests',
+    icon: 'inbox',
+    heading: 'Ask for what matters.',
+    lede: 'Request specific work. It still has to earn its place through review.'
+  },
+  {
     id: 'prs',
     label: 'Pull requests',
     icon: 'prs',
     heading: 'Progress, ready for review.',
     lede: 'New improvements and continued work on your existing branches.',
     noun: 'pull requests'
+  },
+  {
+    id: 'insights',
+    label: 'Insights',
+    icon: 'chart',
+    heading: 'What the work adds up to.',
+    lede: 'Admissions, decisions and delivered outcomes over time.'
   },
   {
     id: 'settings',

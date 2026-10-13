@@ -33,6 +33,7 @@ type StateView struct {
 	Storage          *storageUsage            `json:"storage"`
 	PlanningCapacity model.PlanningCapacity   `json:"planning_capacity"`
 	PRCapacity       model.PRCapacity         `json:"pr_capacity"`
+	PendingRequests  int64                    `json:"pending_requests"`
 	Sandbox          SandboxPosture           `json:"sandbox"`
 }
 

@@ -231,25 +231,25 @@ func TestDecisionAdmissionBeyondPromptWindow(t *testing.T) {
 			t.Fatal("old decision should be outside this prompt window")
 		}
 	}
-	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil); err == nil || !strings.Contains(err.Error(), `decision "old"`) {
+	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil, nil); err == nil || !strings.Contains(err.Error(), `decision "old"`) {
 		t.Fatalf("current rejection was evicted from admission: %v", err)
 	}
 	changed := grounding
 	changed.Revision = "new-revision"
-	if err := app.enforceDecisionMemory(ctx, cfg, changed, []model.Proposal{proposed}, nil); err != nil {
+	if err := app.enforceDecisionMemory(ctx, cfg, changed, []model.Proposal{proposed}, nil, nil); err != nil {
 		t.Fatalf("changed context did not allow reconsideration: %v", err)
 	}
 	request := rediscoveryRequest{ID: "rediscover", Target: cfg.DefaultBranch}
 	reconsidered := proposed.Clone()
 	reconsidered.Reconsiders = []string{request.ID}
-	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{reconsidered}, []rediscoveryRequest{request}); err != nil {
+	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{reconsidered}, []rediscoveryRequest{request}, nil); err != nil {
 		t.Fatalf("explicit rediscovery failed: %v", err)
 	}
 	old.ReconsiderAfter = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	if err := store.Put(state, store.Decisions.Key(old.ID), old); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil); err != nil {
+	if err := app.enforceDecisionMemory(ctx, cfg, grounding, []model.Proposal{proposed}, nil, nil); err != nil {
 		t.Fatalf("expired decision blocked reconsideration: %v", err)
 	}
 }
@@ -337,7 +337,7 @@ func TestDecisionAdmissionChecksAllExactHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := app.enforceDecisionMemory(context.Background(), cfg, grounding, []model.Proposal{proposed}, nil); err == nil || !strings.Contains(err.Error(), `decision "still-current"`) {
+	if err := app.enforceDecisionMemory(context.Background(), cfg, grounding, []model.Proposal{proposed}, nil, nil); err == nil || !strings.Contains(err.Error(), `decision "still-current"`) {
 		t.Fatalf("exact history was limited or newer context evicted a current decision: %v", err)
 	}
 }

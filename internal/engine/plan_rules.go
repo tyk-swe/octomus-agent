@@ -302,6 +302,25 @@ func checkConsolidation(candidates, returned []model.Proposal) error {
 	}, nil)
 }
 
+// checkOperatorRequests holds a consolidated plan to the request contract: an accepted
+// request candidate keeps the target the operator asked for.
+func checkOperatorRequests(seeded []model.OperatorRequest, proposals []model.Proposal) error {
+	byID := map[string]model.Proposal{}
+	for _, p := range proposals {
+		byID[p.ID] = p
+	}
+	for _, r := range seeded {
+		p, found := byID[r.ProposalID()]
+		if !found {
+			return fmt.Errorf("Operator request %s was not returned by consolidation", r.ID)
+		}
+		if p.Decision == model.DecisionAccepted && p.Target != r.Target {
+			return fmt.Errorf("Operator request %s must keep its target %q (proposal targets %q)", r.ID, r.Target, p.Target)
+		}
+	}
+	return nil
+}
+
 func checkRediscoveries(requests []rediscoveryRequest, proposals []model.Proposal) error {
 	for _, request := range requests {
 		id := request.ID

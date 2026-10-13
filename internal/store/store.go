@@ -249,7 +249,7 @@ func (s *Store) marked(key Key[*string]) (bool, error) {
 // CommitPlan uses ctx only for admission after acquiring the store mutex.
 // Once admitted, cancellation does not interrupt the plan transaction: it finishes
 // atomically, like other store writes.
-func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model.Task) error {
+func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model.Task, requests []RequestUpdate) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -293,6 +293,11 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 				return errors.New("Missing decision identity")
 			}
 			if err := txPut(c, Decisions.Key(decision.ID), decision); err != nil {
+				return err
+			}
+		}
+		for _, update := range requests {
+			if err := txUpdateRequest(c, update); err != nil {
 				return err
 			}
 		}
