@@ -149,6 +149,11 @@ func (s *Store) migrate(plan schemaPlan, from int64) error {
 	if err != nil {
 		return fmt.Errorf("Cannot back up the version-%d state database before upgrading it; it was not changed: %w", from, err)
 	}
+	// Changing the journal mode can rewrite the database header. Do it only
+	// after the verified backup exists, before committing any migration.
+	if err := s.configureJournal(); err != nil {
+		return err
+	}
 	latest := plan.version()
 	for v := from; v < latest; v++ {
 		step := plan.migrations[v-baseVersion]

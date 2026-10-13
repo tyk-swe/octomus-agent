@@ -553,6 +553,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 }
 
 func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, error, error) {
+	ready := true
 	for _, id := range task.Proposal.Dependencies {
 		dependency, err := store.Get(a.store, store.Tasks.Key(id))
 		if err != nil {
@@ -570,9 +571,9 @@ func (a *App) dependenciesReady(task model.Task, control model.Control) (bool, e
 		if slices.Contains(model.UnresolvedStatuses(), dependency.Status) {
 			return false, fmt.Errorf("Dependency %s is unresolved: %w", id, model.BlockedDependencyBlocked), nil
 		}
-		return false, nil, nil
+		ready = false
 	}
-	return true, nil, nil
+	return ready, nil, nil
 }
 
 func (a *App) runTask(task model.Task) {

@@ -95,16 +95,21 @@ func (s *Store) initialize(plan schemaPlan) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.conn.ExecContext(background, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;"); err != nil {
+	if !fresh && version < plan.version() {
+		return s.migrate(plan, version)
+	}
+	if err := s.configureJournal(); err != nil {
 		return err
 	}
 	if fresh {
 		return createSchema(background, s.conn, plan)
 	}
-	if version < plan.version() {
-		return s.migrate(plan, version)
-	}
 	return nil
+}
+
+func (s *Store) configureJournal() error {
+	_, err := s.conn.ExecContext(background, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+	return err
 }
 
 func (s *Store) Close() error {

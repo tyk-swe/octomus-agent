@@ -126,11 +126,11 @@ func (a *App) cancelTask(id string) error {
 	a.runtimeMu.Lock()
 	job, running := a.runtime.tasks[id]
 	a.runtimeMu.Unlock()
-	if running {
-		job.cancel()
-	}
 	if err := a.store.MarkCancel(id); err != nil {
 		return err
+	}
+	if running {
+		job.cancel()
 	}
 	cancelled, err := a.store.CancelTask(id)
 	if err != nil {

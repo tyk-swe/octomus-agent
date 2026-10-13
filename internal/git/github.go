@@ -17,7 +17,9 @@ import (
 )
 
 func gh(ctx context.Context, c config.Config, args []string) (string, error) {
-	return process.RunMachine(ctx, "gh", args, c.Repository, c.CommandTimeoutSeconds, nil)
+	// Origin validation only accepts github.com. Pin the matching API host,
+	// including commands such as pr create that do not accept --hostname.
+	return process.RunMachine(ctx, "gh", args, c.Repository, c.CommandTimeoutSeconds, []string{"GH_HOST=github.com"})
 }
 
 func ghPages(out string, each func(page []map[string]any) error) error {

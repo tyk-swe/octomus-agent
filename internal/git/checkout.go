@@ -84,6 +84,17 @@ func (g *checkoutGate) acquire(ctx context.Context, write bool) (func(), error) 
 			g.waiting--
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		// Cancellation can race a release, causing the wait to receive the
+		// release instead. Do not admit the cancelled work, and wake readers
+		// that may still be waiting for this last writer to leave the queue.
+		if write && g.waiting == 0 {
+			close(g.released)
+			g.released = make(chan struct{})
+		}
+		g.mu.Unlock()
+		return nil, err
+	}
 	if write {
 		g.writing = true
 	} else {

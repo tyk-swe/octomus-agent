@@ -88,6 +88,9 @@ export function replaceDraftField(draft: ConfigurationDraft, field: string) {
       delete (node as Record<string, unknown>)[leaf as string];
     else (node as Record<string, unknown>)[leaf as string] = '';
   }
+  // Category checkboxes cannot represent an empty selection left behind by a
+  // cleared preview. Drop those slots while retaining visible saved choices.
+  if (field === 'categories') draft.values.categories = draft.values.categories.filter(Boolean);
   if (field === 'verification_commands') draft.commands = '';
   if (field === 'auto_merge_excluded_paths') draft.excluded = '';
   draft.replaced[field] = true;
