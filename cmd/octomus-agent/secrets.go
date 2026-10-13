@@ -13,6 +13,8 @@ import (
 // credential helper. Sandboxes never see the control plane's environment.
 const githubTokenEnv = "GH_TOKEN"
 
+const maxSecretFileBytes = 64 << 10
+
 // secretFiles lets each secret the service reads from its environment arrive as a file instead, the way Docker
 // secrets do, which keeps it out of `docker inspect`.
 var secretFiles = []struct{ variable, file string }{
@@ -38,10 +40,13 @@ func loadSecretFiles(env func(string) (string, bool), setenv func(string, string
 		if err != nil {
 			return nil, fmt.Errorf("Reading %s: %w", secret.file, err)
 		}
-		data, err := io.ReadAll(io.LimitReader(file, 64<<10))
+		data, err := io.ReadAll(io.LimitReader(file, maxSecretFileBytes+1))
 		file.Close()
 		if err != nil {
 			return nil, fmt.Errorf("Reading %s: %w", secret.file, err)
+		}
+		if len(data) > maxSecretFileBytes {
+			return nil, fmt.Errorf("%s exceeds the 64 KiB size limit", secret.file)
 		}
 		value := strings.TrimRight(string(data), "\r\n")
 		if value == "" || strings.ContainsAny(value, "\r\n\x00") {

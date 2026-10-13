@@ -163,11 +163,11 @@ func (a *App) execute(ctx context.Context, task *model.Task) error {
 		if revision == task.SourceRevision {
 			return fmt.Errorf("No changes were committed on top of the source revision: %w", model.BlockedVerificationFailed)
 		}
-		names, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--name-only", "--ignore-submodules=none", task.SourceRevision, revision})
+		changed, err := revisionHasChanges(ctx, cfg, ws, task.SourceRevision, revision)
 		if err != nil {
 			return err
 		}
-		if names == "" {
+		if !changed {
 			return fmt.Errorf("The change set is empty against the source revision: %w", model.BlockedVerificationFailed)
 		}
 		review, err := a.reviewRevision(ctx, task, client, revision)
@@ -304,6 +304,13 @@ func ensureWorkspaceAt(ctx context.Context, cfg config.Config, ws, revision stri
 		return model.BlockedWorkspaceInvalid
 	}
 	return nil
+}
+
+func revisionHasChanges(ctx context.Context, cfg config.Config, ws, source, revision string) (bool, error) {
+	// A path-free summary works for whitespace-only and non-UTF-8 paths:
+	// WorkGit trims its machine output and requires that output to be UTF-8.
+	summary, err := gitops.WorkGit(ctx, cfg, ws, []string{"diff", "--shortstat", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", source, revision})
+	return summary != "", err
 }
 
 func requireDefaultRevision(ctx context.Context, cfg config.Config, want string) error {

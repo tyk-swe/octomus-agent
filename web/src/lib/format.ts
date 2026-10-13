@@ -1,5 +1,5 @@
-export function relative(value: string) {
-  const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
+export function relative(value: string, now = Date.now()) {
+  const seconds = Math.max(0, (now - new Date(value).getTime()) / 1000);
   if (!Number.isFinite(seconds)) return '';
   return seconds < 60
     ? 'just now'

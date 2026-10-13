@@ -111,6 +111,10 @@ func (o *overrideAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	data, served, found := o.read(name)
 	if !found {
+		if strings.HasPrefix(name, "_app/") || hasExtension(name) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		data, served, found = o.read(indexName)
 	}
 	if !found {

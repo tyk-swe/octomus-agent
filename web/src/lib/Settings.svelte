@@ -563,7 +563,7 @@
                 placeholder="Absolute path to runner storage"
                 readonly={locked('runner_storage_paths')}
                 oninput={(event) => {
-                  const path = event.currentTarget.value.trim();
+                  const path = event.currentTarget.value;
                   if (path) config!.runner_storage_paths[backend] = path;
                   else delete config!.runner_storage_paths[backend];
                 }}
