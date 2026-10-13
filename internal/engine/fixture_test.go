@@ -387,12 +387,17 @@ func optionalText(value *string) string {
 	return *value
 }
 
-func mustJSON(t *testing.T, value any) string {
+func must0(t *testing.T, err error) {
 	t.Helper()
-	data, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	must0(t, err)
 	return string(data)
 }
 
@@ -408,9 +413,9 @@ func writeFile(name, content string) func(string) error {
 
 // GitHub fixture state.
 
-func publications(t *testing.T, f *fixture) []map[string]any {
+func readJSONL(t *testing.T, path string) []map[string]any {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(f.root, "publications.jsonl"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -420,42 +425,51 @@ func publications(t *testing.T, f *fixture) []map[string]any {
 			continue
 		}
 		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			t.Fatal(err)
-		}
+		must0(t, json.Unmarshal([]byte(line), &entry))
 		entries = append(entries, entry)
 	}
 	return entries
 }
 
+func publications(t *testing.T, f *fixture) []map[string]any {
+	t.Helper()
+	return readJSONL(t, filepath.Join(f.root, "publications.jsonl"))
+}
+
 func prsJSON(t *testing.T, f *fixture) []map[string]any {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(f.root, "prs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	must0(t, err)
 	var prs []map[string]any
-	if err := json.Unmarshal(data, &prs); err != nil {
-		t.Fatal(err)
-	}
+	must0(t, json.Unmarshal(data, &prs))
 	return prs
+}
+
+func pushCommit(t *testing.T, f *fixture, dir, branch, file, content, message, refspec string, force bool) string {
+	t.Helper()
+	work := filepath.Join(f.root, dir)
+	git(t, f.root, "clone", f.repo, work)
+	git(t, work, "config", "user.name", "Fixture")
+	git(t, work, "config", "user.email", "fixture@example.com")
+	if branch != "" {
+		git(t, work, "checkout", "-b", branch)
+	}
+	must0(t, os.WriteFile(filepath.Join(work, file), []byte(content), 0o644))
+	git(t, work, "add", ".")
+	git(t, work, "commit", "-m", message)
+	args := []string{"push"}
+	if force {
+		args = append(args, "-f")
+	}
+	args = append(args, filepath.Join(f.root, "remote.git"), refspec)
+	git(t, work, args...)
+	return git(t, work, "rev-parse", "HEAD")
 }
 
 // existingPRBranch pushes an owned branch the gh fixture reports as open PR 42 and returns its head.
 func existingPRBranch(t *testing.T, f *fixture) string {
 	t.Helper()
-	work := filepath.Join(f.root, "existing-work")
-	git(t, f.root, "clone", f.repo, work)
-	git(t, work, "config", "user.name", "Fixture")
-	git(t, work, "config", "user.email", "fixture@example.com")
-	git(t, work, "checkout", "-b", "octomus/existing")
-	if err := os.WriteFile(filepath.Join(work, "earlier.txt"), []byte("Preserve the earlier improvement.\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git(t, work, "add", ".")
-	git(t, work, "commit", "-m", "Earlier Octomus work")
-	git(t, work, "push", filepath.Join(f.root, "remote.git"), "octomus/existing")
-	head := git(t, work, "rev-parse", "HEAD")
+	head := pushCommit(t, f, "existing-work", "octomus/existing", "earlier.txt", "Preserve the earlier improvement.\n", "Earlier Octomus work", "octomus/existing", false)
 	pr := []map[string]any{{
 		"number": 42, "title": "An existing improvement", "body": "Existing context.\n<!-- octomus:task:earlier -->",
 		"head":     map[string]any{"ref": "octomus/existing", "sha": head, "repo": map[string]any{"full_name": "fixture/project"}},
@@ -464,12 +478,8 @@ func existingPRBranch(t *testing.T, f *fixture) string {
 		"merged_at": nil, "additions": 2000, "deletions": 0, "created_at": "2026-08-01T00:00:00Z",
 	}}
 	data, err := json.Marshal(pr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), data, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	must0(t, err)
+	must0(t, os.WriteFile(filepath.Join(f.root, "prs.json"), data, 0o644))
 	return head
 }
 

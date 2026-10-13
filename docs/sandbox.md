@@ -58,66 +58,36 @@ filesystem, no capabilities and `no-new-privileges`. See
 
 ## One sandbox's life
 
-1. The control plane asks the broker for a sandbox of one **kind**: `runner` (a Codex or
-   OpenCode turn, or a route catalog check), `verify` (one verification command) or `probe`
-   (the self-test). It names an **owned root**: a task, a planning role, a baseline check,
-   or an empty scratch root. It cannot name an image, mount, capability, network, user or
-   limit.
-2. The broker checks the request against fixed patterns, walks the root without following
-   symlinks, and requires every directory to be owned by the sandbox user. It then creates
+1. The control plane requests a sandbox of kind `runner` (agent turn or catalog check),
+   `verify` (one verification command) or `probe` (self-test), naming only an owned root
+   (task, planning role, baseline check or scratch root)—never an image, mount, capability,
+   network, user or limit.
+2. The broker validates the path without following symlinks, checks uid ownership, creates
    the container from its golden spec and grants an egress lease.
-3. The broker attaches to the container before starting it, so no output is lost. The
-   control plane's stream to the broker is the sandbox's lifeline: if it closes, because the
-   turn ended, the operator cancelled or the control plane crashed, the broker kills and
-   removes the container. The hard lifetime starts before Docker's start request, so a
-   delayed start cannot extend it or block a kill.
+3. The broker attaches before starting so no output is lost. The control-plane stream is
+   the lifeline: closing it (turn completion, cancellation or control-plane crash) kills
+   and removes the container. The hard lifetime starts before Docker's start request.
 4. The broker confirms lease revocation and container removal independently, then reports
-   the exit code, whether Docker reported an out-of-memory kill and whether a time limit
-   stopped it. A sandbox it could not remove keeps its slot until a retry succeeds, and its
-   report says so; a failed lease deletion is likewise an infrastructure failure, never an
-   assumed revocation. An unanswered create also keeps its slot, because elapsed time never
-   proves the daemon will not finish creating the container. If the daemon never settles
-   that request, restart the broker after resolving the daemon problem: startup sweeps every
-   container carrying this instance's label.
+   exit code, OOM state and time-limit status (`command`, `time_limit` or `failure`).
+   Unremoved containers or unanswered creates retain their concurrency slot and fail
+   closed; startup sweeps all containers carrying this instance's label. Login lease
+   rotation likewise confirms removal of prior login leases before granting a new one.
 
-Exit reports carry a machine-readable outcome (`command`, `time_limit` or `failure`)
-separate from their diagnostic text. Unknown outcomes, malformed time-limit reports and
-missing exit-status or Docker evidence fail closed rather than defaulting to success, so
-upgrade the broker and control plane together. Login lease rotation likewise requires
-confirmed removal of every previous login authorization before granting another and leaves
-other sandboxes' leases intact. If a rotation fails, retry the login after correcting the
-removal failure, or restart the broker so its sweep clears the remaining authorization.
+Executors, fresh reviewers and repair turns each run in a new sandbox sharing the task's
+home (per-user git config is ignored). Because earlier turns can alter shell startup files
+in that home, the reviewer prompt embeds the authoritative change set computed by the
+orchestrator's own git against `repo.git` (up to 32 KiB of `--numstat --summary` file list
+and 64 KiB of smallest whole-file diffs, with non-UTF-8 and control/line-separator
+characters escaped as `⟦…⟧`; see [architecture](architecture.md#review-verification-and-delivery)).
 
-Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
-threads resume from the runner session store (below), not from a live process. These turns
-share the task's home, so what one leaves there, shell startup files included, reaches the
-next; only git's own per-user configuration in it is ignored. Because what a turn leaves
-can still change what git shows inside the next one, the fresh reviewer's prompt also
-carries the change set as Octomus's own git reads it from the trusted metadata: it ignores
-every `.gitattributes` file, shows every file as text and each submodule entry as the
-commit it points at, and shows control, invisible and line-separator characters and
-non-UTF-8 bytes as `⟦…⟧` escapes. It lists every changed file with its line counts (a list
-over 32 KiB is not reviewed) and embeds the complete diff within 64 KiB, or else the whole
-diffs of the smallest files, naming each file it leaves out; the reviewer reads those in its
-sandbox and treats them as unverified. The account is authoritative over what git in the
-reviewer's sandbox shows, apart from the differences the prompt names as expected.
+Each verification run uses a fresh clone of the reviewed commit; each command gets a fresh
+sandbox sharing one empty verification home (so `npm ci` can feed `npm test`). If the
+sandbox itself fails, the task blocks as `runner_unavailable` without spending a repair
+round (or a baseline check ends interrupted), and any container that may have run is
+recorded as a `sandbox_evidence` event, revoked and force-removed.
 
-Each verification run starts from a fresh clone of exactly the reviewed commit, so nothing
-an agent left beside it can influence the result. Each command gets a fresh sandbox, and
-the commands of one run share a home that starts empty, so `npm ci` can serve a later
-`npm test`. When the sandbox rather than the command fails (the broker refuses or loses
-it, or cannot confirm how it ended), the command has no result: the task is blocked as
-`runner_unavailable` for a retry with no verification record and no repair round spent,
-and a baseline check ends interrupted rather than failed. If the command ran first, the
-broker's record is kept as a `sandbox_evidence` event; where a start may have run it
-without a reply, the broker preserves an incomplete record, revokes the lease,
-force-removes the container and reports an infrastructure failure without inventing an
-exit.
-
-OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
-(`octomus-agent --sandbox-init`) checks its readiness and relays its API as HTTP/2 over
-the container's standard streams, so no network path exists between a sandbox and the
-control plane or broker.
+OpenCode serves loopback HTTP inside the sandbox; `octomus-agent --sandbox-init` checks
+readiness and relays HTTP/2 over stdio, requiring no network path to the control plane.
 
 ## What each session recorded
 

@@ -81,10 +81,7 @@ type Finding struct {
 }
 
 func (v *Finding) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
-func (v Finding) MarshalJSON() ([]byte, error) {
-	type plain Finding
-	return wirejson.Record(plain(v))
-}
+func (v Finding) MarshalJSON() ([]byte, error)     { type plain Finding; return wirejson.Record(plain(v)) }
 
 type Review struct {
 	Completed bool      `json:"completed"`
@@ -303,11 +300,8 @@ type Session struct {
 }
 
 func (s *Session) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, s) }
-func (s Session) MarshalJSON() ([]byte, error) {
-	type plain Session
-	return wirejson.Record(plain(s))
-}
-func (s Session) Clone() Session { return wirejson.Clone(s) }
+func (s Session) MarshalJSON() ([]byte, error)     { type plain Session; return wirejson.Record(plain(s)) }
+func (s Session) Clone() Session                   { return wirejson.Clone(s) }
 
 // RepairProgress accounts for completed repairs after review or verification still requires further work.
 // AwaitingReview prevents a restart between that accounting and the next repair from charging the same repair twice.
@@ -582,11 +576,8 @@ type Control struct {
 }
 
 func (c *Control) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, c) }
-func (c Control) MarshalJSON() ([]byte, error) {
-	type plain Control
-	return wirejson.Record(plain(c))
-}
-func (c Control) Clone() Control { return wirejson.Clone(c) }
+func (c Control) MarshalJSON() ([]byte, error)     { type plain Control; return wirejson.Record(plain(c)) }
+func (c Control) Clone() Control                   { return wirejson.Clone(c) }
 
 type Event struct {
 	ID       int64     `json:"id"`

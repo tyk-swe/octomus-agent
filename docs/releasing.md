@@ -73,16 +73,12 @@ assembles these six release assets:
 - `octomus-sandbox.oci.tar`
 - `release-images.json`, containing source and image identities and both native acceptance receipts
 
-The publisher first creates a **draft** with a hidden input receipt in its description.
-That receipt records the original CI run, tag, source commit, version and SHA-256 of
-all six assets. It exists before any upload. The publisher uploads missing assets,
-checks all six required remote assets against those hashes and only then publishes the
-release. Generated notes are the default; supplied multiline notes replace them.
-Prerelease tags are marked as prereleases and excluded from the installer's
-latest-stable lookup. The two native installer jobs then exercise the public release
-assets and checksums.
-
-The manual workflow has three paths:
+The publisher first creates a **draft** with a hidden input receipt in its description
+recording the original CI run, tag, source commit, version and SHA-256 of all six assets,
+uploads missing assets, verifies all six remote hashes, and only then publishes.
+Generated notes are the default unless multiline notes are supplied. Prerelease tags are
+marked as prereleases and excluded from the installer's latest-stable lookup. Two native
+installer jobs then verify the public release assets and checksums.
 
 | Release state | Supplied notes | Operation |
 | --- | --- | --- |
@@ -90,38 +86,17 @@ The manual workflow has three paths:
 | Draft or published | Nonempty | Update only the description; preserve the hidden input receipt |
 | Draft or published | Empty | Recover original inputs, finish publication if needed, retry promotion and signing |
 
-Notes updates do not build, test, upload assets, publish a draft or promote images, and
-they also work for historical releases whose tags predate the current scripts or state
-schema. Do not remove the hidden input receipt when editing a release description
-manually.
+Notes-only updates skip building, uploading, publishing and image promotion, and work on
+historical releases; preserve the hidden input receipt when editing a description.
 
-An interrupted draft upload downloads the artifacts from the **original** run and
-requires every reconstructed asset to match the receipt; it never uses a later run's
-build. Package, image and acceptance artifacts are retained for 90 days, subject to
-repository retention limits, and once all assets are uploaded retries read the permanent
-release assets instead. A failed upload's incomplete `starter` asset may be removed and
-retried only while the release is a draft; completed assets are never overwritten. A
-changed asset, moved tag, missing receipt or expired original artifact stops recovery:
-recover the original verified inputs or release a new version, never rebuild into an
-existing version. Legacy releases without retained inputs support notes updates but not
-image recovery.
-
-To recover, start a fresh manual dispatch with the same tag and **empty notes**. GitHub's
-**Re-run failed jobs** can reuse an earlier preparation result, which staging safely
-refuses if a draft was created since; a fresh dispatch or **Re-run all jobs** reruns
-preparation and selects the retained-input recovery path.
-
-Releases with the same tag queue rather than cancel one another, and repository CI and
-release CI have separate concurrency groups. GitHub exposes drafts only to identities
-with push access, so the preparation job has contents-write permission even though it
-only reads.
-
-The workflow does not push tags, merge PRs or change repository/package visibility.
-Before enabling live workers, configure release-tag protections so their GitHub identity
-cannot trigger a release by pushing a tag. Restrict changes to release descriptions,
-assets, workflow code and registry tags to trusted release administrators. These
-repository controls are an owner setup action; worker prompts are not an authorization
-boundary.
+Interrupted draft recovery downloads artifacts from the **original** run (retained 90 days)
+or permanent release assets and verifies every hash against the receipt; incomplete draft
+`starter` assets are replaced, while completed assets are never overwritten. A changed
+asset, moved tag, missing receipt or expired artifact stops recovery (never rebuild into an
+existing version). Dispatch the same tag with **empty notes** (or **Re-run all jobs**) to
+recover. Same-tag releases queue in their own concurrency group. The workflow never pushes
+tags, merges PRs or changes visibility; protect release tags, assets, workflows and
+registry tags so worker identities cannot trigger or alter releases.
 
 ## Container images
 

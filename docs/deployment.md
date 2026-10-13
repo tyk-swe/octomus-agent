@@ -227,169 +227,93 @@ this intentionally unsandboxed host remain an operator responsibility.
 
 ## Optional attention webhook
 
-Add `OCTOMUS_NOTIFICATION_WEBHOOK_URL=<operator-supplied HTTPS webhook URL>` to the same
-protected environment file to opt in, then restart the service. In the Docker deployment,
-write the URL to a file under `secrets/` and point `OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE`
-at it in a compose override for the `octomus` service. Never commit the URL. Unset the
-variable to disable notifications; rotating it cancels old pending deliveries rather than
-forwarding them to the new receiver. No dashboard URL editor or inbound integration is
-provided.
+Set `OCTOMUS_NOTIFICATION_WEBHOOK_URL=<HTTPS webhook URL>` in the protected environment
+file and restart (in Docker, write the URL under `secrets/` and set
+`OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE` in a compose override for `octomus`). Unset it to
+disable; rotating it cancels pending deliveries to the old URL. The URL is never saved in
+task/config snapshots, returned via APIs, or passed to child processes.
 
-Notices cover newly blocked/failed or published tasks, failed planning cycles,
-successful completed audits (including idle audits), and error-paused service
-episodes, including those discovered during restart recovery. Historical events
-are not backfilled during setup or upgrades; resaving or archiving a terminal
-record does not create another notice. The receiver accepts an `application/json`
-POST whose body always carries every key below:
+Notices fire on newly blocked/failed or published tasks, failed planning cycles, completed
+audits (including idle), and error-paused service episodes (including at restart recovery).
+Historical events are not backfilled, and resaving/archiving terminal records creates no
+new notice. Each `application/json` POST contains:
 
 | Key | Value |
 | --- | --- |
 | `schema_version` | `1` |
-| `event_id` | 32 lowercase hexadecimal characters, unique per notice and repeated on its retries; deduplicate on it |
-| `occurred_at` | UTC RFC 3339 time with milliseconds, such as `2026-09-26T12:00:00.123Z` |
-| `repository` | The recorded GitHub `OWNER/REPOSITORY`, or an empty string when none is recorded |
-| `cycle_id`, `run_id`, `task_id` | A string or `null`, never absent |
-| `category` | A task's blocked reason, `unknown`, `task_published`, `cycle_failed`, `audit_completed`, or `service_error_paused` |
+| `event_id` | 32 lowercase hex chars, unique per notice and reused on retries |
+| `occurred_at` | UTC RFC 3339 timestamp with milliseconds (`2026-09-26T12:00:00.123Z`) |
+| `repository` | Recorded GitHub `OWNER/REPOSITORY` (from the cycle/task snapshot), or `""` |
+| `cycle_id`, `run_id`, `task_id` | String or `null`, never absent (`run_id` is set only inside a Run once batch; cycle/service notices have `task_id: null`) |
+| `category` | Task blocked reason, `unknown`, `task_published`, `cycle_failed`, `audit_completed`, or `service_error_paused` |
 | `action` | `inspect_task`, `inspect_cycle`, or `inspect_service` |
 
-A task notice names its cycle and its **Run once** batch (`run_id` is `null` outside
-one); its `category` is the task's blocked reason (`budget_exhausted`, `storage_limit`,
-`stale_base`, `remote_conflict`, `publication_uncertain`, `runner_unavailable`,
-`invalid_review`, `verification_failed`, `dependency_blocked`, `invalid_plan`,
-`workspace_invalid`, `retry_limit` or `timeout`), `unknown` when none is known, or
-`task_published`. Cycle notices carry `task_id: null`; a failed audit is `cycle_failed`,
-an interrupted or cancelled cycle sends nothing, and repository attribution comes from the
-cycle's saved snapshot, not the configuration at delivery time. Service notices carry a
-`null` `task_id` and, because pausing clears any Run once batch, in practice `null`
-`cycle_id` and `run_id` too, though receivers should accept strings. For example, a task
-notice and a service notice:
-
-```json
-{"schema_version":1,"event_id":"9f1c2a7be04d4c3a8e6f5b2d1c0a9e8f","occurred_at":"2026-09-26T12:00:00.123Z","repository":"OWNER/REPOSITORY","cycle_id":"3f2b8c1e-5d4a-4f6b-9c7e-1a2b3c4d5e6f","run_id":null,"task_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","category":"verification_failed","action":"inspect_task"}
-```
-
-```json
-{"schema_version":1,"event_id":"0a1b2c3d4e5f60718293a4b5c6d7e8f9","occurred_at":"2026-09-26T12:05:00.456Z","repository":"OWNER/REPOSITORY","cycle_id":null,"run_id":null,"task_id":null,"category":"service_error_paused","action":"inspect_service"}
-```
-
-HTTPS is required except literal loopback HTTP for local receivers. Redirects and
-implicit proxies are disabled. Requests time out after ten seconds and have at most
-five attempts with 30/120/600/1,800-second backoffs. Delivery waits one second after each
-attempt before checking for another notification, so there is no catch-up burst. Events
-expire after 24 hours, and the pending backlog is bounded to 1,000. Retries after
-ambiguous acceptance may duplicate an event. Queue overflow, expiry, invalid setup and
-delivery failures remain visible in Configuration.
-
-The URL is not persisted in task/config snapshots, returned through observation APIs,
-or passed in child-process environments. Sandboxes never see the control plane's
-environment; unsandboxed, same-user processes on the dedicated host can read it, which
-is inside that host's trust boundary. Never provision unrelated secrets here.
+HTTPS is required except literal loopback HTTP. Redirects and proxies are disabled;
+requests time out at 10s with up to 5 attempts (30/120/600/1,800s backoff, 1s spacing,
+24h expiry, 1,000 pending cap). Queue overflow, expiry, setup errors and delivery failures
+appear in Configuration.
 
 ## Private access
 
-The default listener is `127.0.0.1:4200`; the compose file publishes the control plane on
-`127.0.0.1:${OCTOMUS_PORT}` only. Access it over an SSH tunnel:
+The default listener is `127.0.0.1:4200` (`127.0.0.1:${OCTOMUS_PORT}` in Docker). Access
+it via SSH tunnel:
 
 ```bash
 ssh -N -L 4200:127.0.0.1:4200 your-host
 ```
 
-Open `http://127.0.0.1:4200` locally. If you use a reverse proxy instead, provide TLS and
-an operator-controlled access boundary; the bearer token is still required and no CORS
-access is enabled. `/healthz` exposes only liveness and version.
-
-The dashboard starts paused. Configure the repository, explicit role routes,
-verification commands and host-appropriate limits, then run **Check connection** before
-enabling continuous work.
+Open `http://127.0.0.1:4200` locally. Behind a reverse proxy, provide TLS and an operator
+access boundary; the bearer token is still required and CORS is disabled. `/healthz`
+exposes only liveness and version. Configure the repository, routes, verification commands
+and limits while paused, then run **Check connection**.
 
 ## Controls and recovery
 
-- **Pause:** prevents new work. Running discovery and tasks finish their current
-  workflow, including publication; use **Cancel task** to stop a running task.
-- **Check clean baseline:** runs the saved verification commands, without model calls,
-  in a disposable clone of the remote default revision. Requires paused idle operation;
-  config changes, planning/execution starts and publication reconciliation conflict
-  while it runs, and **Cancel** stops it. Results are kept apart from task verification.
-- **Run an audit:** requires paused operation and no active work. It spends planning
-  admissions, records all decisions and creates no tasks (see
-  [architecture](architecture.md#planning)).
-- **Run once:** requires paused operation with no active work. It drains the queued
-  tasks, runs one discovery cycle, drains that cycle's accepted tasks, and returns to
-  paused. Later retries are outside the batch, independent tasks finish after failures
-  while dependents block, and a failed initial drain prevents discovery. The batch
-  survives restart; interrupted planning pauses without replay.
-- **Start continuous:** enables queued execution and subsequent discovery cycles.
-  **Pause** also ends further one-shot dispatch; active workflows still finish.
-- **Retry task:** available for eligible failures after prerequisite checks. It keeps the
-  task contract and workspace but captures the current timeouts, repair/no-progress limits
-  and retry ceiling as a new attempt policy; daily admissions and storage always use the
-  saved live limits. Start continuous operation or run once to execute a paused retry.
-- **Stale context:** use **Supersede and rediscover**. The old task and workspace remain;
-  a durable request seeds the next authorized execution cycle, whose replacements get fresh
-  planning and review and link back to the old task (an obsolete objective records its
-  rejection instead). Archiving the old task first withdraws the request, and dependents
-  need their own rediscovery. **Reconcile publication** reuses the saved output and all
-  publication checks without a model turn.
-- **Restart:** after a crash or a graceful stop (SIGINT, SIGTERM, or a terminal hangup
-  unless it is ignored, as under `nohup`), initialized in-flight tasks are queued for
-  bounded automatic recovery. Work interrupted before its workspace was initialized is
-  blocked (at the stop, or at restart after a crash), as are tasks whose retry budget is
-  exhausted. The last executor can resume, interrupted review work gets a fresh review,
-  and a recorded publication checkpoint reconciles GitHub without another model call;
-  with the retry budget exhausted, such a task is blocked as `publication_uncertain` for
-  **Reconcile publication**. Completed PR delivery stays recorded even if the PR has
-  since been closed.
-- **Model or authentication errors:** correct the host's account setup or explicit routes;
-  there is no hidden fallback and existing task route snapshots do not change. To change a
-  task's route, pause, cancel it, save the new routes, choose **Supersede and rediscover**
-  on the cancelled task and start an execution cycle; cancellation alone requests no
-  replacement.
-- **Repair/verification limits:** unresolved work stays blocked and is never treated as
-  clean; review evidence and the workspace remain available for inspection.
+- **Pause:** stops new dispatch; active discovery and tasks finish their workflow (use
+  **Cancel task** to stop a running task).
+- **Check clean baseline:** runs saved verification commands in a disposable clone of the
+  remote default revision while paused and idle (**Cancel** stops it; results are separate
+  from task verification).
+- **Run an audit:** plans and records decisions while paused and idle without creating
+  tasks ([architecture](architecture.md#planning)).
+- **Run once:** drains queued tasks, runs one discovery cycle, drains its accepted tasks,
+  and pauses. Survives restart; a failed initial drain or interrupted planning pauses
+  without replay.
+- **Start continuous:** enables queued execution and scheduled discovery cycles.
+- **Retry task:** retries eligible failures with the original task contract/workspace and
+  current attempt limits (timeouts, repair/no-progress rounds, retry ceiling).
+- **Stale context:** **Supersede and rediscover** seeds the next execution cycle with a
+  replacement request (withdrawn if archived first). **Reconcile publication** re-runs
+  publication checks on a saved output commit without a model turn.
+- **Restart:** initialized in-flight tasks queue for automatic recovery within the retry
+  budget (uninitialized or retry-exhausted tasks block; exhausted output-checkpoint tasks
+  block as `publication_uncertain` for **Reconcile publication**).
+- **Model/auth or repair limits:** there is no silent route fallback; to change a task's
+  route, pause, cancel, save new routes, and **Supersede and rediscover**. Unresolved
+  repair/verification failures stay blocked with their evidence and workspace intact.
 
-Configuration edits require a paused service with no active task, cycle, baseline check or
-automatic merge check, and repository identity and branch policy cannot change while
-unresolved tasks exist ([configuration](configuration.md#display-safe-values-and-saved-revisions)).
-Repository and model output is never parsed as configuration.
+Configuration edits require paused operation with no active task, cycle, baseline check or
+auto-merge check, and repository/branch/delivery policy cannot change while unresolved
+tasks exist ([configuration](configuration.md#display-safe-values-and-saved-revisions)).
 
 ## Limits and retention
 
-Defaults are visible in the dashboard and [configuration
-example](configuration.example.json): nine discovery agents, two simultaneous tasks, a
-30-minute cycle interval, five accepted tasks per cycle, five owned open PRs, four
-repair rounds, two no-progress rounds, and 150 agent turn admissions per UTC day. Reused
-repair turns count against the daily budget too.
-[Configuration](configuration.md#field-reference) lists every field's accepted range.
+See [configuration.example.json](configuration.example.json) and the
+[field reference](configuration.md#field-reference) for defaults and ranges. Manual audit
+and Run once starts require enough remaining daily admissions for a full planning pass
+(`discovery_agents + 4`; see [architecture](architecture.md#planning) and
+[PR capacity](architecture.md#tasks-and-dependencies)). Workspace limits are pre-turn
+admission checks, and admissions do not cap provider dollar spend.
 
-Manual audit and Run once requests are refused without spending admissions when the
-remaining daily allowance cannot cover a complete planning pass (13 with nine discovery
-agents); see [architecture](architecture.md#planning) and [PR
-capacity](architecture.md#tasks-and-dependencies).
-
-The workspace budget is an **admission limit** checked before launching model work;
-active commands can grow beyond it, so set host disk and process limits for the
-repository. Octomus does not estimate dollar spend, so use account-level spending
-limits.
-
-Retention housekeeping runs every 15 minutes, including while paused or configured only
-for audits. Published task workspaces and completed cycle directories follow the
-configured retention period (14 days by default). Successful planning-role clones are
-disposed once their structured results, session evidence and unchanged-source checks are
-saved; failed or modified clones and unresolved task workspaces stay. **Archive
-task/cycle** resolves retained work and makes its workspace eligible for retention, and
-**Discard workspace** removes an archived workspace; each happens once and repeating it
-is a conflict. Database evidence, identities and lineage remain available. A failed
-cleanup is retried on later passes, and active workspaces and symlink paths are
-excluded. Activity events are capped at the configured count, and raw runner tool
-arguments and output streams are not stored in the event log. Runner transcripts live
-separately (the `octomus-runner` volume in Docker; unsandboxed, Codex's home and
-OpenCode's data directory), so configure their retention yourself.
-
-Logs: `docker compose logs octomus` (Docker) or `journalctl -u octomus-agent` (systemd).
-Known credential patterns, the webhook URL and values from token/secret/password/API-key
-environment variables are redacted from dashboard JSON and summaries; this is not a
-secret-detection guarantee, so keep secrets out of project documentation and task
-prompts.
+Housekeeping runs every 15 minutes in all modes. Published task workspaces and completed
+cycle directories expire after `retain_completed_days` (default 14); clean planning-role
+clones are removed immediately, while failed/modified clones and unresolved tasks stay.
+**Archive task/cycle** marks work eligible for retention and **Discard workspace** removes
+an archived workspace (each runs once; database evidence and lineage remain). Activity
+events are capped at `retain_events` without raw tool streams. Manage runner transcript
+retention (`octomus-runner` volume or host runner directories) separately. Logs (`docker
+compose logs octomus` or `journalctl -u octomus-agent`) and API responses scrub known
+secret patterns, but keep secrets out of repository docs and prompts.
 
 ## Backup and upgrade
 

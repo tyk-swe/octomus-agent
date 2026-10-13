@@ -1,152 +1,107 @@
 # Working on Octomus Agent
 
-Octomus is a single-operator service that discovers repository improvements,
-reviews proposals, executes accepted tasks through Codex or OpenCode, and delivers
-GitHub PRs. It is a Go service (`cmd/octomus-agent`, `internal/`); the SvelteKit
-dashboard builds to static assets embedded in the binary (`web/embed.go`). By
-default every runner turn and verification command runs in a Docker sandbox built
-by the sandbox broker (`docs/sandbox.md`); `--sandbox off` runs them on the host.
+Octomus is a single-operator Go service (`cmd/octomus-agent`, `internal/`) that discovers
+repository improvements, reviews proposals, executes accepted tasks via Codex or OpenCode,
+and delivers GitHub PRs. The SvelteKit dashboard builds to embedded static assets
+(`web/embed.go`). Runner turns and verification commands run in Docker sandboxes via the
+broker (`docs/sandbox.md`) by default, or on the host with `--sandbox off`.
 
-The service uses a Go-owned SQLite schema; v0.1.0 shipped version 7, the oldest
-upgradable baseline. `internal/store/schema.go`'s `releaseMigrations` upgrade it
-forward-only at startup: `Open` checks the version before any schema or journal
-change, writes a verified `state.db.v<N>-backup-<UTC>` beside the database, then
-runs each migration in its own transaction. A fresh database applies `schema.sql`,
-the complete latest DDL, and never replays migrations. Pre-release and newer
-databases are refused untouched; read-only exports refuse an older schema until the
-service upgrades it. Golden databases under `internal/store/testdata`, produced by
-`scripts/golden-state.py`, must keep opening on `main`.
+State uses a Go-owned SQLite schema (v0.1.0 baseline: version 7). At startup `Open`
+checks the version before any schema or journal change, writes a verified
+`state.db.v<N>-backup-<UTC>` beside `state.db`, then applies `releaseMigrations`
+(`internal/store/schema.go`) forward-only, one transaction per step. Fresh databases
+apply `schema.sql` directly without replaying migrations. Pre-release and newer schemas
+are refused untouched; read-only exports refuse older schemas until upgraded. Golden
+databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep opening.
 
 ## Repository map
 
-Packages are listed with their role and entry points; read the package for the rest.
-
-- `cmd/octomus-agent`: CLI flags and the one mode that runs instead of the service
-  (`main.go`), service lifecycle (`service.go`), Docker deployment and the trusted
-  checkout (`deploy.go`), secrets (`secrets.go`) and sandbox wiring (`sandbox.go`).
-- `internal/engine`: scheduler and cycle orchestration, the only layer HTTP reaches
-  saved state through. `engine.go` constructs the App; `scheduler.go`, `planning.go`,
-  `execution.go`, `review.go`, `verification.go`, `recovery.go` and `automerge.go` are
-  the runtime stages; `task_commit.go` and `task_worker.go` own task checkpoints and
-  worker settlement; `controls.go`, `actions.go` and `eligibility.go` own operator
-  actions; `reads.go` and `api_views.go` own the API's queries and response types.
-- `internal/runner`: runner-neutral model discovery and routing (`runner.go`) over the
-  Codex app-server (`codex.go`) and OpenCode HTTP/SSE (`opencode.go`) adapters.
-  `runnertest` is the scripted adapter tests inject through `WithRunnerConnector`.
-- `internal/config`, `internal/model`: policy and durable record types, with the
-  action, event and task-lifecycle contracts in `model/actions.go`, `model/events.go`
-  and `model/task_lifecycle.go`.
-- `internal/store`: SQLite records, transactions and read models. `schema.sql` is the
-  complete fresh DDL and its triggers maintain projections, counts and the attention
-  outbox; `schema.go` and `migrations/` run the backup-then-migrate upgrade, exercised
-  by the `testdata/state-v*.db` goldens; `keys.go` types the record keys and
+- `cmd/octomus-agent`: CLI flags and one-shot modes (`main.go`), service lifecycle
+  (`service.go`), Docker/trusted-checkout setup (`deploy.go`), secrets (`secrets.go`)
+  and sandbox wiring (`sandbox.go`).
+- `internal/engine`: scheduler and cycle orchestration (the only layer HTTP reaches
+  state through). `engine.go` builds `App`; `scheduler.go`, `planning.go`, `execution.go`,
+  `review.go`, `verification.go`, `recovery.go`, `automerge.go` and `automerge_barriers.go`
+  run the stages; `task_commit.go` and `task_worker.go` own task checkpoints and worker
+  settlement; `controls.go`, `actions.go` and `eligibility.go` own operator actions;
+  `reads.go` and `api_views.go` own API queries and response types.
+- `internal/runner`: model discovery and routing (`runner.go`) over Codex app-server
+  (`codex.go`) and OpenCode HTTP/SSE (`opencode.go`); `runnertest` is the scripted test
+  adapter (`WithRunnerConnector`).
+- `internal/config`, `internal/model`: policy and durable record types; action, event and
+  lifecycle contracts in `model/actions.go`, `model/events.go` and `model/task_lifecycle.go`.
+- `internal/store`: SQLite records, transactions and read models (`pages.go`, `queries.go`).
+  `schema.sql` is the fresh DDL with projection/count/outbox triggers; `schema.go` and
+  `migrations/` upgrade `testdata/state-v*.db` goldens; `keys.go` types record keys;
   `task_lifecycle.go` guards task transitions.
 - `internal/wirejson`: strict typed JSON boundaries for saved records and API requests.
-- `internal/sandbox`: where every untrusted child starts (`Backend`: `Host` for
-  `--sandbox off`, `Remote` for the broker), plus the in-sandbox helper and containment
-  probe. `wire` is the broker wire contract; `broker` is `--sandboxd`, whose golden
-  container specs are `broker/testdata/spec-*.json`.
-- `internal/egress`: the `--egress` allowlisting CONNECT gateway and its lease and
-  collector contract with the broker.
-- `internal/redact`: the one secret scrubber and display bound every package uses.
-- `internal/notifications`: opt-in webhook delivery. `internal/export`: read-only
-  exports (`RunEvidenceV1`, usage report). `internal/schemas`: structured-output schemas.
-- `internal/httpapi`: authenticated controls and embedded dashboard serving;
-  `routes.go` is the route table.
-- `internal/git`: orchestrator git and GitHub plumbing, shared-checkout coordination
-  (`checkout.go`), publication, and the guarded maintenance merge. `internal/process`:
-  process-group children and bounded capture. `internal/workspace`: managed-directory
-  safety.
-- `internal/testutil`: shared test helpers, including the POSIX-shell `git`/`gh`
-  dispatcher and the sandbox tests' unix-socket servers.
-- `web`: `embed.go` embeds the build. `src/routes/+page.svelte` is the dashboard shell;
-  `src/lib` holds the views and their state owners (`stateSession.ts`, `resource.ts`,
-  `configurationDraft.ts`). `src/lib/types.ts` is generated by `web/api_contract_test.go`;
-  regenerate it with `OCTOMUS_UPDATE_API_CONTRACT=1 go test ./web -run TestAPIContractGenerated`.
-  `web/types_contract_test.go` checks vocabularies and limits.
-- `web/tests`: Playwright browser tests against the synthetic service `tests/serve_ui.py`
-  starts, with shared fixtures in `synthetic.ts`. The `mobile` project reruns only specs
-  tagged `@responsive`; the pure-logic specs listed in `web/playwright.unit.config.ts`
-  need no page; `launch-assets.spec.ts` regenerates `docs/dashboard.png` only under
-  `npm run launch:assets`.
-- `tests`: `e2e.py` holds the service scenarios over `harness.py` and `fixtures/`
-  (deterministic Codex, OpenCode, GitHub and provider peers with real local Git; an
-  unknown scenario name lists them); `distribution.py` checks the shipped executable;
-  `e2e_sandbox.py` runs the compose stack with images from `tests/docker/`;
-  `production_images.py` and `productionimage/` accept the retained release images;
-  `test_*.py` are Python unit tests for the harness, setup and release tooling.
-- `scripts`: `package.sh` archives exactly the files in `release-files.txt`;
-  `release.py` and `release-images.py` stage and verify releases; `golden-state.py`
-  generates golden state databases.
-- `deploy`: Docker images, compose files, `setup.sh` and `env.example`, plus the
-  unsandboxed systemd unit. `install.sh` is the release installer. `VERSION` is the one
-  version. `.github/workflows`: `ci`, `release`, `production-images` and `weekly`.
+- `internal/sandbox`: untrusted child launcher (`Host` for `--sandbox off`, `Remote` for
+  the broker), in-sandbox helper and containment probe. `wire` is the broker protocol;
+  `broker` is `--sandboxd` with golden specs in `broker/testdata/spec-*.json`.
+- `internal/egress`: `--egress` allowlisting CONNECT gateway, leases and collector.
+- `internal/redact`: shared secret scrubber and display bounding.
+- `internal/notifications`: opt-in webhook delivery. `internal/export`: read-only exports
+  (`RunEvidenceV1`, usage report). `internal/schemas`: structured-output schemas.
+- `internal/httpapi`: authenticated controls and embedded dashboard (`routes.go`).
+- `internal/git`: orchestrator git/GitHub plumbing, shared-checkout gate (`checkout.go`),
+  publication and guarded maintenance merge. `internal/process`: process-group children
+  and bounded capture. `internal/workspace`: managed-directory safety.
+- `internal/testutil`: shared test helpers (`git`/`gh` dispatcher and unix-socket servers).
+- `web`: `embed.go` embeds the build; `src/routes/+page.svelte` is the shell; `src/lib`
+  holds views and state owners (`stateSession.ts`, `resource.ts`, `configurationDraft.ts`).
+  Regenerate `src/lib/types.ts` with
+  `OCTOMUS_UPDATE_API_CONTRACT=1 go test ./web -run TestAPIContractGenerated`.
+- `web/tests`: Playwright specs against `tests/serve_ui.py` (`synthetic.ts`). `mobile`
+  reruns `@responsive` specs; `web/playwright.unit.config.ts` lists pure-logic specs;
+  `launch-assets.spec.ts` updates `docs/dashboard.png` via `npm run launch:assets`.
+- `tests`: `e2e.py` service scenarios over `harness.py` and `fixtures/`; `distribution.py`
+  binary smoke test; `e2e_sandbox.py` compose stack tests; `production_images.py` and
+  `productionimage/` release-image acceptance; `test_*.py` tooling unit tests.
+- `scripts`: `package.sh` (`release-files.txt`), `release.py`, `release-images.py` and
+  `golden-state.py`. `deploy`: Dockerfiles, compose files, `setup.sh`, `env.example` and
+  `octomus-agent.service`. `install.sh`: release installer. `VERSION`: single version file.
 - `docs`: `architecture.md` is the operating contract; each other guide owns one topic.
 
 ## Build and verify
 
-Use Go (per `go.mod`), Node 22.12+, npm, Python 3, Git and a C compiler for the
-race detector. Install dashboard dependencies with `npm ci --prefix web` and browser
-test prerequisites with `npx --prefix web playwright install --with-deps chromium`.
+Requires Go (per `go.mod`), Node 22.12+, npm, Python 3, Git and a C compiler for `-race`.
+Setup: `npm ci --prefix web` and `npx --prefix web playwright install --with-deps chromium`.
 
-- `make check`: gofmt/`go vet`, Svelte/TypeScript and Prettier checks.
-- `make fmt`: rewrites what `make check`'s formatting checks verify (gofmt, then
-  Prettier).
-- `make test`: the `-race` Go suite, then `make test-integration`, then
-  `make test-browser`, against the production binary and dashboard build. Ordering
-  holds under parallel Make; CI runs the service and browser stages separately.
-- `make build`: production binary (`bin/octomus-agent`) and dashboard.
-- `make test-go`: the regular Go suite, the quick local loop. `make test-go-race`: the
-  same under the race detector. Both run with `-shuffle=on` (a failure prints its seed)
-  and accept `GO_TEST_PACKAGES` (default `./...`), for example
-  `make test-go GO_TEST_PACKAGES=./internal/engine`. Reproduce a seed with
-  `GO_TEST_FLAGS='-timeout 30m -shuffle=12345'`.
-- `make test-ui-logic` / `npm run test:unit --prefix web`: the pure dashboard logic
-  specs, needing only npm dependencies. They also run in the full browser suite.
-- `make test-integration`: `make test-python` (the Python unit tests for harness, setup
-  and release tooling), then `tests/distribution.py`, then `tests/e2e.py`; it accepts
-  `SCENARIOS` names. `make test-browser` runs the Playwright suite and accepts
-  `PLAYWRIGHT_ARGS`.
-- `make test-sandbox` (opt-in, needs Docker Engine 28+): the broker against the real
-  daemon (`OCTOMUS_DOCKER_TEST=1`) and `tests/e2e_sandbox.py` against the compose stack.
-- `make test-production-images` (opt-in): the real pinned clients in the retained
-  `dist/images` OCI archives; needs Skopeo, OpenSSL and a disposable Docker Engine 28+
-  host.
-- `make audit` (govulncheck and `npm audit`; needs module downloads) and `make package`
-  (release archive and `SHA256SUMS` in `dist/`) also run in CI.
-- Focused integration: `make build`, then
-  `OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py [SCENARIO...]`.
-  These tests use fixtures, not live accounts or model calls.
+- `make check`: `gofmt`, `go vet`, Svelte/TypeScript and Prettier checks.
+- `make fmt`: rewrites formatting verified by `make check` (`gofmt` and Prettier).
+- `make build`: builds the dashboard and `bin/octomus-agent`.
+- `make test`: `test-go-race`, `test-integration`, then `test-browser`.
+- `make test-go` / `make test-go-race`: Go suite (without/with `-race`), `-shuffle=on`.
+  Filter with `GO_TEST_PACKAGES=./internal/engine` or set `GO_TEST_FLAGS='-timeout 30m -shuffle=N'`.
+- `make test-ui-logic` (`npm run test:unit --prefix web`): pure dashboard logic specs.
+- `make test-integration`: `make test-python`, `tests/distribution.py`, then `tests/e2e.py`
+  (accepts `SCENARIOS`). Focused run: `make build && OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py [SCENARIO...]`.
+- `make test-browser`: Playwright suite (accepts `PLAYWRIGHT_ARGS`).
+- `make test-sandbox` (opt-in, Docker 28+): `OCTOMUS_DOCKER_TEST=1` broker tests and `tests/e2e_sandbox.py`.
+- `make test-production-images` (opt-in, disposable Docker 28+ host, Skopeo, OpenSSL):
+  tests pinned clients in `dist/images` OCI archives.
+- `make audit` (govulncheck + `npm audit`) and `make package` (archives + `SHA256SUMS` in `dist/`).
 
-Run relevant behavior tests while editing and the full checks before delivery.
-Keep Go and dashboard types aligned (regenerate `types.ts` as above). Keep records
-in every checked-in golden database loadable when adding fields: a pointer, a
-`wire:"default"` tag, or a migration. Pinned real-client contracts (`internal/runner`)
-and the scale check (`internal/store`, `OCTOMUS_SCALE_TEST=1`) skip unless their
-environment is provided.
+Keep Go and `types.ts` aligned. Keep checked-in golden databases loadable when adding
+record fields (use a pointer, `wire:"default"`, or a migration). Pinned client contracts
+(`internal/runner`) and `OCTOMUS_SCALE_TEST=1` (`internal/store`) skip unless enabled.
 
 ## Conventions and boundaries
 
-- Name branches created by Octomus `tyk/{branch-name}`. Never use `codex/`.
-- Make cohesive changes with meaningful verification. Preserve existing features,
-  full-diff review, fresh reviewer threads and persistent per-task repair threads.
+- Name Octomus branches `tyk/{branch-name}`, never `codex/`.
+- Make cohesive changes with behavior tests. Preserve existing features, full-diff review,
+  fresh reviewer threads and persistent per-task repair threads.
 - Never silently substitute model/effort routes or weaken verification to publish.
-- Error strings follow one convention: text an operator may read (API responses,
-  task and cycle errors, CLI diagnostics) is a capitalised sentence fragment;
-  errors that only wrap an internal mechanism stay lowercase Go style.
-- The service delivers PRs; it does not merge, deploy or migrate production systems.
-  The one exception is the opt-in maintenance delivery mode: when an operator enables it,
-  the orchestrator may squash-merge a small, clean-reviewed, verified maintenance PR only
-  after fresh GitHub checks, review state and protections allow it. Workers must not push,
-  publish or merge; the orchestrator owns publication and any merge.
-- Every untrusted child (runner, verification command, probe) starts through
-  `internal/sandbox`; never add another path. Orchestrator git on a work tree goes
-  through `gitops.WorkGit` and trusted `repo.git`. A change to a golden container
-  spec changes the isolation boundary; review it as one.
-- Do not edit `.octomus/`, credentials, account configuration, or other workspaces.
-  Fixtures and generated build artifacts are not live evidence.
-- Keep secrets, raw runner transcripts and private billing screenshots out of Git.
-  Record redacted observations and evidence references instead.
-- Do not claim live validation without real evidence. Live operation needs
-  the owner's dedicated VM and bot; the development workspace is not that VM.
+- Operator-facing errors (API, task/cycle errors, CLI diagnostics) are capitalised
+  sentence fragments; internal wrapper errors stay lowercase Go style.
+- The service delivers PRs; it never merges, deploys or migrates production systems,
+  except in opt-in maintenance mode where the orchestrator may squash-merge a small,
+  clean-reviewed, verified maintenance PR once fresh GitHub checks, reviews and
+  protections allow it. Workers never push, publish or merge.
+- Launch every untrusted child (runner, verification command, probe) through
+  `internal/sandbox`. Run orchestrator work-tree git via `gitops.WorkGit` and trusted
+  `repo.git`. Treat `broker/testdata/spec-*.json` changes as isolation boundary changes.
+- Do not edit `.octomus/`, credentials, account config or other workspaces. Keep secrets,
+  raw transcripts and private billing screenshots out of Git.
+- Do not claim live validation without real evidence from the owner's dedicated VM/bot.
 - Defer LICENSE/NOTICE ownership edits until the owner supplies cleared facts.

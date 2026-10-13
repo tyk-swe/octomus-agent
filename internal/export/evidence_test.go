@@ -548,37 +548,59 @@ func TestRedactedValue(t *testing.T) {
 	}
 }
 
-func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
-	delivered := task("cycle-a", "p1")
+func deliveredMaintenanceTask(cycleID, proposalID string, number uint64) (model.Task, model.PullRequest, *model.AutoMergeState) {
+	delivered := task(cycleID, proposalID)
 	delivered.Status = model.StatusPublished
 	delivered.Config.DeliveryMode = config.DeliveryModeMaintenance
 	output := "out00001"
 	delivered.OutputCommit = &output
-	number3 := uint64(3)
-	delivered.PRNumber = &number3
-	url := "https://github.com/fixture/project/pull/3"
+	delivered.PRNumber = &number
+	url := fmt.Sprintf("https://github.com/fixture/project/pull/%d", number)
 	delivered.PRURL = &url
-	delivered.Reviews = []model.ReviewRound{review("out00001", true, "Reviewed the complete change set")}
-	delivered.Verification = []model.Verification{check("make check", true, "out00001")}
+	delivered.Reviews = []model.ReviewRound{review(output, true, "Reviewed the complete change set")}
+	delivered.Verification = []model.Verification{check("make check", true, output)}
+	pr := model.PullRequest{
+		Number: number, Title: "A", Branch: delivered.Branch, Head: output,
+		Base: "main", URL: url, State: "open", Owned: true,
+		HeadRepository: "fixture/project", BaseRepository: "fixture/project",
+	}
+	merge := &model.AutoMergeState{
+		TaskID: delivered.ID, Head: output, ComparisonBase: delivered.ComparisonBase,
+		HeadBranch: delivered.Branch, BaseBranch: delivered.Config.DefaultBranch,
+		PolicyRevision: "policy", Authorized: true, Status: model.AutoMergeWaiting,
+		Reason: "Waiting for checks", ObservedAt: model.Now(),
+	}
+	return delivered, pr, merge
+}
+
+func publishDeliveredTask(t *testing.T, s *store.Store, delivered model.Task, pr model.PullRequest, merge *model.AutoMergeState) model.Task {
+	t.Helper()
+	checkpoint := delivered.Clone()
+	checkpoint.Status = model.StatusPublishing
+	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
+	published := delivered.Clone()
+	published.Status = model.StatusPublished
+	committed, err := s.CompletePublication(savedTaskForArchive(t, s, published.ID), published, pr, merge)
+	must(t, err)
+	return committed
+}
+
+func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
+	delivered, pr, merge := deliveredMaintenanceTask("cycle-a", "p1", 3)
 	c := cycle("cycle-a", "execution",
 		[]model.Proposal{proposal("p1", "accepted")},
 		[]any{savedBatch(savedEntry("p1", "accepted", "a accepts")), savedBatch(savedEntry("p1", "accepted", "b accepts"))},
 		[]model.Session{reviewerSession("adversary-a", model.SessionCompleted), reviewerSession("adversary-b", model.SessionCompleted)})
 	s, dbPath := fixture(t, []model.Cycle{c}, []model.Task{delivered})
 
-	merge := &model.AutoMergeState{
-		TaskID: delivered.ID, Head: "out00001", ComparisonBase: "source00",
-		HeadBranch: delivered.Branch, BaseBranch: delivered.Config.DefaultBranch,
-		PolicyRevision: "policy", Authorized: true, Status: model.AutoMergeMerged,
-		Reason: "Squash merged by Octomus", ObservedAt: model.Now(),
-		ResultSource: new("confirmed"), MergeCommit: new("merge01"),
-	}
+	merge.Status = model.AutoMergeMerged
+	merge.Reason = "Squash merged by Octomus"
+	merge.ResultSource = new("confirmed")
+	merge.MergeCommit = new("merge01")
+	pr.State = "merged"
 	observation := model.PRObservation{
-		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: &output,
-		PR: model.PullRequest{Number: 3, URL: url, State: "merged", Owned: true,
-			Head: "out00001", Branch: delivered.Branch, Base: "main",
-			HeadRepository: "fixture/project", BaseRepository: "fixture/project"},
-		AutoMerge: merge,
+		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: delivered.OutputCommit,
+		PR: pr, AutoMerge: merge,
 	}
 	must(t, store.Put(s, store.PRs.Key("fixture/project:3"), observation))
 	value := exported(t, s, "cycle-a")
@@ -590,9 +612,7 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 		t.Fatalf("exported merge evidence = %v", evidence)
 	}
 	full, err := Run(dbPath, "cycle-a")
-	if err != nil {
-		t.Fatal(err)
-	}
+	must(t, err)
 	if get(findProposal(t, full, "p1"), "linked_tasks", 0, "auto_merge", "status") != "merged" {
 		t.Fatal("the read-only run export lost the saved merge evidence")
 	}
@@ -625,36 +645,10 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 }
 
 func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
-	delivered := task("cycle-a", "p1")
-	delivered.Status = model.StatusPublished
-	delivered.Config.DeliveryMode = config.DeliveryModeMaintenance
-	output := "out00001"
-	delivered.OutputCommit = &output
-	number := uint64(9)
-	delivered.PRNumber = &number
-	url := "https://github.com/fixture/project/pull/9"
-	delivered.PRURL = &url
-	delivered.Reviews = []model.ReviewRound{review("out00001", true, "Reviewed the complete change set")}
-	delivered.Verification = []model.Verification{check("make check", true, "out00001")}
+	delivered, pr, merge := deliveredMaintenanceTask("cycle-a", "p1", 9)
 	c := cycle("cycle-a", "execution", []model.Proposal{proposal("p1", "accepted")}, nil, nil)
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{delivered})
-
-	pr := model.PullRequest{Number: 9, Title: "A", Branch: delivered.Branch, Head: output,
-		Base: "main", URL: url, State: "open", Owned: true,
-		HeadRepository: "fixture/project", BaseRepository: "fixture/project"}
-	merge := &model.AutoMergeState{
-		TaskID: delivered.ID, Head: output, ComparisonBase: delivered.ComparisonBase,
-		HeadBranch: delivered.Branch, BaseBranch: "main", PolicyRevision: "policy",
-		Authorized: true, Status: model.AutoMergeWaiting, Reason: "Waiting for checks",
-		ObservedAt: model.Now(),
-	}
-	checkpoint := delivered.Clone()
-	checkpoint.Status = model.StatusPublishing
-	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
-	published := delivered.Clone()
-	published.Status = model.StatusPublished
-	published, err := s.CompletePublication(savedTaskForArchive(t, s, published.ID), published, pr, merge)
-	must(t, err)
+	published := publishDeliveredTask(t, s, delivered, pr, merge)
 
 	intent := merge.Clone()
 	intent.Status = model.AutoMergeMerging
@@ -682,7 +676,7 @@ func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
 	}
 	if evidence["status"] != "merged" || evidence["result_source"] != "confirmed" ||
 		evidence["merge_commit"] != commit || evidence["reason"] != "Squash merged by Octomus" ||
-		evidence["head"] != output {
+		evidence["head"] != *delivered.OutputCommit {
 		t.Fatalf("exported terminal evidence = %v", evidence)
 	}
 	counts, err := s.MergeCounts("fixture/project")
@@ -694,59 +688,27 @@ func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
 
 func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	t.Parallel()
-	delivered := task("cycle-a", "p1")
-	delivered.Status = model.StatusPublished
-	delivered.Config.DeliveryMode = config.DeliveryModeMaintenance
-	output := "out00001"
-	delivered.OutputCommit = &output
-	number5 := uint64(5)
-	delivered.PRNumber = &number5
-	url := "https://github.com/fixture/project/pull/5"
-	delivered.PRURL = &url
-	delivered.Reviews = []model.ReviewRound{review("out00001", true, "Reviewed the complete change set")}
-	delivered.Verification = []model.Verification{check("make check", true, "out00001")}
+	delivered, pr, mergeA := deliveredMaintenanceTask("cycle-a", "p1", 5)
 	c := cycle("cycle-a", "execution",
 		[]model.Proposal{proposal("p1", "accepted")},
 		[]any{savedBatch(savedEntry("p1", "accepted", "a accepts")), savedBatch(savedEntry("p1", "accepted", "b accepts"))},
 		[]model.Session{reviewerSession("adversary-a", model.SessionCompleted), reviewerSession("adversary-b", model.SessionCompleted)})
 	s, _ := fixture(t, []model.Cycle{c}, []model.Task{delivered})
-
-	pr := model.PullRequest{Number: 5, Title: "A", Branch: delivered.Branch, Head: "out00001",
-		Base: "main", URL: url, State: "open", Owned: true,
-		HeadRepository: "fixture/project", BaseRepository: "fixture/project"}
-	mergeA := &model.AutoMergeState{
-		TaskID: delivered.ID, Head: "out00001", ComparisonBase: "source00",
-		HeadBranch: delivered.Branch, BaseBranch: "main", PolicyRevision: "policy",
-		Authorized: true, Status: model.AutoMergeWaiting, Reason: "Waiting for checks",
-		ObservedAt: model.Now(),
-	}
-	checkpoint := delivered.Clone()
-	checkpoint.Status = model.StatusPublishing
-	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
-	_, err := s.CompletePublication(savedTaskForArchive(t, s, delivered.ID), func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA)
-	must(t, err)
+	publishDeliveredTask(t, s, delivered, pr, mergeA)
 	applied, err := s.SettleMerge("fixture/project", 5, *mergeA, model.AutoMergeManual, "The diff touches a sensitive path", "", nil, true)
 	if err != nil || !applied {
 		t.Fatalf("manual settle = %v, %v", applied, err)
 	}
 
-	superseding := task("cycle-b", "p9")
-	superseding.Config.DeliveryMode = config.DeliveryModeMaintenance
+	superseding, prB, mergeB := deliveredMaintenanceTask("cycle-b", "p9", 5)
 	outB := "out00002"
 	superseding.OutputCommit = &outB
-	superseding.PRNumber = &number5
-	mergeB := &model.AutoMergeState{
-		TaskID: superseding.ID, Head: "out00002", ComparisonBase: "source01",
-		HeadBranch: superseding.Branch, BaseBranch: "main", PolicyRevision: "policy-b",
-		Authorized: true, Status: model.AutoMergeWaiting, Reason: "Waiting for checks",
-		ObservedAt: model.Now(),
-	}
 	superseding.ComparisonBase = "source01"
-	prB := pr
-	prB.Head = "out00002"
-	must(t, store.Put(s, store.Tasks.Key(superseding.ID), func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublishing; return p }()))
-	_, err = s.CompletePublication(savedTaskForArchive(t, s, superseding.ID), func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB)
-	must(t, err)
+	prB.Head = outB
+	mergeB.Head = outB
+	mergeB.ComparisonBase = "source01"
+	mergeB.PolicyRevision = "policy-b"
+	publishDeliveredTask(t, s, superseding, prB, mergeB)
 
 	value := exported(t, s, "cycle-a")
 	evidence := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge")
@@ -795,7 +757,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	current.Reason = "Squash merged by Octomus"
 	current.ResultSource = new("confirmed")
 	observation := model.PRObservation{
-		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: &output,
+		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: delivered.OutputCommit,
 		PR: pr, AutoMerge: &current,
 	}
 	must(t, store.Put(s, store.PRs.Key("fixture/project:5"), observation))

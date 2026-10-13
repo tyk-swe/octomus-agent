@@ -41,48 +41,19 @@ another model.
 
 ## Verification commands
 
-Use meaningful checks for the target project, one shell command per line. At least one
-command is required for execution. An audit can run without verification commands.
+Configure one shell command per line (at least one for execution; optional for audits). Every command must pass on the reviewed revision before publication. Each verification run uses a fresh clone of the reviewed commit without earlier session caches or ignored files, so commands must install their own dependencies (e.g. `npm ci && npm test`). In Docker each command runs in a fresh sandbox sharing one empty verification home and reaching only `OCTOMUS_EGRESS_BUILD_HOSTS`; unsandboxed commands run as the service user.
 
-Every configured command must pass on the reviewed revision before publication. A failed
-check stays visible and can block delivery. Each verification run gets a fresh clone of
-exactly the reviewed commit: dependencies, caches and build output an agent left in the
-task work tree are not there, so commands must install what they need (for example
-`npm ci && npm test`), as the clean-baseline check always required. In the Docker deployment each command runs in
-a fresh sandbox with the sandbox image's tools, the task's work tree and a home shared only
-by the commands of one verification run; it reaches only the hosts in
-`OCTOMUS_EGRESS_BUILD_HOSTS`. Unsandboxed, commands run with the service user's permissions
-on the dedicated host.
+Commands must leave the worktree clean and HEAD unchanged; modified tracked files, moved HEAD or non-ignored untracked artifacts (e.g. coverage reports or caches not in `.gitignore`) fail verification and block the task (or fail a clean-baseline check).
 
-A command must leave the workspace as it found it. One that changes tracked files, moves
-HEAD (by committing, for example), or leaves a new file that the repository does not
-git-ignore (a coverage report or a cache, for example) fails verification and blocks the
-task, so ignore such artifacts in the repository's `.gitignore`. Such a command fails a
-clean-baseline check the same way.
-
-The optional **Check clean baseline** runs the saved commands against the remote default
-revision before model work. It does not verify any later task's changes.
+The optional **Check clean baseline** runs saved commands against the remote default revision without model calls and does not count as task verification.
 
 ## Host settings
 
-Sandbox mode, sandbox limits, the sandbox image and runtime, the egress allowlists and the
-pinned repository are deployment settings in `.env`, not saved policy: the dashboard shows
-them read-only and no API call changes them. [env.example](../deploy/docker/env.example)
-documents each one; the [sandbox guide](sandbox.md) explains them.
+Sandbox mode, limits, image, runtime, egress allowlists and the pinned repository are host-owned `.env` settings shown read-only in the dashboard. See [env.example](../deploy/docker/env.example) and the [sandbox guide](sandbox.md).
 
 ## Operating limits
 
-The [configuration example](configuration.example.json) contains every saved policy field
-and its shipped default. These are operating limits, not a recommended starting size for
-every repository. The [field reference](#field-reference) lists what each field accepts.
-
-For a conservative first execution, use one concurrent task, one task per cycle, and a
-21,600-second interval. This is a starting profile, not a measured performance claim.
-With nine discovery agents, a complete planning pass normally needs 13 session admissions.
-
-Session admissions do not cap provider dollar spend. Workspace limits are checked before
-launching model work; active commands can grow beyond them. See [usage and costs](cost.md)
-and [deployment](deployment.md) for budgeting, host limits, and retention behavior.
+See [configuration.example.json](configuration.example.json) for defaults and the [field reference](#field-reference) for accepted ranges. For a conservative start, use `execution_concurrency: 1`, `max_tasks_per_cycle: 1` and `cycle_interval_seconds: 21600`. Nine discovery agents require 13 session admissions per planning pass. Admissions do not cap dollar spend, and workspace limits are pre-launch checks; see [cost](cost.md) and [deployment](deployment.md).
 
 ## Field reference
 

@@ -6,27 +6,14 @@ privately using [SECURITY.md](SECURITY.md).
 
 ## Before you change code
 
-Read [AGENTS.md](AGENTS.md) for the repository map, security boundaries, branch naming,
-build and verification commands, and generated-file rules. Read the relevant design
-reference before changing a contract:
-
-- [Architecture](docs/architecture.md) for runtime and state behavior.
-- [Sandbox](docs/sandbox.md) and [threat model](docs/threat-model.md) for isolation.
-- [Run evidence](docs/run-evidence.md) for exported evidence.
-- [Releasing](docs/releasing.md) for versioning and package contents.
-
-The dashboard is embedded in the Go binary, so build its assets before Go analysis, and
-run focused package checks while editing. The command inventory and test stages live in
-[AGENTS.md](AGENTS.md#build-and-verify) alone.
+Read [AGENTS.md](AGENTS.md) for the repository map, [build and verify commands](AGENTS.md#build-and-verify),
+generated-file rules and boundaries. Read the owning design reference before changing a contract:
+[Architecture](docs/architecture.md), [Sandbox](docs/sandbox.md), [Threat model](docs/threat-model.md),
+[Run evidence](docs/run-evidence.md) or [Releasing](docs/releasing.md).
 
 ## Pull requests
 
-Explain the concrete problem, resulting behavior, validation and relevant limitations.
-Keep changes cohesive, preserve full-diff review and exact model routes, and add behavior
-tests for meaningful changes. Keep Go and dashboard types, saved records and documentation
-aligned; database changes must preserve the checked-in golden states.
-
-Workers must not push or publish; the orchestrator owns publication. Do not merge, deploy
-or migrate production systems, edit live `.octomus/` state, or commit credentials, raw
-transcripts or private billing images. Octomus-created branches use `tyk/`. Defer
-LICENSE/NOTICE ownership changes until the owner supplies cleared facts.
+Explain the concrete problem, resulting behavior, validation and limitations. Keep changes
+cohesive, add behavior tests, and keep Go types, `web/src/lib/types.ts`, saved records,
+checked-in golden databases and documentation aligned. Follow the branch naming,
+publication, sandbox and secret-handling rules in [AGENTS.md](AGENTS.md).

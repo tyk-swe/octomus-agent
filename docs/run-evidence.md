@@ -52,44 +52,20 @@ is an explicit error, never an empty successful export.
 
 ### Exporting from a copy of saved state
 
-Export from a snapshot the owner explicitly authorized, never from a live database and
-never from an archive you merely found. Keep the authorized original untouched, work on
-a disposable copy in a private directory outside Git and any served root, and record the
-capture time, source identity and snapshot checksum privately.
-
-A plain file copy of a live SQLite database can lose recent writes still in the
-write-ahead log, so use SQLite's backup API as in this owner-operated example.
+Export from an owner-authorized snapshot in a private directory outside Git, never from a live database. Because a plain file copy can miss WAL writes, use SQLite's backup API:
 
 ```sh
-(
-set -eu
-umask 077
-OWNER_STATE_DB=/absolute/owner-selected/source/state.db
-PRIVATE_RUN=/absolute/private/new-run-review
-mkdir -m 700 "$PRIVATE_RUN"
-mkdir -m 700 "$PRIVATE_RUN/snapshot"
-python3 - "$OWNER_STATE_DB" "$PRIVATE_RUN/snapshot/state.db" <<'PY'
+python3 - /absolute/owner-selected/source/state.db /absolute/private/snapshot/state.db <<'PY'
 from contextlib import closing
 from pathlib import Path
-import sqlite3
-import sys
-
-source = Path(sys.argv[1]).resolve(strict=True)
-destination = Path(sys.argv[2])
-# Refuse to overwrite an existing file, including the source.
-with destination.open("xb"):
-    pass
-with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
-    with closing(sqlite3.connect(destination)) as snapshot:
-        reader.backup(snapshot)
-        if snapshot.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-            raise RuntimeError("Snapshot integrity check failed; do not use it")
+import sqlite3, sys
+src, dst = Path(sys.argv[1]).resolve(strict=True), Path(sys.argv[2])
+with dst.open("xb"): pass
+with closing(sqlite3.connect(src.as_uri() + "?mode=ro", uri=True)) as r, closing(sqlite3.connect(dst)) as w:
+    r.backup(w)
+    assert w.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
 PY
-)
 ```
-
-Use the destination only after successful completion; discard an incomplete destination
-after an error and retry with a new private filename.
 
 ## Consistency and joins
 

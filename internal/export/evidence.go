@@ -609,55 +609,49 @@ func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	}
 }
 
-// runRecords reads one cycle and its tasks from the snapshot c. A missing cycle
-// is a nil cycle, not an error.
-func runRecords(c *store.Snapshot, cycleID string) (*model.Cycle, []model.Task, error) {
+// assembleAt reads one cycle, its tasks and their maintenance merge evidence
+// from the snapshot c. A missing cycle returns a nil *RunEvidenceV1.
+func assembleAt(c *store.Snapshot, cycleID string) (*RunEvidenceV1, error) {
 	cycle, err := c.Cycle(cycleID)
 	if err != nil || cycle == nil {
-		return nil, nil, err
+		return nil, err
 	}
 	tasks, err := c.TasksForCycle(cycleID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return cycle, tasks, nil
+	merges, err := maintenanceEvidenceAt(c, tasks)
+	if err != nil {
+		return nil, err
+	}
+	return new(withMaintenanceEvidence(assemble(*cycle, tasks), merges)), nil
 }
 
 // RunEvidence exports one cycle's run evidence from the live store, or nil
 // when no such cycle is saved.
 func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
-	var cycle *model.Cycle
-	var tasks []model.Task
-	var merges map[string]*model.AutoMergeState
+	var assembled *RunEvidenceV1
 	err := s.Snapshot(func(c *store.Snapshot) (err error) {
-		cycle, tasks, err = runRecords(c, cycleID)
-		if err != nil {
-			return err
-		}
-		merges, err = maintenanceEvidenceAt(c, tasks)
+		assembled, err = assembleAt(c, cycleID)
 		return err
 	})
-	if err != nil || cycle == nil {
+	if err != nil || assembled == nil {
 		return nil, err
 	}
-	return redacted(withMaintenanceEvidence(assemble(*cycle, tasks), merges))
+	return redacted(*assembled)
 }
 
 // Run exports one cycle's run evidence from the state database at stateDB,
 // opened read-only. A missing cycle is an error, never an empty export.
 func Run(stateDB, cycleID string) (map[string]any, error) {
 	return export(stateDB, "run evidence export", func(c *store.Snapshot) (RunEvidenceV1, error) {
-		cycle, tasks, err := runRecords(c, cycleID)
+		assembled, err := assembleAt(c, cycleID)
 		if err != nil {
 			return RunEvidenceV1{}, err
 		}
-		if cycle == nil {
+		if assembled == nil {
 			return RunEvidenceV1{}, fmt.Errorf("No saved cycle %s in this state database", cycleID)
 		}
-		merges, err := maintenanceEvidenceAt(c, tasks)
-		if err != nil {
-			return RunEvidenceV1{}, err
-		}
-		return withMaintenanceEvidence(assemble(*cycle, tasks), merges), nil
+		return *assembled, nil
 	})
 }
