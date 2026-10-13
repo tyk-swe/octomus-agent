@@ -554,6 +554,69 @@ for (const mode of ['execution', 'audit'] as const) {
   });
 }
 
+// A paused service with an active automatic merge check reports Audit, Run once and configuration
+// editing as unavailable. A fresh capability snapshot restores them after the check finishes.
+test('an active automatic merge check locks planning controls and configuration, then recovers', async ({
+  page,
+  isMobile
+}) => {
+  let merging = true;
+  await patchState(page, (snapshot) => {
+    idle(snapshot);
+    snapshot.status = 'paused';
+    snapshot.auto_merge = { active: merging, counts: {} };
+    if (merging) {
+      snapshot.capabilities.cycle = {
+        allowed: false,
+        reason:
+          'Run once requires paused operation with no active work. Pause the service and wait for active work to finish.'
+      };
+      snapshot.capabilities.audit = {
+        allowed: false,
+        reason:
+          'Audits require paused operation with no active work. Pause the service and wait for active work to finish.'
+      };
+      snapshot.capabilities.configure = {
+        allowed: false,
+        reason: 'Pause and wait for active work to finish before changing configuration.'
+      };
+    }
+    snapshot.tasks = [];
+    snapshot.attention_tasks = [];
+    snapshot.counts = {};
+    snapshot.planning_capacity.status = 'ready';
+  });
+  await page.clock.install();
+  await login(page);
+  const run = page.getByRole('button', { name: 'Run once', exact: true });
+  const runAudit = page.getByRole('button', { name: 'Run an audit', exact: true });
+  await expect(page.locator('.status-value')).toHaveText('paused');
+  await expect(run).toBeDisabled();
+  await expect(runAudit).toBeDisabled();
+
+  await openNavigation(page, 'Configuration', !!isMobile);
+  const branch = page.getByLabel('Default branch', { exact: true });
+  const lockNotice = page.getByText(
+    'An automatic merge check is still running. Wait for it to finish before editing configuration.',
+    { exact: true }
+  );
+  await expect(lockNotice).toBeVisible();
+  await expect(branch).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Save configuration' })).toBeDisabled();
+  await expect(page.locator('[data-step="choose"]')).toContainText(
+    'Unavailable now: An automatic merge check is still running.'
+  );
+
+  merging = false;
+  await nextPoll(page);
+  await expect(branch).toBeEnabled({ timeout: 10000 });
+  await expect(lockNotice).toHaveCount(0);
+  await expect(page.locator('[data-step="choose"]')).toContainText('Run once: available');
+  await openNavigation(page, 'Overview', !!isMobile);
+  await expect(run).toBeEnabled();
+  await expect(runAudit).toBeEnabled();
+});
+
 test('slow proposal history cannot block state polling, controls, or navigation', async ({
   page
 }) => {

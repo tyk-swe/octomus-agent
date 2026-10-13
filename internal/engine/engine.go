@@ -68,7 +68,7 @@ func New(state *store.Store, dataDir string, options ...Option) *App {
 		ctx:     ctx,
 		cancel:  cancel,
 		wake:    make(chan struct{}, 1),
-		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, merges: map[string]struct{}{}, mergeRecoveryErrors: map[string]string{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
+		runtime: runtimeState{tasks: map[string]taskJob{}, checkedCycles: map[string]struct{}{}, merges: map[string]struct{}{}, mergeRecoveryErrors: map[string]string{}, mergePrecheckErrors: map[string]mergePrecheck{}, cleanups: map[cleanupKey]struct{}{}, cleanupReports: map[cleanupKey]cleanupReport{}, retentionCursors: map[cleanupKind]string{}},
 	}
 	a.supervise = a.superviseTask
 	a.sandbox = sandbox.Host{}

@@ -70,6 +70,12 @@ func (a *App) StateView() (*StateView, error) {
 			break
 		}
 	}
+	if recoveryError == nil {
+		for _, precheck := range a.runtime.mergePrecheckErrors {
+			recoveryError = new(precheck.message)
+			break
+		}
+	}
 	a.runtimeMu.Unlock()
 	if !cycleActive {
 		running, err := a.store.RunningCycles("")
