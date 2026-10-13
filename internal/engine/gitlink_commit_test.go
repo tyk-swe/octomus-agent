@@ -3,6 +3,7 @@ package engine
 // A runner that commits its own work: the nested repository it committed must not reach review or publication.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,4 +83,53 @@ func TestRunnerCommittedNestedRepositoryBlocks(t *testing.T) {
 	}
 	assertUnpublished(t, f, saved)
 	assertNoOpenClients(t, script)
+}
+
+func TestPublicationReplayRejectsUnvalidatedChangeSets(t *testing.T) {
+	t.Parallel()
+	for _, entry := range []string{"checkpoint replay", "reconciliation"} {
+		for _, invalid := range []string{"committed gitlink", "missing comparison base"} {
+			t.Run(entry+"/"+invalid, func(t *testing.T) {
+				t.Parallel()
+				f := newFixture(t)
+				task := checkpointedTask(t, f, f.cfg.DefaultBranch)
+				if invalid == "committed gitlink" {
+					must0(t, commitNestedRepository(task.Workspace))
+					commit := git(t, task.Workspace, "rev-parse", "HEAD")
+					// Model a checkpoint accepted before committed gitlinks were refused.
+					task.OutputCommit = &commit
+					task.Reviews[0].Revision = commit
+					task.Verification[0].Revision = commit
+				} else {
+					task.ComparisonBase = ""
+				}
+				task.Status = model.StatusExecuting
+				if entry == "reconciliation" {
+					task.Status = model.StatusBlocked
+					task.BlockedReason = new(model.BlockedPublicationUncertain)
+				}
+				putTask(t, f, task)
+				app := f.pausedApp(t)
+				if entry == "reconciliation" {
+					must0(t, app.TaskAction(task.ID, model.TaskActionReconcile))
+				} else {
+					must0(t, app.superviseTask(context.Background(), task))
+				}
+				saved := loadTask(t, f.state, task.ID)
+				if !blockedAs(saved, model.BlockedWorkspaceInvalid) {
+					t.Fatalf("replayed publication status = %s, reason = %v, error = %s", saved.Status, saved.BlockedReason, optionalText(saved.Error))
+				}
+				if saved.OutputCommit == nil || *saved.OutputCommit != *task.OutputCommit {
+					t.Fatal("refused replay lost its output checkpoint")
+				}
+				if saved.PRNumber != nil || len(publications(t, f)) != 0 {
+					t.Fatal("an unvalidated change set reached publication")
+				}
+				if refs := git(t, f.repo, "ls-remote", "--heads", "origin", "refs/heads/"+task.Branch); refs != "" {
+					t.Fatalf("an unvalidated change set was pushed: %s", refs)
+				}
+				assertNoOpenClients(t, f.script)
+			})
+		}
+	}
 }
