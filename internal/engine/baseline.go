@@ -35,6 +35,9 @@ func (a *App) StartBaseline(expectedRevision string) (*model.BaselineCheck, erro
 	if fingerprint != expectedRevision {
 		return nil, codedConflict(ConfigRevisionConflict, "The saved configuration changed; reload settings and check the current values")
 	}
+	if err := a.recoveryConflict(); err != nil {
+		return nil, err
+	}
 	reason, err := a.baselineBlocker()
 	if err != nil {
 		return nil, err
@@ -109,6 +112,9 @@ func (a *App) CancelBaseline(id string) error {
 
 // baselineBlocker is why the runtime or operating state keeps a baseline check from starting now, or nil.
 func (a *App) baselineBlocker() (*string, error) {
+	if err := a.recoveryConflict(); err != nil {
+		return new(err.Error()), nil
+	}
 	control, err := a.Control()
 	if err != nil {
 		return nil, err

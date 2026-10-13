@@ -103,23 +103,48 @@ func replaceForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([
 	if len(numbers) == 0 {
 		return nil, nil
 	}
-	refspec := func(n uint64) string {
-		return fmt.Sprintf("+refs/pull/%d/head:%s%d", n, forkHeadNamespace, n)
-	}
-	all := fetchArgs("fetch", "--no-tags", "--no-write-fetch-head", "origin")
+	// Both ls-remote's patterns and fetch's named refspecs can match a branch with the same suffix. Bind each
+	// request to its exact advertised PR ref, then fetch that object ID so a branch alias or a moving ref cannot
+	// silently supply a different head.
+	wanted := make(map[string]uint64, len(numbers))
+	lookup := []string{"ls-remote", "--refs", "origin"}
 	for _, n := range numbers {
-		all = append(all, refspec(n))
+		ref := fmt.Sprintf("refs/pull/%d/head", n)
+		wanted[ref] = n
+		lookup = append(lookup, ref)
 	}
-	if _, err := remoteGit(ctx, c, c.Repository, all); err == nil {
-		return nil, nil
+	out, err := remoteGit(ctx, c, c.Repository, lookup)
+	if err != nil {
+		return nil, err
+	}
+	heads := make(map[uint64]string, len(numbers))
+	for _, line := range strings.Split(out, "\n") {
+		sha, ref, ok := strings.Cut(line, "\t")
+		n, requested := wanted[ref]
+		if !ok || !requested {
+			continue
+		}
+		if len(sha) != 40 && len(sha) != 64 || strings.Trim(sha, "0123456789abcdef") != "" {
+			return nil, fmt.Errorf("Remote fork head %d returned an invalid object ID", n)
+		}
+		heads[n] = sha
 	}
 	var missing []uint64
+	all := fetchArgs("fetch", "--no-tags", "--no-write-fetch-head", "origin")
 	for _, n := range numbers {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if _, err := remoteGit(ctx, c, c.Repository, fetchArgs("fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n))); err != nil {
+		sha, advertised := heads[n]
+		if !advertised {
 			missing = append(missing, n)
+			continue
+		}
+		all = append(all, fmt.Sprintf("+%s:%s%d", sha, forkHeadNamespace, n))
+	}
+	if len(heads) > 0 {
+		if _, err := remoteGit(ctx, c, c.Repository, all); err != nil {
+			return nil, err
 		}
 	}
 	return missing, nil

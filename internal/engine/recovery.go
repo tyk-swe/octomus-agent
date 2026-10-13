@@ -53,42 +53,49 @@ func (a *App) Recover() error {
 		}
 	}
 
-	tasks, err := a.store.ActiveTasks()
-	if err != nil {
-		return err
-	}
-	for _, task := range tasks {
-		markedCancelled, err := a.store.CancelMarked(task.ID)
+	// Each checkpoint removes its task from the active query. Drain every page
+	// before the scheduler can treat any later-page records as exited workers.
+	for {
+		tasks, err := a.store.ActiveTasks()
 		if err != nil {
 			return err
 		}
-		model.InterruptRunning(task.Sessions)
-		switch {
-		case markedCancelled && task.OutputCommit == nil:
-			task.Status = model.StatusCancelled
-			task.Error = new("Operator cancellation preserved across restart")
-		case workspace.Initialized(task) && task.Attempts < task.ExecutionConfig().MaxRetries:
-			task.Status = model.StatusQueued
-			task.Attempts++
-			task.Error = new("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
-		default:
-			task.Status = model.StatusBlocked
-			reason := model.BlockedWorkspaceInvalid
-			message := "Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying."
-			if workspace.Initialized(task) {
-				reason = model.BlockedRetryLimit
-				if task.OutputCommit != nil {
-					reason = model.BlockedPublicationUncertain
-					message = "Service interrupted during publication after the retry budget was exhausted. Reconcile publication to finish delivery without another model turn."
-				}
+		for _, task := range tasks {
+			markedCancelled, err := a.store.CancelMarked(task.ID)
+			if err != nil {
+				return err
 			}
-			task.BlockedReason = &reason
-			task.Error = new(message)
+			model.InterruptRunning(task.Sessions)
+			switch {
+			case markedCancelled && task.OutputCommit == nil:
+				task.Status = model.StatusCancelled
+				task.Error = new("Operator cancellation preserved across restart")
+			case workspace.Initialized(task) && task.Attempts < task.ExecutionConfig().MaxRetries:
+				task.Status = model.StatusQueued
+				task.Attempts++
+				task.Error = new("Recovering an interrupted task: inspecting the recorded workspace and reconciling remote state before continuing.")
+			default:
+				task.Status = model.StatusBlocked
+				reason := model.BlockedWorkspaceInvalid
+				message := "Service interrupted before workspace initialization completed, or retry budget exhausted. Inspect the preserved task before retrying."
+				if workspace.Initialized(task) {
+					reason = model.BlockedRetryLimit
+					if task.OutputCommit != nil {
+						reason = model.BlockedPublicationUncertain
+						message = "Service interrupted during publication after the retry budget was exhausted. Reconcile publication to finish delivery without another model turn."
+					}
+				}
+				task.BlockedReason = &reason
+				task.Error = new(message)
+			}
+			if err := a.checkpointTask(&task); err != nil {
+				return err
+			}
+			_ = a.store.Event(task.ID, model.EventRecovery, *task.Error)
 		}
-		if err := a.checkpointTask(&task); err != nil {
-			return err
+		if len(tasks) < store.PageLimit {
+			break
 		}
-		_ = a.store.Event(task.ID, model.EventRecovery, *task.Error)
 	}
 
 	if err := a.settleCancelledSessions(); err != nil {

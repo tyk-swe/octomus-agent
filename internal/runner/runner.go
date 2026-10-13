@@ -147,14 +147,15 @@ func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 // Runners holds at most one open runner per backend, each bound to the working directory it was started for. A
 // sandboxed runner can only see that directory's owned root, so asking for another directory replaces it.
 type Runners struct {
-	cfg      config.Config
-	ctx      context.Context
-	connect  Connector
-	clients  map[config.Backend]boundClient
-	catalogs map[config.Backend][]Model
-	closed   bool
-	closeErr error
-	evidence *model.SandboxRecord
+	cfg           config.Config
+	ctx           context.Context
+	connect       Connector
+	clients       map[config.Backend]boundClient
+	catalogs      map[config.Backend][]Model
+	closed        bool
+	closeErr      error
+	settlementErr error
+	evidence      *model.SandboxRecord
 }
 
 type boundClient struct {
@@ -176,6 +177,9 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 	if r.closed {
 		return nil, errors.New("Runner clients are closed")
 	}
+	if r.settlementErr != nil {
+		return nil, r.settlementErr
+	}
 	if client, ok := r.clients[backend]; ok {
 		if config.SamePath(client.cwd, cwd) {
 			return client.adapter, nil
@@ -193,10 +197,10 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 }
 
 // Release stops every open runner while keeping the checked catalogs, so nothing a runner started outlives the turn
-// it served. The next request starts a fresh runner. A sandbox that failed as it closed, such as one whose end the
-// broker could not confirm, makes the runner unavailable, as one that failed to start does.
+// it served. The next request starts a fresh runner only after confirmed cleanup. A sandbox that failed as it closed,
+// such as one whose end the broker could not confirm, keeps this manager unavailable for subsequent requests too.
 func (r *Runners) Release() error {
-	errs := []error{}
+	errs := []error{r.settlementErr}
 	for backend := range r.clients {
 		errs = append(errs, r.release(backend))
 	}
@@ -211,6 +215,7 @@ func (r *Runners) release(backend config.Backend) error {
 	err := client.adapter.Close()
 	if sandbox.Infrastructure(err) {
 		err = unavailable(err)
+		r.settlementErr = errors.Join(r.settlementErr, err)
 	}
 	if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
 		r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())

@@ -111,9 +111,17 @@ func (a *api) serveAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) authenticate(w http.ResponseWriter, r *http.Request) bool {
-	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	credentials := r.Header.Values("Authorization")
+	var token string
+	valid := false
+	if len(credentials) == 1 {
+		scheme, value, found := strings.Cut(credentials[0], " ")
+		token = strings.TrimLeft(value, " ")
+		valid = found && strings.EqualFold(scheme, "Bearer") && token != ""
+	}
 	digest := sha256.Sum256([]byte(token))
-	if subtle.ConstantTimeCompare(digest[:], a.tokenHash[:]) != 1 {
+	matched := subtle.ConstantTimeCompare(digest[:], a.tokenHash[:]) == 1
+	if !valid || !matched {
 		time.Sleep(a.failures.delay(time.Now()))
 		writeAPIError(w, http.StatusUnauthorized, "Enter the operator access token to connect.")
 		return false
