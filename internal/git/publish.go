@@ -66,6 +66,14 @@ func Publish(ctx context.Context, task model.Task) (pr model.PullRequest, err er
 		return model.PullRequest{}, blocked(model.BlockedWorkspaceInvalid,
 			"Workspace HEAD changed after review")
 	}
+	if task.ComparisonBase == "" {
+		return model.PullRequest{}, blocked(model.BlockedWorkspaceInvalid,
+			"Comparison base was not persisted; cancel this task and rediscover")
+	}
+	// Check every publication entry, including output checkpoint replay and operator reconciliation.
+	if err := RefuseCommittedGitlinks(ctx, c, path, task.ComparisonBase, commit); err != nil {
+		return model.PullRequest{}, err
+	}
 	var existing *model.PullRequest
 	if task.PRNumber != nil {
 		p, err := PR(ctx, c, *task.PRNumber)

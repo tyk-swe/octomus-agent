@@ -438,3 +438,29 @@ func TestSessionReplacementRequiresAdmission(t *testing.T) {
 	assertAdmissions(t, f.state, 1, "only the failed resume was admitted")
 	assertNoOpenClients(t, f.script)
 }
+
+// A runner that started and then failed to establish its session still ran a sandbox. With no session record yet to
+// carry the broker's account of it, the record is kept as evidence on the task rather than lost with the released
+// child.
+func TestFailedSessionStartRetainsSandboxEvidence(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.script.RecordSandbox(&model.SandboxRecord{ImageID: "sha256:unstarted-session", Runs: 1})
+	f.script.FailStart(f.routes.Executor, errors.New("scripted executor start failure"))
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
+	saved := driveTask(t, f, f.newApp(t), task.ID)
+	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedRunnerUnavailable || len(saved.Sessions) != 0 {
+		t.Fatalf("failed session start outcome = %+v", saved)
+	}
+	events, err := f.state.Events(new(task.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == model.EventSandboxEvidence && strings.Contains(event.Message, "sha256:unstarted-session") {
+			return
+		}
+	}
+	t.Fatalf("the sandbox of a failed session start was not retained: %+v", events)
+}

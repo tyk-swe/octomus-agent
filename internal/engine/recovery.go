@@ -153,8 +153,9 @@ func (a *App) blockOrphanedTasks() error {
 			if tasks[i].Status == model.StatusPublishing && tasks[i].OutputCommit != nil {
 				cause = fmt.Errorf("Publication has no active worker; reconcile publication to check delivery: %w", model.BlockedPublicationUncertain)
 			}
-			model.FailRunning(tasks[i].Sessions, cause.Error())
-			if err := a.setTaskError(&tasks[i], cause); err != nil {
+			// Settlement also honors a durable cancellation whose terminal write was
+			// refused, matching restart recovery for the same marker.
+			if err := a.settleExitedTask(&tasks[i], cause); err != nil {
 				return err
 			}
 		}

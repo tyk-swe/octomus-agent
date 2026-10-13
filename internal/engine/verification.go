@@ -117,10 +117,11 @@ func sandboxFailure(command string, err error) error {
 	return fmt.Errorf("The sandbox could not run verification command %s: %w", strconv.Quote(command), err)
 }
 
-// keepSandboxEvidence keeps the broker's record of a sandbox whose command has no result of its own, as a session
-// keeps it for a failed turn. The broker reports one when the command ran and the sandbox failed after it, for example
-// removing its container: the image, runtime, OOM and egress of untrusted code that did run. It becomes an event on
-// entity beside the failure, never the command's verification.
+// keepSandboxEvidence keeps the broker's record of a sandbox that has no session or verification record of its own to
+// carry it, as a session keeps it for a failed turn. The broker reports one when the sandbox ran and then failed, for
+// example removing its container, or when a runner that started could not establish its session: the image, runtime,
+// OOM and egress of untrusted code that did run. command names what the sandbox ran, a verification command or a
+// role's session start. The record becomes an event on entity beside the failure, never the command's verification.
 func (a *App) keepSandboxEvidence(entity, command string, record *model.SandboxRecord) {
 	if record == nil {
 		return

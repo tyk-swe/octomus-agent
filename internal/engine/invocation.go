@@ -34,6 +34,14 @@ type invocation struct {
 	completed func()
 }
 
+// entity names the record an invocation belongs to: the task it serves, or the cycle a session-less role runs for.
+func (inv invocation) entity() string {
+	if inv.task != nil {
+		return inv.task.ID
+	}
+	return inv.cycleID
+}
+
 func (a *App) invoke(ctx context.Context, clients *runner.Runners, inv invocation) (answer string, err error) {
 	if inv.task == nil {
 		defer func() {
@@ -165,10 +173,14 @@ func (a *App) startInvocation(ctx context.Context, clients *runner.Runners, inv 
 	}
 	released := clients.Release()
 	if resume == nil || inv.task == nil {
+		// A runner that started and then failed to establish its session still ran a sandbox, and no session record
+		// exists to carry its record yet, so keep it as evidence rather than losing it with the release.
+		a.keepSandboxEvidence(inv.entity(), inv.role+" session start", clients.TakeEvidence())
 		return "", false, errors.Join(err, released)
 	}
 	record, recordErr := findSession(inv.task, *resume, inv.role)
 	if recordErr != nil {
+		a.keepSandboxEvidence(inv.entity(), inv.role+" session start", clients.TakeEvidence())
 		return "", false, errors.Join(err, released, recordErr)
 	}
 	record.Sandbox = model.MergeSandbox(record.Sandbox, clients.TakeEvidence())
@@ -189,7 +201,10 @@ func (a *App) startInvocation(ctx context.Context, clients *runner.Runners, inv 
 	}
 	session, err = clients.Start(inv.route, inv.workspace, nil)
 	if err != nil {
-		return "", false, errors.Join(err, clients.Release())
+		cleanup := clients.Release()
+		// The replacement child ran too; its record belongs beside the failure like the one it replaced.
+		a.keepSandboxEvidence(inv.entity(), inv.role+" session start", clients.TakeEvidence())
+		return "", false, errors.Join(err, cleanup)
 	}
 	return session, false, nil
 }
