@@ -38,7 +38,7 @@ func (s *Store) PendingRequests(repository string, limit int) ([]model.OperatorR
 
 // RecentRequests lists decided requests newest first.
 func (s *Store) RecentRequests(repository string, limit int) ([]model.OperatorRequest, error) {
-	return listRecords[model.OperatorRequest](s, "SELECT data FROM records WHERE kind='request' AND "+requestRepository+" AND json_extract(data,'$.status')!='pending' ORDER BY rowid DESC LIMIT ?2", repository, limit)
+	return listRecords[model.OperatorRequest](s, "SELECT data FROM records WHERE kind='request' AND "+requestRepository+" AND json_extract(data,'$.status')!='pending' ORDER BY json_extract(data,'$.updated_at') DESC, rowid DESC LIMIT ?2", repository, limit)
 }
 
 func (s *Store) CountPendingRequests(repository string) (int64, error) {

@@ -72,6 +72,9 @@ func TestInsights(t *testing.T) {
 		insightTask("task-old", "cycle-old", at(30), model.StatusPublished, "features", "S", nil),
 	}
 	for _, task := range tasks {
+		if task.ID == "task-doc-2" {
+			task.Config.GitHubRepo = "FIXTURE/PROJECT"
+		}
 		must(t, store.Put(s, store.Tasks.Key(task.ID), task))
 	}
 
@@ -80,6 +83,8 @@ func TestInsights(t *testing.T) {
 		insightProposal("p-doc", "documentation", model.DecisionAccepted),
 		insightProposal("p-feat-no", "features", model.DecisionRejected),
 		insightProposal("p-feat-maybe", "features", model.DecisionDeferred),
+		insightProposal("p-request-no", "", model.DecisionRejected),
+		insightProposal("p-request-maybe", "", model.DecisionDeferred),
 		insightProposal("p-seeded", "features", model.DecisionCandidate))))
 	must(t, store.Put(s, store.Cycles.Key("cycle-audit"), insightCycle("cycle-audit", model.CycleModeAudit, model.CycleCompleted, 2, at(1),
 		insightProposal("a-doc", "documentation", model.DecisionAccepted),
@@ -153,8 +158,12 @@ func TestInsights(t *testing.T) {
 	if features.Category != "features" || features.Accepted != 1 || features.Rejected != 1 || features.Deferred != 1 || features.Tasks != 3 || features.Published != 1 || features.InProgress != 1 || features.Unresolved != 1 {
 		t.Fatalf("features: %+v", features)
 	}
-	if len(insights.Categories) != len(config.Categories()) {
+	if len(insights.Categories) != len(config.Categories())+1 {
 		t.Fatalf("category rows: %d", len(insights.Categories))
+	}
+	uncategorized := insights.Categories[len(insights.Categories)-1]
+	if uncategorized.Category != "uncategorized" || uncategorized.Rejected != 1 || uncategorized.Deferred != 1 || uncategorized.Tasks != 1 || uncategorized.InProgress != 1 {
+		t.Fatalf("uncategorized: %+v", uncategorized)
 	}
 	tierM := insights.Tiers[2]
 	tierS := insights.Tiers[1]
@@ -172,5 +181,23 @@ func TestInsights(t *testing.T) {
 	}
 	if _, err := s.Insights(now, 14); err == nil || err.Error() != "Insights cover 7, 30 or 90 days" {
 		t.Fatalf("invalid days: %v", err)
+	}
+}
+
+func TestInsightsUTCWindowAcrossDST(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	location, err := time.LoadLocation("America/New_York")
+	must(t, err)
+	now := time.Date(2026, 11, 2, 0, 30, 0, 0, time.UTC).In(location)
+	must(t, store.Put(s, store.Cycles.Key("before"), insightCycle("before", model.CycleModeExecution, model.CycleCompleted, 1, "2026-10-26T23:59:59Z")))
+	must(t, store.Put(s, store.Cycles.Key("inside"), insightCycle("inside", model.CycleModeExecution, model.CycleCompleted, 2, "2026-10-27T00:00:00Z")))
+	insights, err := s.Insights(now, 7)
+	must(t, err)
+	if insights.Since != "2026-10-27" || insights.Until != "2026-11-02" || len(insights.Daily) != 7 || insights.Daily[0].Day != insights.Since {
+		t.Fatalf("UTC window: %+v", insights)
+	}
+	if insights.Cycles["execution"] != 1 || insights.Daily[0].CyclesStarted != 1 {
+		t.Fatalf("cycle totals disagree with the UTC window: %+v", insights)
 	}
 }

@@ -83,6 +83,32 @@ func TestUpdateRequestGuardsStaleExpected(t *testing.T) {
 	}
 }
 
+func TestRecentRequestsOrdersBySettlement(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	old := pendingRequest("fixture/project", "long-pending work")
+	must(t, s.CreateRequest(old, model.RequestPendingLimit))
+	var newest model.OperatorRequest
+	for range 50 {
+		request := pendingRequest("fixture/project", "newer work")
+		must(t, s.CreateRequest(request, model.RequestPendingLimit))
+		settled := request.Clone()
+		settled.Status = model.RequestWithdrawn
+		settled.UpdatedAt = "2026-10-13T12:00:00+00:00"
+		must(t, s.UpdateRequest(store.RequestUpdate{Expected: request, Next: settled}))
+		newest = settled
+	}
+	settled := old.Clone()
+	settled.Status = model.RequestRejected
+	settled.UpdatedAt = "2026-10-13T13:00:00+00:00"
+	must(t, s.UpdateRequest(store.RequestUpdate{Expected: old, Next: settled}))
+	recent, err := s.RecentRequests("FIXTURE/PROJECT", 50)
+	must(t, err)
+	if len(recent) != 50 || recent[0].ID != old.ID || recent[1].ID != newest.ID {
+		t.Fatalf("recent decisions lost settlement order or stable tie-breaker: %+v", recent)
+	}
+}
+
 func TestCommitPlanRequestsAtomic(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))

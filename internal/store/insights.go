@@ -67,6 +67,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 	if days != 7 && days != 30 && days != 90 {
 		return out, errors.New("Insights cover 7, 30 or 90 days")
 	}
+	now = now.UTC()
 	out.Days = days
 	out.Until = model.UTCDay(now)
 	out.Since = model.UTCDay(now.AddDate(0, 0, -(days - 1)))
@@ -90,6 +91,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 	for _, category := range config.Categories() {
 		out.Categories = append(out.Categories, CategoryInsight{Category: category})
 	}
+	out.Categories = append(out.Categories, CategoryInsight{Category: "uncategorized"})
 	for _, tier := range config.Tiers() {
 		out.Tiers = append(out.Tiers, TierInsight{Tier: tier})
 	}
@@ -184,20 +186,22 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 			if _, ok := out.Tasks[status]; ok {
 				out.Tasks[status] += count
 			}
-			if bucket, ok := categories[category]; ok {
-				bucket.Tasks += count
-				switch status {
-				case model.StatusPublished.String():
-					bucket.Published += count
-				case model.StatusCancelled.String():
-					bucket.Cancelled += count
-				}
-				if _, ok := unresolved[status]; ok {
-					bucket.Unresolved += count
-				}
-				if _, ok := active[status]; ok || status == model.StatusQueued.String() {
-					bucket.InProgress += count
-				}
+			bucket := categories[category]
+			if bucket == nil {
+				bucket = categories["uncategorized"]
+			}
+			bucket.Tasks += count
+			switch status {
+			case model.StatusPublished.String():
+				bucket.Published += count
+			case model.StatusCancelled.String():
+				bucket.Cancelled += count
+			}
+			if _, ok := unresolved[status]; ok {
+				bucket.Unresolved += count
+			}
+			if _, ok := active[status]; ok || status == model.StatusQueued.String() {
+				bucket.InProgress += count
 			}
 			if bucket, ok := tiers[tier]; ok {
 				bucket.Tasks += count
@@ -215,15 +219,17 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 			if err := rows.Scan(&category, &decision, &count); err != nil {
 				return err
 			}
-			if bucket, ok := categories[category]; ok {
-				switch decision {
-				case model.DecisionAccepted:
-					bucket.Accepted += count
-				case model.DecisionRejected:
-					bucket.Rejected += count
-				case model.DecisionDeferred:
-					bucket.Deferred += count
-				}
+			bucket := categories[category]
+			if bucket == nil {
+				bucket = categories["uncategorized"]
+			}
+			switch decision {
+			case model.DecisionAccepted:
+				bucket.Accepted += count
+			case model.DecisionRejected:
+				bucket.Rejected += count
+			case model.DecisionDeferred:
+				bucket.Deferred += count
 			}
 			return nil
 		}); err != nil {
@@ -248,7 +254,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 					AND json_extract(p.summary,'$.pr.number') = delivered.number
 				ORDER BY p.seq DESC LIMIT 1
 			), ''), count(*) FROM (
-				SELECT DISTINCT m.repository, json_extract(m.summary,'$.pr_number') AS number
+				SELECT DISTINCT m.repository COLLATE NOCASE AS repository, json_extract(m.summary,'$.pr_number') AS number
 				FROM record_meta m
 				WHERE m.kind='task' AND m.status='published' AND json_extract(m.summary,'$.created_at') >= ?1
 					AND json_extract(m.summary,'$.pr_number') IS NOT NULL

@@ -41,20 +41,19 @@
     }
   );
 
-  let seenKey = $state('');
   $effect(() => {
+    // A successful state poll can reflect new PR inventory without changing request counts.
+    void data;
     if (!active) return;
-    const key = `${data.pending_requests}:${data.cycles[0]?.id ?? ''}:${data.cycles[0]?.status ?? ''}`;
-    if (key !== seenKey) {
-      seenKey = key;
-      void resource.refresh('requests');
-    }
+    void resource.refresh('requests');
   });
   onDestroy(() => resource.dispose());
 
   $effect(() => {
     const branch = view?.default_branch ?? '';
-    if (branch && target === '') target = branch;
+    if (branch && target !== branch && !view?.targets.some((option) => option.branch === target)) {
+      target = branch;
+    }
   });
 
   const planning = $derived(data.cycle_active || data.active_cycle_mode !== null);

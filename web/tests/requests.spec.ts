@@ -160,6 +160,15 @@ test('operator requests collect, guard and settle work @responsive', async ({ pa
   await expect(page.getByText('Add the feature', { exact: true })).toBeVisible();
   await expect(page.locator('[aria-label="History pagination"]')).toBeHidden();
 
+  // Housekeeping can change eligible PRs without changing cycles or pending requests.
+  const target = page.locator('#request-target');
+  await target.selectOption('octomus/existing');
+  view.targets = [{ branch: 'octomus/new', number: 43, title: 'Newly discovered improvement' }];
+  await nextPoll(page);
+  await expect(target.locator('option', { hasText: '#43' })).toHaveCount(1);
+  await expect(target.locator('option', { hasText: '#42' })).toHaveCount(0);
+  await expect(target).toHaveValue('main');
+
   await page.locator('#request-title').fill('New fixture feature');
   await page.locator('#request-description').fill('Create the next fixture output.');
   await page.getByRole('button', { name: 'Request work' }).click();
