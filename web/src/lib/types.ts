@@ -129,6 +129,7 @@ export type Capability = {
   allowed: boolean;
   reason: string;
 };
+export type CapacityStatus = 'ready' | 'daily_exhausted' | 'limit_too_low';
 export type ChecksState = 'not_configured' | 'recorded';
 export type CommandEvidence = {
   state: ChecksState;
@@ -191,6 +192,7 @@ export type Control = {
   idle_streak: number;
   context_fingerprint: string;
 };
+export type ControlAction = 'pause' | 'resume' | 'cycle' | 'audit';
 export type ControlResult = {
   paused: boolean;
   cycle_number: number;
@@ -430,7 +432,6 @@ export type PRCapacity = {
   status: string;
   reason: string | null;
 };
-export type PRCapacityStatus = 'ready' | 'daily_exhausted' | 'limit_too_low';
 export type PRCoverage = {
   observed_at: string | null;
   complete: boolean;
@@ -463,7 +464,7 @@ export type PlanningCapacity = {
   remaining: number;
   required: number;
   next_reset_at: number;
-  status: PRCapacityStatus;
+  status: CapacityStatus;
 };
 export type PlanningOutcome = {
   status: string;

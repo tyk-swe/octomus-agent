@@ -4,6 +4,7 @@
   import { client, setToken, onUnauthorized } from '$lib/api';
   import { StateSession } from '$lib/stateSession';
   import type {
+    ControlAction,
     CycleAction,
     Snapshot,
     TaskRow,
@@ -22,12 +23,7 @@
   import RelativeTime from '$lib/RelativeTime.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
-  import {
-    configurationEditable,
-    controlEligibility,
-    type ControlAction,
-    type SetupStatus
-  } from '$lib/setup';
+  import { configurationEditable, controlEligibility, type SetupStatus } from '$lib/setup';
   import TaskDetail from '$lib/TaskDetail.svelte';
   import TaskList from '$lib/TaskList.svelte';
   import RunEvidence from '$lib/RunEvidence.svelte';

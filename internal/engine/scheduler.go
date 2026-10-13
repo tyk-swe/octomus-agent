@@ -384,7 +384,7 @@ func (a *App) validateQueuedCycles(cfg config.Config, tasks []model.Task) (bool,
 						continue
 					}
 					changed = true
-					if blockErr := a.setTaskError(&cycleTasks[i], invalidPlan(err.Error())); blockErr != nil {
+					if blockErr := a.blockTaskLocked(&cycleTasks[i], invalidPlan(err.Error())); blockErr != nil {
 						return changed, blockErr
 					}
 				}
@@ -497,7 +497,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 			return started, waiting, nil
 		}
 		if blocked != nil {
-			if err := a.setTaskError(task, blocked); err != nil {
+			if err := a.blockTaskLocked(task, blocked); err != nil {
 				return started, waiting, err
 			}
 			continue
@@ -543,7 +543,7 @@ func (a *App) dispatch(cfg config.Config, control model.Control, tasks []model.T
 				waiting = true
 				continue
 			}
-		} else if err := a.transition(task, model.StatusExecuting); err != nil {
+		} else if err := a.admitTaskLocked(task); err != nil {
 			return started, waiting, err
 		}
 		activeByBranch[task.Branch] = struct{}{}

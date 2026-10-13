@@ -61,7 +61,7 @@ func enumNames[T interface {
 }
 
 func TestVocabulariesMirrorGo(t *testing.T) {
-	types := dashboardSource(t, "types.ts") + "\n" + dashboardSource(t, "setup.ts")
+	types := dashboardSource(t, "types.ts")
 	unions := map[string][]string{}
 	for _, match := range stringUnion.FindAllStringSubmatch(types, -1) {
 		for _, word := range quoted.FindAllStringSubmatch(match[2], -1) {
@@ -74,6 +74,7 @@ func TestVocabulariesMirrorGo(t *testing.T) {
 		"TaskAction":      enumNames[model.TaskAction](),
 		"CycleAction":     enumNames[model.CycleAction](),
 		"ControlAction":   enumNames[model.ControlAction](),
+		"CapacityStatus":  enumNames[model.CapacityStatus](),
 		"CycleStatus":     enumNames[model.CycleStatus](),
 		"SessionStatus":   enumNames[model.SessionStatus](),
 		"OperatingMode":   enumNames[model.OperatingMode](),

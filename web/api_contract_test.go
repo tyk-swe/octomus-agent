@@ -38,14 +38,13 @@ func apiContract() string {
 		"SettingsView": engine.SettingsView{}, "BaselineView": engine.BaselineView{},
 		"BaselineSummary": engine.BaselineSummary{}, "BaselineCheck": model.BaselineCheck{},
 		"Event": model.Event{}, "RunEvidenceV1": export.RunEvidenceV1{},
-		"DoctorResponse": httpapi.DoctorResponse{}, "ControlResult": engine.ControlResult{}, "ApiFailure": httpapi.ErrorResponse{},
+		"DoctorResponse": httpapi.DoctorResponse{}, "ControlResult": engine.ControlResult{}, "ControlAction": model.ControlAction(0), "ApiFailure": httpapi.ErrorResponse{},
 		"HealthResponse": httpapi.HealthResponse{}, "DoctorFailure": httpapi.DoctorFailure{}, "Acknowledgement": httpapi.Acknowledgement{}, "TransformedField": redact.DisplayTransform{},
 	}
 	names := map[reflect.Type]string{
-		reflect.TypeFor[model.Status]():         "TaskStatus",
-		reflect.TypeFor[model.CapacityStatus](): "PRCapacityStatus",
-		reflect.TypeFor[export.Revisions]():     "EvidenceRevisions",
-		reflect.TypeFor[model.Grounding]():      "Grounding",
+		reflect.TypeFor[model.Status]():     "TaskStatus",
+		reflect.TypeFor[export.Revisions](): "EvidenceRevisions",
+		reflect.TypeFor[model.Grounding]():  "Grounding",
 	}
 	for name, root := range roots {
 		names[reflect.TypeOf(root)] = name

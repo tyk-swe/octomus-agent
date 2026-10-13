@@ -95,7 +95,7 @@ func TestPublicationCommitDoesNotMutateOnFailure(t *testing.T) {
 	}
 	app := f.pausedApp(t)
 	p := model.PullRequest{Number: 4, URL: "https://github.com/fixture/project/pull/4", Head: *task.OutputCommit}
-	if err := app.published(&task, p); err == nil {
+	if err := app.completePublicationLocked(&task, p); err == nil {
 		t.Fatal("publication settlement was not refused")
 	}
 	if !wirejson.Equal(task, before) || !wirejson.Equal(loadTask(t, f.state, task.ID), before) {

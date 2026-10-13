@@ -21,7 +21,7 @@ func ReadMaintenanceFootprint(ctx context.Context, cfg config.Config, workTree, 
 	result := model.MaintenanceFootprint{
 		ComparisonBase: base, Revision: revision, Paths: []string{}, ManualReasons: []string{},
 	}
-	if !footprintRevision(base) || !footprintRevision(revision) {
+	if !validObjectID(base) || !validObjectID(revision) {
 		return result, errors.New("Footprint requires exact hexadecimal comparison and output revisions")
 	}
 	scratch, err := os.MkdirTemp("", "octomus-footprint-")
@@ -57,7 +57,7 @@ func ReadMaintenanceFootprint(ctx context.Context, cfg config.Config, workTree, 
 	return parseMaintenanceFootprint(numstat, raw, base, revision, cfg.AutoMergeExcludedPaths)
 }
 
-func footprintRevision(revision string) bool {
+func validObjectID(revision string) bool {
 	if len(revision) != 40 && len(revision) != 64 {
 		return false
 	}
@@ -197,7 +197,7 @@ func footprintReason(reason, name string) string {
 	return fmt.Sprintf("%s at %s", reason, strconv.Quote(redact.Text(name)))
 }
 
-func maintenanceRemoteFootprintWithin(additions, deletions, files uint64, saved, live config.Config) bool {
+func RemoteFootprintWithin(additions, deletions, files uint64, saved, live config.Config) bool {
 	maxLines, maxFiles := model.AutoMergeLimits(saved, live)
 	return maxLines > 0 && maxFiles > 0 && files > 0 && files <= maxFiles &&
 		additions <= math.MaxUint64-deletions && additions+deletions <= maxLines

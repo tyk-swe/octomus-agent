@@ -319,16 +319,13 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		actionErr = a.publishedWorkerLocked(workCtx, task, published)
 	} else {
 		recordTaskError(task, publishErr)
-		actionErr = func() error {
-			next := task.Clone()
-			next.Status = previousStatus
-			if err := a.commitWorkerTaskLocked(workCtx, &next, model.TaskSettlement); err != nil {
-				return err
-			}
+		next := task.Clone()
+		next.Status = previousStatus
+		actionErr = a.commitWorkerTaskLocked(workCtx, &next, model.TaskSettlement)
+		if actionErr == nil {
 			*task = next
 			_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
-			return nil
-		}()
+		}
 	}
 	_ = a.store.Event(id, model.EventOperator, model.TaskActionReconcile.String())
 	return actionErr

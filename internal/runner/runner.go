@@ -330,8 +330,6 @@ func stringPtrEqual(a, b *string) bool {
 	return *a == *b
 }
 
-func stringPtr(s string) *string { return &s }
-
 func asObject(v any) (map[string]any, bool) {
 	m, ok := v.(map[string]any)
 	return m, ok

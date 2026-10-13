@@ -610,17 +610,17 @@ func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 }
 
 // assembleAt reads one cycle, its tasks and their maintenance merge evidence
-// from the snapshot c. A missing cycle returns a nil *RunEvidenceV1.
-func assembleAt(c *store.Snapshot, cycleID string) (*RunEvidenceV1, error) {
-	cycle, err := c.Cycle(cycleID)
+// from the snapshot s. A missing cycle returns a nil *RunEvidenceV1.
+func assembleAt(s *store.Snapshot, cycleID string) (*RunEvidenceV1, error) {
+	cycle, err := s.Cycle(cycleID)
 	if err != nil || cycle == nil {
 		return nil, err
 	}
-	tasks, err := c.TasksForCycle(cycleID)
+	tasks, err := s.TasksForCycle(cycleID)
 	if err != nil {
 		return nil, err
 	}
-	merges, err := maintenanceEvidenceAt(c, tasks)
+	merges, err := maintenanceEvidenceAt(s, tasks)
 	if err != nil {
 		return nil, err
 	}
@@ -631,8 +631,8 @@ func assembleAt(c *store.Snapshot, cycleID string) (*RunEvidenceV1, error) {
 // when no such cycle is saved.
 func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 	var assembled *RunEvidenceV1
-	err := s.Snapshot(func(c *store.Snapshot) (err error) {
-		assembled, err = assembleAt(c, cycleID)
+	err := s.Snapshot(func(snapshot *store.Snapshot) (err error) {
+		assembled, err = assembleAt(snapshot, cycleID)
 		return err
 	})
 	if err != nil || assembled == nil {
@@ -644,8 +644,8 @@ func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 // Run exports one cycle's run evidence from the state database at stateDB,
 // opened read-only. A missing cycle is an error, never an empty export.
 func Run(stateDB, cycleID string) (map[string]any, error) {
-	return export(stateDB, "run evidence export", func(c *store.Snapshot) (RunEvidenceV1, error) {
-		assembled, err := assembleAt(c, cycleID)
+	return export(stateDB, "run evidence export", func(s *store.Snapshot) (RunEvidenceV1, error) {
+		assembled, err := assembleAt(s, cycleID)
 		if err != nil {
 			return RunEvidenceV1{}, err
 		}

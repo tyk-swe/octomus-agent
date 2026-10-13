@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/model"
 )
 
 const (
@@ -78,7 +80,7 @@ func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationD
 			// Rows at the attempt limit were just failed, so the delay index is always in range.
 			attempt := d.Attempts + 1
 			delay := retryDelays[attempt-1]
-			if _, err := c.ExecContext(background, "UPDATE notification_outbox SET attempts=?1, last_attempt_at=?2, next_attempt_at=?3 WHERE seq=?4", attempt, rfc3339(now), epoch+delay, d.Seq); err != nil {
+			if _, err := c.ExecContext(background, "UPDATE notification_outbox SET attempts=?1, last_attempt_at=?2, next_attempt_at=?3 WHERE seq=?4", attempt, model.Timestamp(now), epoch+delay, d.Seq); err != nil {
 				return err
 			}
 			d.Attempts = attempt
@@ -95,7 +97,7 @@ func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationD
 func (s *Store) MarkDelivered(seq int64, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status='delivered', delivered_at=?1, last_error=NULL, http_status=NULL WHERE seq=?2 AND status='pending'", rfc3339(now), seq)
+	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status='delivered', delivered_at=?1, last_error=NULL, http_status=NULL WHERE seq=?2 AND status='pending'", model.Timestamp(now), seq)
 	return err
 }
 
@@ -147,12 +149,4 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 		health.LastHTTPStatus = nil
 	}
 	return health, nil
-}
-
-func rfc3339(at time.Time) string {
-	at = at.UTC()
-	if at.Nanosecond() == 0 {
-		return at.Format("2006-01-02T15:04:05+00:00")
-	}
-	return at.Format("2006-01-02T15:04:05.000000000+00:00")
 }

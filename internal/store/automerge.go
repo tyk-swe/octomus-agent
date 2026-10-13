@@ -165,7 +165,7 @@ type MergeCandidate struct {
 func (s *Store) MergeCandidates(afterSeq, limit int64) ([]MergeCandidate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.conn.QueryContext(background, maintenanceCandidatesQuery, afterSeq, limit)
+	rows, err := s.conn.QueryContext(background, mergeCandidatesQuery, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (s *Store) MergeObservation(repository string, number uint64) (*model.PRObs
 func (s *Store) MergeCounts(repository string) (map[string]int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.conn.QueryContext(background, maintenanceCountsQuery, repository)
+	rows, err := s.conn.QueryContext(background, mergeCountsQuery, repository)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func (s *Store) BatchMergeWait(runID string) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var pending int64
-	err := s.conn.QueryRowContext(background, maintenanceBatchWaitQuery, runID).Scan(&pending)
+	err := s.conn.QueryRowContext(background, batchMergeWaitQuery, runID).Scan(&pending)
 	return uint64(pending), err
 }
 
@@ -230,7 +230,7 @@ func (s *Store) UnfinishedBranchWork(repository, branch, exceptTaskID string) (b
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var exists bool
-	err := s.conn.QueryRowContext(background, maintenanceUnfinishedBranchQuery, repository, branch, exceptTaskID).Scan(&exists)
+	err := s.conn.QueryRowContext(background, unfinishedBranchWorkQuery, repository, branch, exceptTaskID).Scan(&exists)
 	return exists, err
 }
 
@@ -340,7 +340,7 @@ func (s *Store) SettleMerge(repository string, number uint64, expected model.Aut
 }
 
 func txRevokeTaskMerges(c *sql.Conn, taskID, reason string) error {
-	rows, err := c.QueryContext(background, maintenanceRevokeQuery, taskID)
+	rows, err := c.QueryContext(background, revokeTaskMergesQuery, taskID)
 	if err != nil {
 		return err
 	}

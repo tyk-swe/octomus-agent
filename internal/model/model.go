@@ -9,8 +9,8 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
-func Now() string { return timestamp(time.Now()) }
-func timestamp(at time.Time) string {
+func Now() string { return Timestamp(time.Now()) }
+func Timestamp(at time.Time) string {
 	at = at.UTC()
 	layout := "2006-01-02T15:04:05"
 	switch n := at.Nanosecond(); {

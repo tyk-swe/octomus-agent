@@ -600,7 +600,7 @@ func testTaskWorker(t *testing.T, app *App, task *model.Task) context.Context {
 	// Direct worker tests seed queued records; model scheduler admission first.
 	app.gate.Lock()
 	if task.Status == model.StatusQueued {
-		if err := app.transition(task, model.StatusExecuting); err != nil {
+		if err := app.admitTaskLocked(task); err != nil {
 			app.gate.Unlock()
 			t.Fatal(err)
 		}

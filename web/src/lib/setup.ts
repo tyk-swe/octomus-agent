@@ -6,6 +6,7 @@ import type {
   Capabilities,
   BaselineSummary,
   Config,
+  ControlAction,
   CycleMode,
   CycleSummary,
   ModelCatalog,
@@ -15,6 +16,8 @@ import type {
   Route,
   SandboxPosture
 } from './types';
+
+export type { ControlAction };
 
 type SetupTone = 'missing' | 'draft' | 'saved' | 'checked' | 'failed' | 'ran';
 export type SetupStep = { tone: SetupTone; label: string; detail: string };
@@ -45,7 +48,6 @@ export type SetupStatus = {
   control_state_pending?: boolean;
   recovery_error?: string | null;
 };
-export type ControlAction = 'resume' | 'pause' | 'cycle' | 'audit';
 
 const REPOSITORY_FIELDS = ['repository', 'github_repo', 'default_branch', 'branch_prefix'] as const;
 const filled = (value: unknown) => typeof value === 'string' && value.trim() !== '';

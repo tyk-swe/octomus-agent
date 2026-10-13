@@ -15,10 +15,6 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-var settleMergeRecord = func(s *store.Store, repository string, number uint64, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) (bool, error) {
-	return s.SettleMerge(repository, number, expected, status, reason, source, commit, revoke)
-}
-
 func mergeBarrierKey(repository string, number uint64) string {
 	return strings.ToLower(repository) + ":" + strconv.FormatUint(number, 10)
 }
@@ -161,7 +157,7 @@ func (a *App) recoverMergePrecheck(pre mergePrecheck) bool {
 	}
 	// A matching status alone does not prove the reason, timestamp or merge
 	// provenance was saved. Retry the complete settlement before releasing it.
-	applied, err := settleMergeRecord(a.store, pre.repository, pre.number, pre.expected, pre.status, pre.reason, pre.source, pre.commit, pre.revoke)
+	applied, err := a.store.SettleMerge(pre.repository, pre.number, pre.expected, pre.status, pre.reason, pre.source, pre.commit, pre.revoke)
 	if err != nil {
 		return false
 	}
@@ -185,7 +181,7 @@ func mergeBarrierBound(expected, merge model.AutoMergeState) bool {
 }
 
 func (a *App) mergeConfirmed(task *model.Task, observation model.PRObservation, expected model.AutoMergeState, commit string) {
-	if ok, err := settleMergeRecord(a.store, observation.Repository, observation.PR.Number, expected, model.AutoMergeMerged, "Squash merged by Octomus", store.MergeResultConfirmed, &commit, false); err != nil || !ok {
+	if ok, err := a.store.SettleMerge(observation.Repository, observation.PR.Number, expected, model.AutoMergeMerged, "Squash merged by Octomus", store.MergeResultConfirmed, &commit, false); err != nil || !ok {
 		if err == nil {
 			err = errors.New("The confirmed merge result could not be recorded")
 		}
@@ -207,7 +203,7 @@ func (a *App) mergeConfirmed(task *model.Task, observation model.PRObservation, 
 
 func (a *App) settleMerge(observation model.PRObservation, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) {
 	key := mergeBarrierKey(observation.Repository, observation.PR.Number)
-	applied, err := settleMergeRecord(a.store, observation.Repository, observation.PR.Number, expected, status, reason, source, commit, revoke)
+	applied, err := a.store.SettleMerge(observation.Repository, observation.PR.Number, expected, status, reason, source, commit, revoke)
 	if err != nil {
 		a.recordMergeSettlementFailure(key, observation, expected, status, reason, source, commit, revoke, err)
 		return

@@ -113,7 +113,7 @@ func parseMergeStatus(out, repository string, number uint64) (MergeStatus, error
 	}
 	p := repo.PullRequest
 	if p.Number != number || p.URL == "" || p.HeadRef == "" || p.BaseRef == "" ||
-		!footprintRevision(p.HeadOID) || !footprintRevision(p.BaseOID) ||
+		!validObjectID(p.HeadOID) || !validObjectID(p.BaseOID) ||
 		p.HeadRepo == nil || p.BaseRepo == nil || p.Draft == nil || p.MergeQueue == nil ||
 		!config.EqualASCII(p.HeadRepo.NameWithOwner, repository) ||
 		!config.EqualASCII(p.BaseRepo.NameWithOwner, repository) {
@@ -151,7 +151,7 @@ func parseMergeStatus(out, repository string, number uint64) (MergeStatus, error
 		return MergeStatus{}, errors.New("Unrecognized GitHub pull request state")
 	}
 	if p.MergeCommit != nil {
-		if !footprintRevision(p.MergeCommit.OID) {
+		if !validObjectID(p.MergeCommit.OID) {
 			return MergeStatus{}, errors.New("GitHub merge commit is missing its revision")
 		}
 		status.MergeCommit = new(p.MergeCommit.OID)
@@ -181,7 +181,7 @@ func parseMergeStatus(out, repository string, number uint64) (MergeStatus, error
 			return MergeStatus{}, errors.New("Unrecognized GitHub PR review decision")
 		}
 	}
-	if len(p.Commits.Nodes) != 1 || !footprintRevision(p.Commits.Nodes[0].Commit.OID) || p.Commits.Nodes[0].Commit.OID != p.HeadOID {
+	if len(p.Commits.Nodes) != 1 || !validObjectID(p.Commits.Nodes[0].Commit.OID) || p.Commits.Nodes[0].Commit.OID != p.HeadOID {
 		return MergeStatus{}, errors.New("GitHub merge status head does not match its check commit")
 	}
 	if rollup := p.Commits.Nodes[0].Commit.Rollup; rollup != nil {
@@ -200,10 +200,6 @@ func parseMergeStatus(out, repository string, number uint64) (MergeStatus, error
 	return status, nil
 }
 
-func RemoteFootprintWithin(additions, deletions, files uint64, saved, live config.Config) bool {
-	return maintenanceRemoteFootprintWithin(additions, deletions, files, saved, live)
-}
-
 func MergeBase(ctx context.Context, c config.Config, base, head string) (string, error) {
 	return Git(ctx, c, c.Repository, []string{"merge-base", base, head})
 }
@@ -215,7 +211,7 @@ func SquashMerge(ctx context.Context, c config.Config, number uint64, head, head
 	if c.DeliveryMode != config.DeliveryModeMaintenance {
 		return "", errors.New("Merge is only permitted under maintenance delivery")
 	}
-	if !footprintRevision(head) {
+	if !validObjectID(head) {
 		return "", errors.New("Merge requires the exact hexadecimal reviewed head")
 	}
 	if !config.ValidBranch(headBranch) || headBranch == c.DefaultBranch {
@@ -242,7 +238,7 @@ func SquashMerge(ctx context.Context, c config.Config, number uint64, head, head
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
 		return "", fmt.Errorf("%w: acknowledgement is not readable: %w", ErrMergeUnconfirmed, err)
 	}
-	if !response.Merged || !footprintRevision(response.SHA) {
+	if !response.Merged || !validObjectID(response.SHA) {
 		return "", fmt.Errorf("%w: acknowledgement did not confirm a merge commit: %s", ErrMergeUnconfirmed, redact.Text(response.Message))
 	}
 	status, err := MaintenanceMergeStatus(ctx, c, number)

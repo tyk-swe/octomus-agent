@@ -13,15 +13,15 @@ import (
 // export opens the state database read-only for one export, reads a value
 // inside one snapshot and returns it redacted. The database is never created
 // or changed on the caller's behalf.
-func export[T any](stateDB, what string, read func(c *store.Snapshot) (T, error)) (map[string]any, error) {
+func export[T any](stateDB, what string, read func(s *store.Snapshot) (T, error)) (map[string]any, error) {
 	r, err := store.OpenReadOnly(stateDB, what)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
 	var value T
-	err = r.Snapshot(func(c *store.Snapshot) (err error) {
-		value, err = read(c)
+	err = r.Snapshot(func(s *store.Snapshot) (err error) {
+		value, err = read(s)
 		return err
 	})
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-func maintenanceEvidenceAt(c *store.Snapshot, tasks []model.Task) (map[string]*model.AutoMergeState, error) {
+func maintenanceEvidenceAt(s *store.Snapshot, tasks []model.Task) (map[string]*model.AutoMergeState, error) {
 	saved := map[string]*model.AutoMergeState{}
 	type identity struct {
 		repository string
@@ -25,7 +25,7 @@ func maintenanceEvidenceAt(c *store.Snapshot, tasks []model.Task) (map[string]*m
 		observations, read := observed[key]
 		if !read {
 			var err error
-			observations, err = c.PRObservations(task.Config.GitHubRepo, *task.PRNumber)
+			observations, err = s.PRObservations(task.Config.GitHubRepo, *task.PRNumber)
 			if err != nil {
 				return nil, err
 			}

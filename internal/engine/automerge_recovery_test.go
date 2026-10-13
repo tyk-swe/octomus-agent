@@ -2,7 +2,6 @@ package engine
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +25,7 @@ func TestPublicationCheckpointReplayKeepsFrozenEvidence(t *testing.T) {
 	checkpoint.Status = model.StatusPublishing
 	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), checkpoint))
 	replay := checkpoint.Clone()
-	if err := app.published(&replay, observation.PR); err != nil {
+	if err := app.completePublicationLocked(&replay, observation.PR); err != nil {
 		t.Fatalf("checkpoint replay failed: %v", err)
 	}
 	evidence := prObservation(t, f, *saved.PRNumber).AutoMerge
@@ -47,7 +46,7 @@ func TestPublicationCheckpointReplayKeepsFrozenEvidence(t *testing.T) {
 	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), moved))
 	stale := saved.Clone()
 	stale.Status = model.StatusPublished
-	if err := app.published(&stale, observation.PR); err == nil {
+	if err := app.completePublicationLocked(&stale, observation.PR); err == nil {
 		t.Fatal("a stale output commit overwrote a newer checkpoint")
 	}
 	current, err := store.Get(f.state, store.Tasks.Key(saved.ID))
@@ -133,25 +132,45 @@ func TestMergeAttemptFinalGateRejectsStaleState(t *testing.T) {
 	}
 	f.configure(t, func(cfg *config.Config) { cfg.AutoMergeExcludedPaths = []string{} })
 
-	original := unfinishedBranchWork
-	unfinishedBranchWork = func(_ *store.Store, _, _, _ string) (bool, error) {
-		return false, fmt.Errorf("injected branch check failure")
-	}
-	defer func() { unfinishedBranchWork = original }()
+	restoreBranchCheck := corruptBranchTask(t, f)
 	app.mergeAttempt(t.Context(), saved, observation, false)
 	if len(mergeAttempts(t, f)) != 0 {
 		t.Fatal("a failed same-branch check reached the mutation")
 	}
-	unfinishedBranchWork = func(_ *store.Store, _, _, _ string) (bool, error) {
-		return true, nil
-	}
+	restoreBranchCheck()
+	sibling := queuedTask(f.cfg, "late-queued-sibling", f.cfg.DefaultBranch, saved.Branch)
+	putTask(t, f, sibling)
 	app.mergeAttempt(t.Context(), saved, observation, false)
 	if len(mergeAttempts(t, f)) != 0 {
 		t.Fatal("queued same-branch work inserted at the seam still merged")
 	}
-	unfinishedBranchWork = original
 	if merge := prObservation(t, f, *saved.PRNumber).AutoMerge; merge.Status != model.AutoMergeWaiting {
 		t.Fatalf("the refused attempt mutated the record: %+v", merge)
+	}
+}
+
+func corruptBranchTask(t *testing.T, f *fixture) func() {
+	t.Helper()
+	sibling := queuedTask(f.cfg, "corrupt-branch-sibling", f.cfg.DefaultBranch, "octomus/corrupt")
+	putTask(t, f, sibling)
+	db := f.rawDB(t)
+	_, err := db.Exec(`
+		DROP INDEX IF EXISTS decision_identity;
+		DROP INDEX IF EXISTS memory_repository;
+		DROP INDEX IF EXISTS task_problem_identity;
+		DROP TRIGGER IF EXISTS batch_member_update;
+		DROP TRIGGER IF EXISTS notify_control_update;
+		DROP TRIGGER IF EXISTS notify_task_update;
+		DROP TRIGGER IF EXISTS notify_cycle_update;
+		DROP TRIGGER IF EXISTS project_proposals_update;
+		DROP TRIGGER IF EXISTS project_record_update;
+		DROP TRIGGER IF EXISTS release_pr_reservation_update;
+		UPDATE records SET data='{' WHERE kind='task' AND id='corrupt-branch-sibling';
+	`)
+	must0(t, err)
+	return func() {
+		_, err := db.Exec(`DELETE FROM records WHERE kind='task' AND id='corrupt-branch-sibling'; DELETE FROM record_meta WHERE kind='task' AND id='corrupt-branch-sibling'`)
+		must0(t, err)
 	}
 }
 
@@ -495,16 +514,14 @@ func TestMergeInFlightReadsOriginalRepository(t *testing.T) {
 }
 
 func TestMergeBlockedBranchCheckFailureDoesNotMutate(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, observation := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	setContinuous(t, app)
 
-	original := unfinishedBranchWork
-	unfinishedBranchWork = func(_ *store.Store, _, _, _ string) (bool, error) {
-		return false, fmt.Errorf("injected branch check failure")
-	}
-	defer func() { unfinishedBranchWork = original }()
+	restoreBranchCheck := corruptBranchTask(t, f)
+	defer restoreBranchCheck()
 	app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, observation)
 	recorded := prObservation(t, f, *saved.PRNumber).AutoMerge
 	if recorded.Status != model.AutoMergeWaiting || recorded.Reason == "" {
@@ -516,19 +533,17 @@ func TestMergeBlockedBranchCheckFailureDoesNotMutate(t *testing.T) {
 }
 
 func TestMergeSettlementFailureBlocksUntilReconciled(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, observation := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	setContinuous(t, app)
 
-	original := settleMergeRecord
-	settleMergeRecord = func(s *store.Store, repo string, number uint64, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) (bool, error) {
-		if status == model.AutoMergeMerged && repo == observation.Repository && number == observation.PR.Number {
-			return false, fmt.Errorf("injected settlement failure")
-		}
-		return s.SettleMerge(repo, number, expected, status, reason, source, commit, revoke)
-	}
-	defer func() { settleMergeRecord = original }()
+	db := f.rawDB(t)
+	_, err := db.Exec(`CREATE TRIGGER refuse_merge_settlement BEFORE UPDATE ON records
+		WHEN NEW.kind='pr' AND json_extract(NEW.data,'$.auto_merge.status')='merged'
+		BEGIN SELECT RAISE(FAIL,'injected settlement failure'); END`)
+	must0(t, err)
 
 	app.mergeAttempt(t.Context(), saved, observation, false)
 	if len(mergeAttempts(t, f)) != 1 {
@@ -565,7 +580,8 @@ func TestMergeSettlementFailureBlocksUntilReconciled(t *testing.T) {
 	}
 	must0(t, store.Put(f.state, store.Tasks.Key(blocked.ID), func() model.Task { dead := blocked; dead.Status = model.StatusFailed; return dead }()))
 
-	settleMergeRecord = original
+	_, err = db.Exec("DROP TRIGGER refuse_merge_settlement")
+	must0(t, err)
 	app.mergeCandidate(t.Context(), f.cfg, false, true, false, nil, prObservation(t, f, *saved.PRNumber))
 	settled := prObservation(t, f, *saved.PRNumber).AutoMerge
 	if settled.Status != model.AutoMergeMerged || settled.ResultSource == nil ||
@@ -642,16 +658,17 @@ func TestMergeRecoveryErrorShownInStateView(t *testing.T) {
 
 // failWaitingSettlement injects one waiting-state settlement failure and returns
 // the restore, so a later pass can exercise the real store function.
-func failWaitingSettlement(t *testing.T) func() {
+func failWaitingSettlement(t *testing.T, f *fixture) func() {
 	t.Helper()
-	original := settleMergeRecord
-	settleMergeRecord = func(s *store.Store, repo string, number uint64, expected model.AutoMergeState, status model.AutoMergeStatus, reason, source string, commit *string, revoke bool) (bool, error) {
-		if status == model.AutoMergeWaiting {
-			return false, fmt.Errorf("injected waiting settlement failure")
-		}
-		return s.SettleMerge(repo, number, expected, status, reason, source, commit, revoke)
+	db := f.rawDB(t)
+	_, err := db.Exec(`CREATE TRIGGER IF NOT EXISTS refuse_waiting_settlement BEFORE UPDATE ON records
+		WHEN NEW.kind='pr' AND json_extract(NEW.data,'$.auto_merge.status')='waiting'
+		BEGIN SELECT RAISE(FAIL,'injected waiting settlement failure'); END`)
+	must0(t, err)
+	return func() {
+		_, err := db.Exec("DROP TRIGGER IF EXISTS refuse_waiting_settlement")
+		must0(t, err)
 	}
-	return func() { settleMergeRecord = original }
 }
 
 // runMergePass runs one recovery and candidate pass, forcing the pacing gate.
@@ -665,13 +682,14 @@ func runMergePass(t *testing.T, app *App) {
 }
 
 func TestMergePrecheckFailureRecoversToMerge(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, _ := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	setContinuous(t, app)
 	patchPRs(t, f, map[string]any{"check_status": "EXPECTED"})
 
-	restore := failWaitingSettlement(t)
+	restore := failWaitingSettlement(t, f)
 	defer restore()
 	runMergePass(t, app)
 	restore()
@@ -697,12 +715,13 @@ func TestMergePrecheckFailureRecoversToMerge(t *testing.T) {
 }
 
 func TestMergePrecheckRecoveryRetriesSameStatusSettlement(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, observation := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	expected := *observation.AutoMerge
 	reason := "Waiting for checks to complete on the reviewed head"
-	restore := failWaitingSettlement(t)
+	restore := failWaitingSettlement(t, f)
 	defer restore()
 	app.settleMerge(observation, expected, model.AutoMergeWaiting, reason, "", nil, false)
 	if app.recoveryConflict() == nil {
@@ -728,11 +747,12 @@ func TestMergePrecheckRecoveryRetriesSameStatusSettlement(t *testing.T) {
 }
 
 func TestMergePrecheckRecoveryPreservesNewerSameStatusDecision(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, observation := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	expected := *observation.AutoMerge
-	restore := failWaitingSettlement(t)
+	restore := failWaitingSettlement(t, f)
 	defer restore()
 	app.settleMerge(observation, expected, model.AutoMergeWaiting, "Older waiting decision", "", nil, false)
 	restore()
@@ -752,13 +772,14 @@ func TestMergePrecheckRecoveryPreservesNewerSameStatusDecision(t *testing.T) {
 }
 
 func TestMergePrecheckFailureArchivedLeavesNoBarrier(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, _ := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	setContinuous(t, app)
 	patchPRs(t, f, map[string]any{"check_status": "EXPECTED"})
 
-	restore := failWaitingSettlement(t)
+	restore := failWaitingSettlement(t, f)
 	defer restore()
 	runMergePass(t, app)
 	restore()
@@ -786,13 +807,14 @@ func TestMergePrecheckFailureArchivedLeavesNoBarrier(t *testing.T) {
 }
 
 func TestMergePrecheckFailureTerminalObservationResolves(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, _ := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	setContinuous(t, app)
 	patchPRs(t, f, map[string]any{"check_status": "EXPECTED"})
 
-	restore := failWaitingSettlement(t)
+	restore := failWaitingSettlement(t, f)
 	defer restore()
 	runMergePass(t, app)
 	restore()

@@ -166,8 +166,8 @@ func route() config.Route {
 	return config.Route{
 		Backend:  config.BackendOpencode,
 		Model:    "fixture-model",
-		Provider: stringPtr("fixture"),
-		Variant:  stringPtr("high"),
+		Provider: new("fixture"),
+		Variant:  new("high"),
 	}
 }
 
@@ -200,8 +200,8 @@ func TestValidateRoute(t *testing.T) {
 	t.Parallel()
 	models := []Model{
 		{Backend: config.BackendCodex, Model: "gpt-6-astra", DisplayName: "astra", Efforts: []string{"low", "medium", "high"}, Variants: []string{}, Available: true},
-		{Backend: config.BackendOpencode, Provider: stringPtr("fixture"), Model: "fixture-model", DisplayName: "fixture", Efforts: []string{}, Variants: []string{"low", "high"}, Available: true},
-		{Backend: config.BackendOpencode, Provider: stringPtr("offline"), Model: "fixture-model", DisplayName: "offline", Efforts: []string{}, Variants: []string{"high"}, Available: false, UnavailableReason: stringPtr("Provider is not configured")},
+		{Backend: config.BackendOpencode, Provider: new("fixture"), Model: "fixture-model", DisplayName: "fixture", Efforts: []string{}, Variants: []string{"low", "high"}, Available: true},
+		{Backend: config.BackendOpencode, Provider: new("offline"), Model: "fixture-model", DisplayName: "offline", Efforts: []string{}, Variants: []string{"high"}, Available: false, UnavailableReason: new("Provider is not configured")},
 	}
 	if err := ValidateRoute(codexRoute(), models); err != nil {
 		t.Fatalf("valid codex route: %v", err)
@@ -211,7 +211,7 @@ func TestValidateRoute(t *testing.T) {
 		t.Fatalf("unsupported effort must fail, got %v", err)
 	}
 	withProvider := codexRoute()
-	withProvider.Provider = stringPtr("provider")
+	withProvider.Provider = new("provider")
 	if err := ValidateRoute(withProvider, models); err == nil {
 		t.Fatal("a codex route carrying a provider must fail")
 	}
@@ -219,12 +219,12 @@ func TestValidateRoute(t *testing.T) {
 		t.Fatalf("valid opencode route: %v", err)
 	}
 	selected := route()
-	selected.Provider = stringPtr("invented")
+	selected.Provider = new("invented")
 	if err := ValidateRoute(selected, models); err == nil || !strings.Contains(err.Error(), "unavailable in this runtime") {
 		t.Fatalf("unknown provider must fail, got %v", err)
 	}
 	selected = route()
-	selected.Variant = stringPtr("invented")
+	selected.Variant = new("invented")
 	if err := ValidateRoute(selected, models); err == nil || !strings.Contains(err.Error(), "Unsupported model variant") {
 		t.Fatalf("unknown variant must fail, got %v", err)
 	}
@@ -233,7 +233,7 @@ func TestValidateRoute(t *testing.T) {
 		t.Fatalf("absent variant is always acceptable: %v", err)
 	}
 	selected = route()
-	selected.Provider = stringPtr("offline")
+	selected.Provider = new("offline")
 	err := ValidateRoute(selected, models)
 	if err == nil || !strings.Contains(err.Error(), "unavailable: Provider is not configured") {
 		t.Fatalf("unavailable provider must fail with its reason, got %v", err)

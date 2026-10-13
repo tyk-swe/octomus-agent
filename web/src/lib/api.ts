@@ -1,4 +1,5 @@
 import type {
+  ControlAction,
   ControlResult,
   BaselineCheck,
   BaselineView,
@@ -23,7 +24,6 @@ import type {
   TaskAction,
   TaskRow
 } from './types';
-import type { ControlAction } from './setup';
 
 let token = '';
 let session = new AbortController();

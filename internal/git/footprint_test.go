@@ -118,12 +118,12 @@ func TestParseMaintenanceFootprintRefusesIncompleteOrInvalidEvidence(t *testing.
 
 func TestFootprintRevisionRequiresExactObjectID(t *testing.T) {
 	for _, value := range []string{"HEAD", "--stat", "main..branch", strings.Repeat("a", 39), strings.Repeat("g", 40), strings.Repeat("A", 40)} {
-		if footprintRevision(value) {
+		if validObjectID(value) {
 			t.Fatalf("accepted noncanonical revision %q", value)
 		}
 	}
 	for _, value := range []string{strings.Repeat("a", 40), strings.Repeat("0123456789abcdef", 4)} {
-		if !footprintRevision(value) {
+		if !validObjectID(value) {
 			t.Fatalf("refused canonical revision %q", value)
 		}
 	}
@@ -151,7 +151,7 @@ func TestMaintenanceRemoteFootprintUsesSafeSumAndStricterLimits(t *testing.T) {
 		saved, live := config.Default(), config.Default()
 		saved.AutoMergeMaxLines, live.AutoMergeMaxLines = test.savedLines, test.liveLines
 		saved.AutoMergeMaxFiles, live.AutoMergeMaxFiles = test.savedFiles, test.liveFiles
-		if got := maintenanceRemoteFootprintWithin(test.additions, test.deletions, test.files, saved, live); got != test.eligible {
+		if got := RemoteFootprintWithin(test.additions, test.deletions, test.files, saved, live); got != test.eligible {
 			t.Errorf("remote footprint %d+%d / %d, limits %d:%d / %d:%d = %t; want %t",
 				test.additions, test.deletions, test.files, test.savedLines, test.liveLines, test.savedFiles, test.liveFiles, got, test.eligible)
 		}

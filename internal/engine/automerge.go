@@ -21,10 +21,6 @@ const (
 	mergePageSize      = 8
 )
 
-var unfinishedBranchWork = func(s *store.Store, repository, branch, taskID string) (bool, error) {
-	return s.UnfinishedBranchWork(repository, branch, taskID)
-}
-
 func (a *App) branchHasUnfinishedWork(repository, branch, exceptID string) (bool, error) {
 	a.runtimeMu.Lock()
 	running := false
@@ -38,7 +34,7 @@ func (a *App) branchHasUnfinishedWork(repository, branch, exceptID string) (bool
 	if running {
 		return true, nil
 	}
-	return unfinishedBranchWork(a.store, repository, branch, exceptID)
+	return a.store.UnfinishedBranchWork(repository, branch, exceptID)
 }
 
 func (a *App) initialMergeState(task *model.Task) (*model.AutoMergeState, error) {

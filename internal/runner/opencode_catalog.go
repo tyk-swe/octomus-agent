@@ -63,18 +63,18 @@ func Catalog(value any) ([]Model, error) {
 			}
 			var providerName *string
 			if s, ok := strAt(provider, "name"); ok {
-				providerName = stringPtr(s)
+				providerName = new(s)
 			}
 			var reason *string
 			switch {
 			case !available:
-				reason = stringPtr("Provider is not configured; configure OpenCode as the service user")
+				reason = new("Provider is not configured; configure OpenCode as the service user")
 			case !toolcall || !text:
-				reason = stringPtr("Model must support text and tool calling")
+				reason = new("Model must support text and tool calling")
 			}
 			out = append(out, Model{
 				Backend:           config.BackendOpencode,
-				Provider:          stringPtr(id),
+				Provider:          new(id),
 				ProviderName:      providerName,
 				Model:             modelID,
 				DisplayName:       display,

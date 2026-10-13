@@ -124,7 +124,7 @@ func replaceForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([
 		if !ok || !requested {
 			continue
 		}
-		if len(sha) != 40 && len(sha) != 64 || strings.Trim(sha, "0123456789abcdef") != "" {
+		if !validObjectID(sha) {
 			return nil, fmt.Errorf("Remote fork head %d returned an invalid object ID", n)
 		}
 		heads[n] = sha

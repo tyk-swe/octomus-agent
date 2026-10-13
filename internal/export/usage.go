@@ -71,16 +71,16 @@ func Usage(stateDB string) (map[string]any, error) {
 	return export(stateDB, "usage reporting", usage)
 }
 
-func usage(c *store.Snapshot) (Report, error) {
-	admissions, err := c.Admissions()
+func usage(s *store.Snapshot) (Report, error) {
+	admissions, err := s.Admissions()
 	if err != nil {
 		return Report{}, err
 	}
-	cycles, err := c.Cycles()
+	cycles, err := s.Cycles()
 	if err != nil {
 		return Report{}, err
 	}
-	tasks, err := c.Tasks()
+	tasks, err := s.Tasks()
 	if err != nil {
 		return Report{}, err
 	}
@@ -103,7 +103,7 @@ func usage(c *store.Snapshot) (Report, error) {
 		}
 		cycleCounts[admission.CycleID] = counts
 	}
-	daily, err := dailyUsage(c, dailyCounts)
+	daily, err := dailyUsage(s, dailyCounts)
 	if err != nil {
 		return Report{}, err
 	}
@@ -165,8 +165,8 @@ func usage(c *store.Snapshot) (Report, error) {
 	}, nil
 }
 
-func dailyUsage(c *store.Snapshot, attributed map[string]uint64) ([]Daily, error) {
-	days, err := c.DailySessions()
+func dailyUsage(s *store.Snapshot, attributed map[string]uint64) ([]Daily, error) {
+	days, err := s.DailySessions()
 	if err != nil {
 		return nil, err
 	}

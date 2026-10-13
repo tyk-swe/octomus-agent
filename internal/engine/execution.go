@@ -354,7 +354,7 @@ func (a *App) retryPreflight(ctx context.Context, task *model.Task) error {
 		if err != nil {
 			return err
 		}
-		if task.ExecutionSession == nil && sourcePtrEqual(source, dependency.OutputCommit) {
+		if task.ExecutionSession == nil && source != nil && dependency.OutputCommit != nil && *source == *dependency.OutputCommit {
 			authorized = true
 		}
 	}
@@ -536,141 +536,8 @@ func repairPrompt(task *model.Task, cfg config.Config, review model.Review, veri
 		quoteList(verificationErrors)) + maintenanceRepairPolicy(task), nil
 }
 
-func (a *App) published(task *model.Task, p model.PullRequest) error {
-	next := task.Clone()
-	next.PRNumber = &p.Number
-	next.PRURL = &p.URL
-	next.Error = nil
-	next.BlockedReason = nil
-	next.Status = model.StatusPublished
-	next.UpdatedAt = model.Now()
-	merge, err := a.initialMergeState(&next)
-	if err != nil {
-		return err
-	}
-	committed, err := a.store.CompletePublication(*task, next, p, merge)
-	if err != nil {
-		return err
-	}
-	*task = committed
-	a.runtimeMu.Lock()
-	a.runtime.lastMergeCheck = time.Time{}
-	a.runtimeMu.Unlock()
-	a.notify()
-	return nil
-}
-
-// transition is the gate-held scheduler/settlement path, never a worker checkpoint.
-func (a *App) transition(task *model.Task, status model.Status) error {
-	expected := task.Clone()
-	next := task.Clone()
-	next.Status = status
-	change := model.TaskSettlement
-	if status == model.StatusExecuting {
-		change = model.TaskAdmission
-	}
-	if status == model.StatusQueued {
-		change = model.TaskRecovery
-	}
-	if err := a.commitTaskLocked(expected, &next, change); err != nil {
-		return err
-	}
-	*task = next
-	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
-	return nil
-}
-
-func statusLabel(status model.Status) string {
-	name := status.String()
-	if name == "" {
-		return name
-	}
-	return strings.ToUpper(name[:1]) + name[1:]
-}
-
 func (a *App) taskWorkspace(taskID string) string {
 	return filepath.Join(a.dataDir, "tasks", taskID, "workspace")
-}
-
-func (a *App) setTaskError(task *model.Task, err error) error {
-	next := task.Clone()
-	recordTaskError(&next, err)
-	next.Status = model.StatusBlocked
-	if err := a.commitTaskLocked(*task, &next, model.TaskSettlement); err != nil {
-		return err
-	}
-	*task = next
-	_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
-	return nil
-}
-
-func recordTaskError(task *model.Task, err error) {
-	reason := model.BlockedReasonFromError(err)
-	if reason == model.BlockedUnknown && task.Status == model.StatusPublishing && task.OutputCommit != nil {
-		// External publication may have succeeded before its durable settlement
-		// failed. Keep known preflight refusals and the original diagnostic.
-		reason = model.BlockedPublicationUncertain
-	}
-	task.BlockedReason = &reason
-	task.Error = new(redact.Error(err))
-}
-
-// cancelledByOperator is the durable reason an operator cancellation records.
-const cancelledByOperator = "Cancelled by the operator"
-
-// taskCancellationApplies reports whether a durable operator cancellation still governs this task. A task that reached
-// an output checkpoint is excluded: publication cannot be undone, so it stays uncertain for explicit reconciliation,
-// exactly as restart recovery decides the same marker. The caller must hold no lock; this is a read.
-func (a *App) taskCancellationApplies(task model.Task) (bool, error) {
-	if task.OutputCommit != nil {
-		return false, nil
-	}
-	return a.store.CancelMarked(task.ID)
-}
-
-// settleExitedTask commits what a worker's exit leaves in the durable record. The caller holds the gate, so settlement
-// is serialized with operator cancellation.
-//
-// Cancellation markers also settle historical or refused cancellation writes.
-// The worker's cause stays in an ancillary event, and terminal state without a
-// marker stands. New worker checkpoints cannot overwrite cancellation.
-//
-// The error is returned so the caller can raise the recovery barrier at the worker join or fail the recovery scan.
-func (a *App) settleExitedTask(task *model.Task, cause error) error {
-	expected := task.Clone()
-	next := task.Clone()
-	model.FailRunning(next.Sessions, redact.Error(cause))
-	cancelled, err := a.taskCancellationApplies(next)
-	if err != nil {
-		return err
-	}
-	if cancelled {
-		next.Status = model.StatusCancelled
-		next.Error, next.BlockedReason = new(cancelledByOperator), nil
-	} else if next.Status.Active() {
-		recordTaskError(&next, cause)
-		next.Status = model.StatusBlocked
-	} else if wirejson.Equal(expected, next) {
-		return nil
-	}
-	if err := a.commitTaskLocked(expected, &next, model.TaskSettlement); err != nil {
-		return err
-	}
-	*task = next
-	if next.Status != expected.Status {
-		_ = a.store.Event(task.ID, model.EventStatus, statusLabel(task.Status))
-	}
-	if cancelled {
-		_ = a.store.Event(task.ID, model.EventError, redact.Error(cause))
-	}
-	return nil
-}
-
-func sourcePtrEqual(a, b *string) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 // quoteList and quoteOption render prompt operands as quoted literals, so a command or path reads as one unit.

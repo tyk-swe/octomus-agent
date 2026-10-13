@@ -155,8 +155,8 @@ os.execve(binary,[binary]+sys.argv[1:],env)
 		route = config.Route{
 			Backend:  backend,
 			Model:    "contract-model",
-			Provider: stringPtr("contract"),
-			Variant:  stringPtr("high"),
+			Provider: new("contract"),
+			Variant:  new("high"),
 		}
 	}
 	owner, cancel := context.WithCancel(ctx)

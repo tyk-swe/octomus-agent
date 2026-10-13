@@ -729,20 +729,24 @@ func TestMergeWaitsForInFlightBranchOwner(t *testing.T) {
 }
 
 func TestMergeFinalGateRejectsLateBranchOwner(t *testing.T) {
+	t.Parallel()
 	f := maintenanceFixture(t)
 	saved, observation := publishedMaintenanceTask(t, f)
 	app := f.pausedApp(t)
 	setContinuous(t, app)
 
-	original := unfinishedBranchWork
-	unfinishedBranchWork = func(s *store.Store, repository, branch, taskID string) (bool, error) {
-		app.runtimeMu.Lock()
-		app.runtime.tasks["late-sibling"] = &taskJob{branch: saved.Branch, cancel: func() {}}
-		app.runtimeMu.Unlock()
-		return s.UnfinishedBranchWork(repository, branch, taskID)
-	}
-	defer func() { unfinishedBranchWork = original }()
-	app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, observation)
+	heldUploadPack(t, f)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.mergeCandidate(t.Context(), f.cfg, false, false, true, nil, observation)
+	}()
+	waitForPreflights(t, f, 1)
+	app.runtimeMu.Lock()
+	app.runtime.tasks["late-sibling"] = &taskJob{branch: saved.Branch, cancel: func() {}}
+	app.runtimeMu.Unlock()
+	releasePreflight(t, f)
+	<-done
 	if len(mergeAttempts(t, f)) != 0 {
 		t.Fatal("a branch owner arriving after preflight reached the mutation")
 	}

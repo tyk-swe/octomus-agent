@@ -21,16 +21,16 @@ func (r *ReadOnly) Snapshot(read func(*Snapshot) error) error {
 	return r.snapshot(func(c *sql.Conn) error { return read(&Snapshot{conn: c}) })
 }
 
-func (r *Snapshot) Cycle(id string) (*model.Cycle, error) {
-	return recordAt(r.conn, Cycles.Key(id))
+func (s *Snapshot) Cycle(id string) (*model.Cycle, error) {
+	return recordAt(s.conn, Cycles.Key(id))
 }
 
 const snapshotCycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY r.id"
 
 // TasksForCycle returns every task linked to a cycle, in stable identity order.
 // Selection uses the cycle index before decoding the full evidence records.
-func (r *Snapshot) TasksForCycle(id string) ([]model.Task, error) {
-	return queryRecords[model.Task](r.conn, snapshotCycleTasksQuery, id)
+func (s *Snapshot) TasksForCycle(id string) ([]model.Task, error) {
+	return queryRecords[model.Task](s.conn, snapshotCycleTasksQuery, id)
 }
 
 const snapshotPRObservationsQuery = `SELECT r.data
@@ -42,26 +42,26 @@ const snapshotPRObservationsQuery = `SELECT r.data
 
 // PRObservations returns at most two records for an exact remote identity. Two
 // records expose ambiguous historical evidence rather than silently choosing one.
-func (r *Snapshot) PRObservations(repository string, number uint64) ([]model.PRObservation, error) {
-	return queryRecords[model.PRObservation](r.conn, snapshotPRObservationsQuery, repository, number)
+func (s *Snapshot) PRObservations(repository string, number uint64) ([]model.PRObservation, error) {
+	return queryRecords[model.PRObservation](s.conn, snapshotPRObservationsQuery, repository, number)
 }
 
 // Cycles and Tasks read the complete histories for the usage export. Operational
 // views use their bounded projections instead of these full-record queries.
-func (r *Snapshot) Cycles() ([]model.Cycle, error) {
-	return queryRecords[model.Cycle](r.conn, "SELECT data FROM records WHERE kind='cycle' ORDER BY id")
+func (s *Snapshot) Cycles() ([]model.Cycle, error) {
+	return queryRecords[model.Cycle](s.conn, "SELECT data FROM records WHERE kind='cycle' ORDER BY id")
 }
 
-func (r *Snapshot) Tasks() ([]model.Task, error) {
-	return queryRecords[model.Task](r.conn, "SELECT data FROM records WHERE kind='task' ORDER BY id")
+func (s *Snapshot) Tasks() ([]model.Task, error) {
+	return queryRecords[model.Task](s.conn, "SELECT data FROM records WHERE kind='task' ORDER BY id")
 }
 
-func (r *Snapshot) Admissions() ([]Admission, error) {
-	return queryRecords[Admission](r.conn, "SELECT data FROM admissions ORDER BY at,id")
+func (s *Snapshot) Admissions() ([]Admission, error) {
+	return queryRecords[Admission](s.conn, "SELECT data FROM admissions ORDER BY at,id")
 }
 
-func (r *Snapshot) DailySessions() ([]DaySessions, error) {
-	rows, err := r.conn.QueryContext(background, "SELECT day,sessions FROM usage ORDER BY day")
+func (s *Snapshot) DailySessions() ([]DaySessions, error) {
+	rows, err := s.conn.QueryContext(background, "SELECT day,sessions FROM usage ORDER BY day")
 	if err != nil {
 		return nil, err
 	}
