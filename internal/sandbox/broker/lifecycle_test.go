@@ -45,7 +45,7 @@ func lifecyclePrepared(t *testing.T, b *Broker) *prepared {
 			t.Fatal(err)
 		}
 	}
-	b.live[s.id] = struct{}{}
+	b.live[s] = struct{}{}
 	return s
 }
 
@@ -74,7 +74,7 @@ func TestPendingStartRemainsBoundedAndControllable(t *testing.T) {
 						}
 						return lifecycleResponse(http.StatusConflict, `{"message":"not running yet"}`), nil
 					case strings.HasSuffix(r.URL.Path, "/json"):
-						return lifecycleResponse(http.StatusOK, `{"State":{"OOMKilled":false}}`), nil
+						return lifecycleResponse(http.StatusOK, `{"Id":"pending-start","State":{"OOMKilled":false}}`), nil
 					case r.Method == http.MethodDelete:
 						if r.Context().Err() != nil || r.URL.Query().Get("force") != "1" || !strings.HasSuffix(r.URL.Path, "/pending-start") {
 							t.Error("uncertain start was not force-removed by ID under an independent live context")
@@ -238,7 +238,7 @@ func TestUnknownStartRetainsCapacityUntilRemoval(t *testing.T) {
 				// Docker may have started the process before this response was lost.
 				return nil, io.ErrUnexpectedEOF
 			case strings.HasSuffix(r.URL.Path, "/json"):
-				return lifecycleResponse(http.StatusOK, `{"State":{"OOMKilled":false}}`), nil
+				return lifecycleResponse(http.StatusOK, `{"Id":"pending-start","State":{"OOMKilled":false}}`), nil
 			case r.Method == http.MethodDelete:
 				if removable.Load() {
 					return lifecycleResponse(http.StatusNoContent, ""), nil
@@ -251,7 +251,7 @@ func TestUnknownStartRetainsCapacityUntilRemoval(t *testing.T) {
 		})
 		s := lifecyclePrepared(t, b)
 		report, err := s.execute(context.Background(), time.Minute, output{stdout: discard, stderr: discard}, nil)
-		if err == nil || !strings.Contains(err.Error(), "removing the sandbox also failed") || report.Sandbox == nil || !report.Sandbox.Incomplete {
+		if err == nil || !strings.Contains(err.Error(), "sandbox cleanup also failed") || report.Sandbox == nil || !report.Sandbox.Incomplete {
 			t.Fatalf("failed unknown-start teardown = %+v, %v", report, err)
 		}
 		if len(b.slots) != 1 || b.Info().Live != 1 {

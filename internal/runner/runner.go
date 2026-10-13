@@ -1,14 +1,10 @@
 package runner
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"slices"
-	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -127,19 +123,14 @@ func Connect(ctx context.Context, backend config.Backend, cfg config.Config, cwd
 	case config.BackendOpencode:
 		return connectOpenCode(ctx, cfg, cwd, entity, progress, box)
 	}
-	return nil, fmt.Errorf("Invalid backend")
+	return nil, errors.New("Invalid backend")
 }
 
 func FinishTurn(answer string, schema schemas.Schema) (string, error) {
 	if schema == nil {
 		return answer, nil
 	}
-	parsed, err := decodeJSON([]byte(answer))
-	if err == nil {
-		dec := json.NewDecoder(strings.NewReader(answer))
-		dec.UseNumber()
-		err = uniqueKeys(dec)
-	}
+	parsed, err := wirejson.Parse([]byte(answer))
 	if err != nil {
 		return "", fmt.Errorf("Runner returned invalid JSON: %w", err)
 	}
@@ -189,8 +180,7 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 		if config.SamePath(client.cwd, cwd) {
 			return client.adapter, nil
 		}
-		delete(r.clients, backend)
-		if err := client.adapter.Close(); err != nil {
+		if err := r.release(backend); err != nil {
 			return nil, err
 		}
 	}
@@ -207,18 +197,25 @@ func (r *Runners) Client(backend config.Backend, cwd string) (Adapter, error) {
 // broker could not confirm, makes the runner unavailable, as one that failed to start does.
 func (r *Runners) Release() error {
 	errs := []error{}
-	for backend, client := range r.clients {
-		delete(r.clients, backend)
-		err := client.adapter.Close()
-		if sandbox.Infrastructure(err) {
-			err = unavailable(err)
-		}
-		errs = append(errs, err)
-		if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
-			r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())
-		}
+	for backend := range r.clients {
+		errs = append(errs, r.release(backend))
 	}
 	return errors.Join(errs...)
+}
+
+// release settles one owned adapter, whether the turn ended or a different root replaces it. Both paths retain
+// sandbox evidence and classify an unconfirmed child end as infrastructure failure before starting another child.
+func (r *Runners) release(backend config.Backend) error {
+	client := r.clients[backend]
+	delete(r.clients, backend)
+	err := client.adapter.Close()
+	if sandbox.Infrastructure(err) {
+		err = unavailable(err)
+	}
+	if evidenced, ok := client.adapter.(interface{ SandboxEvidence() *model.SandboxRecord }); ok {
+		r.evidence = model.MergeSandbox(r.evidence, evidenced.SandboxEvidence())
+	}
+	return err
 }
 
 // TakeEvidence returns what the sandboxes of released runners recorded since the last call.
@@ -343,57 +340,6 @@ func asArray(v any) ([]any, bool) {
 func strAt(m map[string]any, key string) (string, bool) {
 	s, ok := m[key].(string)
 	return s, ok
-}
-
-func decodeJSON(data []byte) (any, error) {
-	if err := wirejson.ValidStrings(data); err != nil {
-		return nil, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, fmt.Errorf("trailing JSON data")
-	}
-	return v, nil
-}
-
-func uniqueKeys(dec *json.Decoder) error {
-	token, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	switch token {
-	case json.Delim('{'):
-		seen := map[string]struct{}{}
-		for dec.More() {
-			key, err := dec.Token()
-			if err != nil {
-				return err
-			}
-			name, _ := key.(string)
-			if _, ok := seen[name]; ok {
-				return fmt.Errorf("duplicate field %q", name)
-			}
-			seen[name] = struct{}{}
-			if err := uniqueKeys(dec); err != nil {
-				return err
-			}
-		}
-	case json.Delim('['):
-		for dec.More() {
-			if err := uniqueKeys(dec); err != nil {
-				return err
-			}
-		}
-	default:
-		return nil
-	}
-	_, err = dec.Token()
-	return err
 }
 
 func marshal(v any) (string, error) {

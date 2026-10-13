@@ -22,6 +22,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/schemas"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 const CodexVersion = "0.153.4"
@@ -40,14 +41,14 @@ type backlog struct {
 
 func (b *backlog) push(value map[string]any) error {
 	if len(b.items) >= 10000 {
-		return fmt.Errorf("Codex notification backlog exceeded")
+		return errors.New("Codex notification backlog exceeded")
 	}
 	encoded, err := marshal(value)
 	if err != nil {
 		return err
 	}
 	if b.bytes+len(encoded) > 8*1024*1024 {
-		return fmt.Errorf("Codex notification backlog exceeds 8 MB")
+		return errors.New("Codex notification backlog exceeds 8 MB")
 	}
 	b.bytes += len(encoded)
 	b.items = append(b.items, queuedMessage{value, len(encoded)})
@@ -138,7 +139,7 @@ func (c *Codex) Diagnose(cwd string) (Diagnostics, error) {
 	}
 	m, _ := asObject(account)
 	if m["requiresOpenaiAuth"] != false && m["account"] == nil {
-		return Diagnostics{}, fmt.Errorf("Codex authentication is missing; run codex login as the service user")
+		return Diagnostics{}, errors.New("Codex authentication is missing; run codex login as the service user")
 	}
 	version, err := c.box.RunnerVersion(c.ctx, sandbox.Spec{
 		Kind: wire.KindRunner, Runner: config.BackendCodex, Binary: c.binary, Dir: cwd,
@@ -251,7 +252,7 @@ func (c *Codex) receive(deadline time.Time, what string) (map[string]any, error)
 	if r.err != nil {
 		return nil, r.err
 	}
-	decoded, err := decodeJSON(r.line)
+	decoded, err := wirejson.Parse(r.line)
 	if err != nil {
 		return nil, fmt.Errorf("Invalid app-server JSON: %w", err)
 	}
@@ -305,7 +306,7 @@ func (c *Codex) rpc(method string, params map[string]any, deadline time.Time, wh
 			}
 			result, ok := v["result"]
 			if !ok {
-				return nil, fmt.Errorf("Missing RPC result")
+				return nil, errors.New("Missing RPC result")
 			}
 			return result, nil
 		}
@@ -346,25 +347,25 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 		result, _ := asObject(v)
 		data, ok := asArray(result["data"])
 		if !ok {
-			return nil, fmt.Errorf("Invalid model catalog")
+			return nil, errors.New("Invalid model catalog")
 		}
 		for _, item := range data {
 			m, _ := asObject(item)
 			name, ok := strAt(m, "model")
 			if !ok {
-				return nil, fmt.Errorf("Invalid Codex model identity")
+				return nil, errors.New("Invalid Codex model identity")
 			}
 			display, _ := strAt(m, "displayName")
 			effortList, ok := asArray(m["supportedReasoningEfforts"])
 			if !ok {
-				return nil, fmt.Errorf("Invalid Codex reasoning catalog")
+				return nil, errors.New("Invalid Codex reasoning catalog")
 			}
 			efforts := []string{}
 			for _, e := range effortList {
 				entry, _ := asObject(e)
 				effort, ok := strAt(entry, "reasoningEffort")
 				if !ok {
-					return nil, fmt.Errorf("Invalid reasoning effort")
+					return nil, errors.New("Invalid reasoning effort")
 				}
 				efforts = append(efforts, effort)
 			}
@@ -382,7 +383,7 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 			break
 		}
 		if len(data) == 0 || len(out) >= 10000 {
-			return nil, fmt.Errorf("Invalid model pagination")
+			return nil, errors.New("Invalid model pagination")
 		}
 	}
 	return out, nil
@@ -411,26 +412,26 @@ func (c *Codex) Start(route config.Route, cwd string, resume *string) (string, e
 	}
 	result, _ := asObject(v)
 	if s, _ := strAt(result, "model"); s != route.Model {
-		return "", fmt.Errorf("Runtime substituted the requested model")
+		return "", errors.New("Runtime substituted the requested model")
 	}
 	if s, _ := strAt(result, "reasoningEffort"); s != route.Effort {
-		return "", fmt.Errorf("Runtime substituted the requested reasoning effort")
+		return "", errors.New("Runtime substituted the requested reasoning effort")
 	}
 	sandbox, _ := asObject(result["sandbox"])
 	sandboxType, _ := strAt(sandbox, "type")
 	if result["approvalPolicy"] != "never" || sandboxType != "dangerFullAccess" {
-		return "", fmt.Errorf("Runtime did not grant the configured no-sandbox/never-approve policy")
+		return "", errors.New("Runtime did not grant the configured no-sandbox/never-approve policy")
 	}
 	thread, _ := asObject(result["thread"])
 	identity, ok := strAt(thread, "id")
 	if !ok {
-		return "", fmt.Errorf("Missing Codex thread identity")
+		return "", errors.New("Missing Codex thread identity")
 	}
 	if _, err := uuid.Parse(identity); err != nil {
 		return "", fmt.Errorf("Invalid Codex thread identity: %w", err)
 	}
 	if resume != nil && identity != *resume {
-		return "", fmt.Errorf("Codex substituted the requested thread")
+		return "", errors.New("Codex substituted the requested thread")
 	}
 	return identity, nil
 }
@@ -488,7 +489,7 @@ func (c *Codex) startTurn(thread string, route config.Route, cwd, prompt string,
 	turnObj, _ := asObject(result["turn"])
 	turn, ok := strAt(turnObj, "id")
 	if !ok {
-		return "", fmt.Errorf("Missing turn identity")
+		return "", errors.New("Missing turn identity")
 	}
 	return turn, nil
 }
@@ -498,7 +499,7 @@ func (c *Codex) nextEvent(deadline time.Time) (map[string]any, error) {
 		return nil, process.ErrSessionCancelled
 	}
 	if !time.Now().Before(deadline) {
-		return nil, fmt.Errorf("Codex session time limit exceeded")
+		return nil, errors.New("Codex session time limit exceeded")
 	}
 	if event, ok := c.pending.pop(); ok {
 		return event, nil
@@ -549,7 +550,7 @@ func (c *Codex) awaitTurn(thread, turn string, deadline time.Time) (string, erro
 				return "", fmt.Errorf("Codex turn did not complete successfully: %s", redact.Text(encoded))
 			}
 			if strings.TrimSpace(answer) == "" {
-				return "", fmt.Errorf("Codex returned no final result")
+				return "", errors.New("Codex returned no final result")
 			}
 			return answer, nil
 		}

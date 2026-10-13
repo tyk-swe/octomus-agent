@@ -153,6 +153,9 @@
 .sandbox-proof {
   padding: 0 24px 22px;
 }
+.sandbox-proof .eyebrow time {
+  text-transform: uppercase;
+}
 .sandbox-proof ul {
   list-style: none;
   margin: 10px 0 0;

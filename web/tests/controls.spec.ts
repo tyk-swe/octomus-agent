@@ -13,6 +13,8 @@ function idle(snapshot: Snapshot) {
   snapshot.cycle_active = false;
   snapshot.active_cycle_mode = null;
   snapshot.baseline_active = false;
+  for (const action of ['pause', 'resume', 'cycle', 'audit', 'configure'] as const)
+    snapshot.capabilities[action] = { allowed: true, reason: '' };
 }
 
 async function taskActivityFixture(page: Page, holdInitialEvents: boolean) {
@@ -167,6 +169,8 @@ for (const capacity of ['daily_exhausted', 'limit_too_low'] as const) {
       snapshot.tasks = [];
       snapshot.attention_tasks = [];
       snapshot.counts = queued ? { queued: 1 } : {};
+      snapshot.capabilities.cycle.allowed = status === 'ready';
+      snapshot.capabilities.audit.allowed = status === 'ready';
       snapshot.planning_capacity = {
         ...snapshot.planning_capacity,
         limit: status === 'limit_too_low' ? 12 : 150,
@@ -253,6 +257,11 @@ async function controlFixture(page: Page) {
     snapshot.cycle_active = auditing;
     snapshot.active_cycle_mode = auditing ? 'audit' : null;
     snapshot.planning_capacity.status = 'ready';
+    snapshot.capabilities.pause.allowed = !auditing;
+    snapshot.capabilities.resume.allowed = !auditing;
+    snapshot.capabilities.cycle.allowed = mode === 'paused' && !auditing;
+    snapshot.capabilities.audit.allowed = mode === 'paused' && !auditing;
+    snapshot.capabilities.configure.allowed = mode === 'paused' && !auditing;
     control = snapshot.control;
     if (hold) await hold.promise;
     if (outage)
@@ -358,6 +367,13 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
     snapshot.configured = configured;
     snapshot.audit_configured = true;
     snapshot.status = audit === 'running' ? 'auditing' : restriction;
+    const idle = restriction === 'idle' && audit !== 'running';
+    snapshot.capabilities.pause.allowed = restriction !== 'audit' && audit !== 'running';
+    snapshot.capabilities.resume.allowed =
+      configured && restriction !== 'audit' && audit !== 'running';
+    snapshot.capabilities.cycle.allowed = configured && idle;
+    snapshot.capabilities.audit.allowed = idle;
+    snapshot.capabilities.configure.allowed = idle;
     snapshot.control.paused = restriction !== 'continuous';
     snapshot.active_tasks = restriction === 'task' ? 1 : 0;
     snapshot.cycle_active = ['execution', 'audit'].includes(restriction) || audit === 'running';
@@ -376,7 +392,7 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
       cycle.number = 2;
       cycle.mode = 'audit';
       cycle.status = audit === 'running' ? 'running' : 'completed';
-      cycle.decisions = { accepted: 1, rejected: 1, deferred: 1 };
+      cycle.decisions = { accepted: 1, rejected: 1, deferred: 1, candidate: 0 };
       snapshot.cycles.unshift(cycle);
     }
   });
@@ -511,6 +527,11 @@ for (const mode of ['execution', 'audit'] as const) {
       idle(snapshot);
       snapshot.status = mode === 'audit' ? 'auditing' : 'paused';
       snapshot.active_cycle_mode = mode;
+      snapshot.capabilities.pause.allowed = mode !== 'audit';
+      snapshot.capabilities.resume.allowed = mode !== 'audit';
+      snapshot.capabilities.cycle.allowed = false;
+      snapshot.capabilities.audit.allowed = false;
+      snapshot.capabilities.configure.allowed = false;
       snapshot.tasks = [];
       snapshot.attention_tasks = [];
       snapshot.counts = {};

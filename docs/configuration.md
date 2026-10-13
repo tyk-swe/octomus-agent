@@ -1,21 +1,13 @@
 # Configuration
 
 Your saved configuration sets the repository, model routes, verification policy, and
-operating limits. Configure Octomus from the private dashboard while it is paused and
-has no active tasks or cycle. Start with the [installation guide](getting-started.md)
-if you have not connected a host yet.
+operating limits. Configure it from the private dashboard while the service is paused and
+has no active tasks or cycle. For the first-run sequence and host setup, see [Getting
+started](getting-started.md) and [Deployment](deployment.md).
 
-## Enter, save, check, then run
-
-1. **Enter** the repository path, GitHub repository, default branch, model routes, and checks.
-2. **Save configuration** to persist the values to the service.
-3. **Check connection** against the saved configuration. Use **Check audit connection**
-   when you only need planning prerequisites.
-4. **Run an audit** from Overview to inspect recommendations before choosing execution.
-
-Loading a model catalog does not save your choices or start a model call. A connection
-check validates prerequisites; it does not prove push permission or model inference.
-Editing saved configuration invalidates the previous connection check.
+Loading a model catalog does not save choices or start a model call. A connection check
+validates prerequisites; it does not prove push permission or model inference. Editing
+saved configuration invalidates the previous connection check.
 
 ## Display-safe values and saved revisions
 
@@ -187,17 +179,7 @@ never deletes runner storage; configure its retention on the host.
 shape. Model IDs and some role settings are deliberately empty until you choose routes
 available to your provider account. The file is a reference, not a ready-to-run setup.
 
-For command-line options, environment variables, and the optional attention webhook, see
-[deployment and operations](deployment.md#cli). Keep account credentials in the service
-user's protected environment and runner settings, never in the repository.
-
-The optional webhook now covers published tasks, failed planning cycles and
-successful audits as well as blocked/failed tasks and service-error pauses.
-It is still configured only through the protected environment, with the same
-minimal payload and delivery limits; see [webhook categories](deployment.md#optional-attention-webhook).
-
-Planning automatically observes owned-PR review decisions, aggregate head-commit
-CI status and mergeability from GitHub. These source-attributed, bounded fields
-need no additional setting. They are evidence, not authorization to publish,
-merge or rebase, and external PRs remain read-only. Old saved PRs start with
-unobserved status until refreshed. See [planning context](architecture.md#planning).
+For command-line options, environment variables, the optional attention webhook and
+planning context, see [deployment and operations](deployment.md#cli) and
+[architecture](architecture.md#planning). Keep account credentials in the service user's
+protected environment and runner settings, never in the repository.

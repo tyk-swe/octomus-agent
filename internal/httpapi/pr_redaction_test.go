@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,10 +22,10 @@ func TestPRContextPresentationDropsLegacyCutFragments(t *testing.T) {
 			TitleTruncated: true, BodyTruncated: true,
 		})
 	}
-	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+	if err := store.Put(state, store.Cycles.Key(cycle.ID), cycle); err != nil {
 		t.Fatal(err)
 	}
-	before, err := store.Get[json.RawMessage](state, "cycle", cycle.ID)
+	before, err := store.Get(state, store.Cycles.Key(cycle.ID).Raw())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +41,7 @@ func TestPRContextPresentationDropsLegacyCutFragments(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "Known context") || !strings.Contains(response.Body.String(), "Retained paragraph.") || !strings.Contains(response.Body.String(), `"body_truncated":true`) {
 		t.Fatalf("lost useful complete text or truncation evidence: %s", response.Body)
 	}
-	after, err := store.Get[json.RawMessage](state, "cycle", cycle.ID)
+	after, err := store.Get(state, store.Cycles.Key(cycle.ID).Raw())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +56,7 @@ func TestPRHistoryRedactsCompleteTitlesBeforeBounds(t *testing.T) {
 	const credential = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
 	pr := model.PRObservation{PR: model.PullRequest{Number: 42, State: "open",
 		Title: strings.Repeat("x", 190) + credential + " tail"}}
-	if err := state.Put("pr", "42", pr); err != nil {
+	if err := store.Put(state, store.PRs.Key("42"), pr); err != nil {
 		t.Fatal(err)
 	}
 	response := call(t, Router(app, token, "", "test"), "GET", "/api/prs", "")

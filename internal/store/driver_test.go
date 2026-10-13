@@ -19,7 +19,7 @@ func TestConnectionSettings(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
 	s := open(t, path)
-	must(t, s.Snapshot(func(c *sql.Conn) error {
+	must(t, s.RawSnapshot(func(c *sql.Conn) error {
 		var mode string
 		var synchronous, busy, queryOnly int64
 		if err := c.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
@@ -43,7 +43,7 @@ func TestConnectionSettings(t *testing.T) {
 	must(t, err)
 	defer r.Close()
 	var busy int64
-	must(t, r.Conn.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy))
+	must(t, r.RawConn().QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy))
 	if busy != 5000 {
 		t.Fatalf("read-only busy_timeout %d", busy)
 	}
@@ -67,22 +67,22 @@ func TestPanicInsideTransactionRollsBack(t *testing.T) {
 	}
 	path := statePath(t)
 	s := open(t, path)
-	panics(s.Snapshot, "INSERT INTO records VALUES ('x','inside','1')")
-	must(t, s.Put("x", "after", 1))
+	panics(s.RawSnapshot, "INSERT INTO records VALUES ('x','inside','1')")
+	must(t, store.Put(s, store.AnyKey[int]("x", "after"), 1))
 	startBatch(t, s)
 
 	r, err := store.OpenReadOnly(path, "probe")
 	must(t, err)
 	defer r.Close()
-	panics(r.Snapshot, "SELECT count(*) FROM records")
-	must(t, r.Snapshot(func(*sql.Conn) error { return nil }))
+	panics(r.RawSnapshot, "SELECT count(*) FROM records")
+	must(t, r.RawSnapshot(func(*sql.Conn) error { return nil }))
 
 	must(t, s.Close())
 	s = open(t, path)
-	if after, err := store.Get[any](s, "x", "after"); err != nil || after == nil {
+	if after, err := store.Get(s, store.AnyKey[int]("x", "after")); err != nil || after == nil {
 		t.Fatalf("write after the panic = %v, %v; want it committed", after, err)
 	}
-	if inside, err := store.Get[any](s, "x", "inside"); err != nil || inside != nil {
+	if inside, err := store.Get(s, store.AnyKey[int]("x", "inside")); err != nil || inside != nil {
 		t.Fatalf("write inside the panicking transaction = %v, %v; want it rolled back", inside, err)
 	}
 }
@@ -94,21 +94,21 @@ func TestReadOnlyConnectionRefusesWrites(t *testing.T) {
 	must(t, os.MkdirAll(dir, 0o700))
 	path := filepath.Join(dir, "state.db")
 	s := open(t, path)
-	must(t, s.Put("x", "a", 1))
+	must(t, store.Put(s, store.AnyKey[int]("x", "a"), 1))
 	r, err := store.OpenReadOnly(path, "probe")
 	must(t, err)
 	defer r.Close()
 	var seen int64
-	must(t, r.Conn.QueryRowContext(context.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
+	must(t, r.RawConn().QueryRowContext(context.Background(), "SELECT count(*) FROM records WHERE kind='x'").Scan(&seen))
 	if seen != 1 {
 		t.Fatalf("read-only handle sees %d records; it opened a different database", seen)
 	}
-	_, err = r.Conn.ExecContext(context.Background(), "INSERT INTO records VALUES ('x','ro','1')")
+	_, err = r.RawConn().ExecContext(context.Background(), "INSERT INTO records VALUES ('x','ro','1')")
 	if err == nil || !strings.Contains(err.Error(), "readonly") {
 		t.Fatalf("read-only write error = %v", err)
 	}
-	must(t, s.Put("x", "b", 2))
-	if landed, err := store.Get[any](s, "x", "ro"); err != nil || landed != nil {
+	must(t, store.Put(s, store.AnyKey[int]("x", "b"), 2))
+	if landed, err := store.Get(s, store.AnyKey[int]("x", "ro")); err != nil || landed != nil {
 		t.Fatalf("read-only write landed: %v, %v", landed, err)
 	}
 	entries, err := os.ReadDir(parent)
@@ -130,9 +130,9 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	path := statePath(t)
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.GitHubRepo = "fixture/project"; c.MaxOpenPRs = 1 })
-	must(t, s.Put("settings", "pr_inventory", inventory()))
+	must(t, store.Put(s, store.Setting[model.OpenPRInventory]("pr_inventory"), inventory()))
 	first := task()
-	must(t, s.Put("task", first.ID, first))
+	must(t, store.Put(s, store.Tasks.Key(first.ID), first))
 	stale := inventory()
 	stale.ObservedAt = "2025-12-31T00:00:00Z"
 	admitted, err := s.AdmitNewPRTask(&first, stale)
@@ -151,7 +151,7 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	if !admitted || first.Status != model.StatusExecuting {
 		t.Fatalf("admitted=%v status=%s", admitted, first.Status)
 	}
-	saved, err := store.Get[model.Task](s, "task", first.ID)
+	saved, err := store.Get(s, store.Tasks.Key(first.ID))
 	must(t, err)
 	if saved.Status != model.StatusExecuting {
 		t.Fatal("admission did not persist the status")
@@ -161,7 +161,7 @@ func TestPRAdmissionTransaction(t *testing.T) {
 	}
 	events, err := s.Events(&first.ID)
 	must(t, err)
-	if len(events) != 1 || events[0].Kind != "status" || events[0].Message != "Executing" {
+	if len(events) != 1 || events[0].Kind != model.EventStatus || events[0].Message != "Executing" {
 		t.Fatalf("%+v", events)
 	}
 	reservations, err := s.PRReservations("Fixture/Project")
@@ -170,7 +170,7 @@ func TestPRAdmissionTransaction(t *testing.T) {
 		t.Fatalf("%+v", reservations)
 	}
 	second := task()
-	must(t, s.Put("task", second.ID, second))
+	must(t, store.Put(s, store.Tasks.Key(second.ID), second))
 	admitted, err = s.AdmitNewPRTask(&second, inventory())
 	must(t, err)
 	if admitted || second.Status != model.StatusQueued {
@@ -184,13 +184,13 @@ func TestPRAdmissionTransaction(t *testing.T) {
 		t.Fatalf("%d %d %d", observed, unrepresented, remaining)
 	}
 	first.Status = model.StatusBlocked
-	must(t, s.Put("task", first.ID, first))
+	must(t, store.Put(s, store.Tasks.Key(first.ID), first))
 	if has, _ := s.HasPRReservation(first.ID); has {
 		t.Fatal("blocked task kept its reservation")
 	}
 	first.Status = model.StatusPublished
 	first.OutputCommit = str("out00001")
-	must(t, s.Put("task", first.ID, first))
+	must(t, store.Put(s, store.Tasks.Key(first.ID), first))
 	must(t, s.SeedPRReservation(first))
 	published := inventory(model.PullRequest{Number: 7, Branch: first.Branch, State: "open", Owned: true, Head: "out00001", Base: "main"})
 	published.ObservedAt = "2026-01-02T00:00:00Z"
@@ -219,7 +219,7 @@ func TestEventsAreRedactedAndBounded(t *testing.T) {
 	s := open(t, path)
 	saveConfig(t, s, func(c *config.Config) { c.RetainEvents = 5 })
 	for i := range 8 {
-		must(t, s.Event("t", "status", "token ghp_abcdefghijklmnop step "+string(rune('a'+i))))
+		must(t, s.Event("t", model.EventStatus, "token ghp_abcdefghijklmnop step "+string(rune('a'+i))))
 	}
 	events, err := s.Events(str("t"))
 	must(t, err)

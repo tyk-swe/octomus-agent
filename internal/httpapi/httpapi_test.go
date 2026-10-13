@@ -33,7 +33,7 @@ func openStore(t *testing.T, dir string) *store.Store {
 // savedConfig returns the saved configuration record's exact bytes, so a test can prove a rejected save left it untouched.
 func savedConfig(t *testing.T, state *store.Store) string {
 	t.Helper()
-	raw, err := store.Get[json.RawMessage](state, "settings", "config")
+	raw, err := store.Get(state, store.ConfigKey.Raw())
 	if err != nil || raw == nil {
 		t.Fatalf("saved config: %v, %v", raw, err)
 	}
@@ -203,7 +203,7 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 		cfg.Tiers[tier] = config.NewRoute("gpt-6-astra", "medium")
 	}
 	cfg.RepairRoute = config.NewRoute("gpt-6-astra", "medium")
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	router := Router(app, token, "", "test")
@@ -269,7 +269,7 @@ func TestHTTPBoundaries(t *testing.T) {
 	router := Router(app, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := cfg.Fingerprint()
@@ -338,7 +338,7 @@ func TestHTTPBoundaries(t *testing.T) {
 func TestRequestErrorRedaction(t *testing.T) {
 	app, state := testApp(t)
 	cfg := config.Default()
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := cfg.Fingerprint()
@@ -392,7 +392,7 @@ func TestProposalListRedactsBeforeBound(t *testing.T) {
 		StartedAt: model.Now(), CompletedAt: new(model.Now()), Proposals: []model.Proposal{proposal},
 		Assessments: []any{}, Sessions: []model.Session{},
 	}
-	if err := state.Put("cycle", cycle.ID, cycle); err != nil {
+	if err := store.Put(state, store.Cycles.Key(cycle.ID), cycle); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"/api/proposals/cycle-secret/p", "/api/proposals"} {
@@ -410,5 +410,53 @@ func TestProposalListRedactsBeforeBound(t *testing.T) {
 				t.Errorf("%s returned credential text: ...%s...", path, body[max(0, at-40):min(len(body), at+len(secret)+20)])
 			}
 		}
+	}
+}
+
+func TestMissingRecordsAreJSONNotFound(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, t.TempDir(), "test")
+	for _, path := range []string{
+		"/api/tasks/missing",
+		"/api/cycles/missing",
+		"/api/cycles/missing/evidence",
+		"/api/baseline-checks/missing",
+		"/api/proposals/c/missing",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := call(t, router, "GET", path, "")
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status: %d %s", response.Code, response.Body.String())
+			}
+			if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("content type: %q", contentType)
+			}
+			if message, _ := decode(t, response)["error"].(string); message == "" {
+				t.Fatalf("error body: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestUnknownActionsAreJSONNotFound(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, t.TempDir(), "test")
+	for path, message := range map[string]string{
+		"/api/tasks/x/bogus":  "Unknown task action",
+		"/api/cycles/x/bogus": "Unknown cycle action",
+		"/api/control/bogus":  "Unknown control",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := call(t, router, "POST", path, "{}")
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status: %d %s", response.Code, response.Body.String())
+			}
+			if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("content type: %q", contentType)
+			}
+			if got := decode(t, response)["error"]; got != message {
+				t.Fatalf("error: %v; want %q", got, message)
+			}
+		})
 	}
 }

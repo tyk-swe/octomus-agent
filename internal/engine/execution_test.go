@@ -369,7 +369,7 @@ func TestTaskTimeout(t *testing.T) {
 	if len(executors) != 1 || executors[0].Status != model.SessionFailed || !strings.Contains(executors[0].Summary, "time limit") {
 		t.Fatalf("timed-out executor session = %+v", executors)
 	}
-	if marked, _ := f.state.Marked("cancel", task.ID); marked {
+	if marked, _ := f.state.CancelMarked(task.ID); marked {
 		t.Fatal("a timeout must not be recorded as an operator cancellation")
 	}
 	assertUnpublished(t, f, saved)

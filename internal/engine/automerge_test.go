@@ -45,7 +45,7 @@ func maintenanceTask(t *testing.T, f *fixture, review string, effect func(string
 
 func prObservation(t *testing.T, f *fixture, number uint64) model.PRObservation {
 	t.Helper()
-	prs, err := store.List[model.PRObservation](f.state, "pr")
+	prs, err := store.List(f.state, store.PRs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestArchivingPublishedTaskKeepsConfirmedMergeEvidence(t *testing.T) {
 	observedAt := merged.ObservedAt
 	commit := *merged.MergeCommit
 
-	must0(t, app.TaskAction(saved.ID, "archive"))
+	must0(t, app.TaskAction(saved.ID, model.TaskActionArchive))
 	if archived := loadTask(t, f.state, saved.ID); archived.Lifecycle.ArchivedAt == nil {
 		t.Fatalf("the published task was not archived: %+v", archived)
 	}
@@ -525,7 +525,7 @@ func TestPublicationCheckpointReplayKeepsFrozenEvidence(t *testing.T) {
 
 	checkpoint := saved.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must0(t, f.state.Put("task", saved.ID, checkpoint))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), checkpoint))
 	replay := saved.Clone()
 	if err := app.published(&replay, observation.PR); err != nil {
 		t.Fatalf("checkpoint replay failed: %v", err)
@@ -545,13 +545,13 @@ func TestPublicationCheckpointReplayKeepsFrozenEvidence(t *testing.T) {
 	moved := checkpoint
 	otherHead := "c" + strings.Repeat("0", 39)
 	moved.OutputCommit = &otherHead
-	must0(t, f.state.Put("task", saved.ID, moved))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), moved))
 	stale := saved.Clone()
 	stale.Status = model.StatusPublished
 	if err := app.published(&stale, observation.PR); err == nil {
 		t.Fatal("a stale output commit overwrote a newer checkpoint")
 	}
-	current, err := store.Get[model.Task](f.state, "task", saved.ID)
+	current, err := store.Get(f.state, store.Tasks.Key(saved.ID))
 	if err != nil || current == nil || *current.OutputCommit != otherHead ||
 		current.Status != model.StatusPublishing {
 		t.Fatalf("the refused write changed the checkpoint: %+v", current)
@@ -600,7 +600,7 @@ func TestMergeAttemptFinalGateRejectsStaleState(t *testing.T) {
 	mutated := saved.Clone()
 	otherHead := "b" + strings.Repeat("0", 39)
 	mutated.OutputCommit = &otherHead
-	if err := f.state.Put("task", saved.ID, mutated); err != nil {
+	if err := store.Put(f.state, store.Tasks.Key(saved.ID), mutated); err != nil {
 		t.Fatal(err)
 	}
 	app.mergeAttempt(t.Context(), saved, observation, false)
@@ -612,7 +612,7 @@ func TestMergeAttemptFinalGateRejectsStaleState(t *testing.T) {
 	}
 	mutated.OutputCommit = saved.OutputCommit
 	mutated.Reviews[len(mutated.Reviews)-1].Result.Findings = []model.Finding{{Title: "Post-check defect", Detail: "A finding recorded after the remote precheck", Priority: "P1"}}
-	if err := f.state.Put("task", saved.ID, mutated); err != nil {
+	if err := store.Put(f.state, store.Tasks.Key(saved.ID), mutated); err != nil {
 		t.Fatal(err)
 	}
 	app.mergeAttempt(t.Context(), saved, observation, false)
@@ -620,28 +620,28 @@ func TestMergeAttemptFinalGateRejectsStaleState(t *testing.T) {
 		t.Fatal("a revoked canonical review reached the mutation")
 	}
 	mutated.Reviews[len(mutated.Reviews)-1].Result.Findings = []model.Finding{}
-	if err := f.state.Put("task", saved.ID, mutated); err != nil {
+	if err := store.Put(f.state, store.Tasks.Key(saved.ID), mutated); err != nil {
 		t.Fatal(err)
 	}
 
 	archived := saved.Clone()
 	archived.Lifecycle.ArchivedAt = new(model.Now())
-	must0(t, f.state.Put("task", saved.ID, archived))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), archived))
 	app.mergeAttempt(t.Context(), saved, observation, false)
 	if len(mergeAttempts(t, f)) != 0 {
 		t.Fatal("an archived authorizing task reached the mutation")
 	}
 	archived.Lifecycle.ArchivedAt = nil
-	must0(t, f.state.Put("task", saved.ID, archived))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), archived))
 
 	revoked := saved.Clone()
 	revoked.Verification[len(revoked.Verification)-1].Success = false
-	must0(t, f.state.Put("task", saved.ID, revoked))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), revoked))
 	app.mergeAttempt(t.Context(), saved, observation, false)
 	if len(mergeAttempts(t, f)) != 0 {
 		t.Fatal("a revoked canonical verification reached the mutation")
 	}
-	must0(t, f.state.Put("task", saved.ID, saved.Clone()))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), saved.Clone()))
 
 	must0(t, f.state.MarkCancel(saved.ID))
 	app.mergeAttempt(t.Context(), saved, observation, false)
@@ -699,7 +699,7 @@ func TestMergeAttemptRequiresAuthorizingRun(t *testing.T) {
 	taskRun := "batch-other"
 	mutated := saved.Clone()
 	mutated.RunID = &taskRun
-	must0(t, f.state.Put("task", saved.ID, mutated))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), mutated))
 	app.mergeAttempt(t.Context(), mutated, observation, true)
 	if merge := prObservation(t, f, *saved.PRNumber).AutoMerge; merge.Status != model.AutoMergeWaiting {
 		t.Fatalf("a foreign-run task attempted: %+v", merge)
@@ -737,7 +737,7 @@ func TestMergeAttemptPausedDuringPutSerializes(t *testing.T) {
 	}
 	paused := make(chan error, 1)
 	go func() {
-		_, err := app.ControlAction("pause")
+		_, err := app.ControlAction(model.ControlPause)
 		paused <- err
 	}()
 	if err := os.Remove(filepath.Join(f.root, "merge-hold")); err != nil {
@@ -1098,7 +1098,7 @@ func waitingCandidate(t *testing.T, s *store.Store, number uint64, taskID, head,
 			HeadRepository: "fixture/project", BaseRepository: "fixture/project"},
 		AutoMerge: merge,
 	}
-	must0(t, s.Put("pr", fmt.Sprintf("fixture/project:%d", number), observation))
+	must0(t, store.Put(s, store.PRs.Key(fmt.Sprintf("fixture/project:%d", number)), observation))
 }
 
 func must0(t *testing.T, err error) {
@@ -1141,14 +1141,14 @@ func TestDeliveryModeSwitchGuardedByUnresolvedTasks(t *testing.T) {
 	if err := patch("standard"); err == nil {
 		t.Fatal("a mode switch slipped past a failed unarchived task")
 	}
-	if err := app.TaskAction(queued.ID, "cancel"); err != nil {
+	if err := app.TaskAction(queued.ID, model.TaskActionCancel); err != nil {
 		t.Fatal(err)
 	}
 	if err := patch("standard"); err == nil {
 		t.Fatal("a mode switch slipped past the still-failed task")
 	}
 	failed.Lifecycle.ArchivedAt = new(model.Now())
-	must0(t, f.state.Put("task", failed.ID, failed))
+	must0(t, store.Put(f.state, store.Tasks.Key(failed.ID), failed))
 	if err := patch("standard"); err != nil {
 		t.Fatalf("archived/cancelled tasks still blocked the switch: %v", err)
 	}
@@ -1335,10 +1335,10 @@ func TestMergeSettlementFailureBlocksUntilReconciled(t *testing.T) {
 		t.Fatalf("tick during merge barrier = %v", err)
 	}
 	app.wg.Wait()
-	if queued, _ := store.Get[model.Task](f.state, "task", blocked.ID); queued == nil || queued.Status != model.StatusQueued {
+	if queued, _ := store.Get(f.state, store.Tasks.Key(blocked.ID)); queued == nil || queued.Status != model.StatusQueued {
 		t.Fatalf("dispatch proceeded while the merge barrier held: %+v", queued)
 	}
-	must0(t, f.state.Put("task", blocked.ID, func() model.Task { dead := blocked; dead.Status = model.StatusFailed; return dead }()))
+	must0(t, store.Put(f.state, store.Tasks.Key(blocked.ID), func() model.Task { dead := blocked; dead.Status = model.StatusFailed; return dead }()))
 
 	settleMergeRecord = original
 	app.mergeCandidate(t.Context(), f.cfg, false, true, false, nil, prObservation(t, f, *saved.PRNumber))
@@ -1389,7 +1389,7 @@ func TestAccumulatedPullRequestWithFeatureStaysManual(t *testing.T) {
 	if len(reviewers) == 0 || !strings.Contains(reviewers[0].Prompt, "earlier.txt") {
 		t.Fatalf("the trusted review diff did not include the accumulated feature file: %+v", reviewers)
 	}
-	prs, err := store.List[model.PRObservation](f.state, "pr")
+	prs, err := store.List(f.state, store.PRs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1443,21 +1443,21 @@ func TestMergeRecoveryErrorShownInStateView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view["status"] != "unhealthy" {
-		t.Fatalf("merge-only barrier status = %v", view["status"])
+	if view.Status != "unhealthy" {
+		t.Fatalf("merge-only barrier status = %v", view.Status)
 	}
-	if view["recovery_error"] == nil || view["recovery_error"] == "" {
-		t.Fatalf("the view hid the merge barrier: %+v", view["recovery_error"])
+	if view.RecoveryError == nil || *view.RecoveryError == "" {
+		t.Fatalf("the view hid the merge barrier: %+v", view.RecoveryError)
 	}
 	app.clearMergeRecoveryError("fixture/project:7")
 	view, err = app.StateView()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := fmt.Sprint(view["recovery_error"]); got != "<nil>" && got != "" {
-		t.Fatalf("a settled key still reports: %v", got)
+	if view.RecoveryError != nil {
+		t.Fatalf("a settled key still reports: %v", *view.RecoveryError)
 	}
-	if view["status"] == "unhealthy" {
+	if view.Status == "unhealthy" {
 		t.Fatal("a settled key still reports unhealthy")
 	}
 }
@@ -1552,7 +1552,7 @@ func setContinuous(t *testing.T, app *App) {
 		t.Fatal(err)
 	}
 	control.SetMode(model.OperatingModeContinuous)
-	must0(t, app.Store.SaveControl(control))
+	must0(t, app.store.SaveControl(control))
 }
 
 // runMergePass runs one recovery and candidate pass, forcing the pacing gate.
@@ -1597,6 +1597,61 @@ func TestMergePrecheckFailureRecoversToMerge(t *testing.T) {
 	}
 }
 
+func TestMergePrecheckRecoveryRetriesSameStatusSettlement(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, observation := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	expected := *observation.AutoMerge
+	reason := "Waiting for checks to complete on the reviewed head"
+	restore := failWaitingSettlement(t)
+	defer restore()
+	app.settleMerge(observation, expected, model.AutoMergeWaiting, reason, "", nil, false)
+	if app.recoveryConflict() == nil {
+		t.Fatal("a failed same-status settlement did not raise a recovery barrier")
+	}
+	if app.recoverMergePrechecks(t.Context()) || app.recoveryConflict() == nil {
+		t.Fatal("recovery cleared the barrier while the intended settlement was still refused")
+	}
+	if merge := prObservation(t, f, *saved.PRNumber).AutoMerge; merge.Reason != expected.Reason || merge.ObservedAt != expected.ObservedAt {
+		t.Fatalf("a refused settlement changed its saved evidence: %+v", merge)
+	}
+	restore()
+	if !app.recoverMergePrechecks(t.Context()) || app.recoveryConflict() != nil {
+		t.Fatal("recovery did not release the barrier after committing the settlement")
+	}
+	merge := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if merge.Status != model.AutoMergeWaiting || merge.Reason != reason || merge.ObservedAt == expected.ObservedAt {
+		t.Fatalf("recovery lost the intended reason or timestamp: %+v", merge)
+	}
+	if len(mergeAttempts(t, f)) != 0 {
+		t.Fatal("precheck recovery issued a merge request")
+	}
+}
+
+func TestMergePrecheckRecoveryPreservesNewerSameStatusDecision(t *testing.T) {
+	f := maintenanceFixture(t)
+	saved, observation := publishedMaintenanceTask(t, f)
+	app := f.pausedApp(t)
+	expected := *observation.AutoMerge
+	restore := failWaitingSettlement(t)
+	defer restore()
+	app.settleMerge(observation, expected, model.AutoMergeWaiting, "Older waiting decision", "", nil, false)
+	restore()
+	applied, err := f.state.SettleMerge(observation.Repository, *saved.PRNumber, expected, model.AutoMergeWaiting, "Newer waiting decision", "", nil, false)
+	must0(t, err)
+	if !applied {
+		t.Fatal("the newer waiting decision was not saved")
+	}
+	before := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if !app.recoverMergePrechecks(t.Context()) || app.recoveryConflict() != nil {
+		t.Fatal("a newer decision did not release the stale precheck barrier")
+	}
+	after := prObservation(t, f, *saved.PRNumber).AutoMerge
+	if after.Status != before.Status || after.Reason != before.Reason || after.ObservedAt != before.ObservedAt {
+		t.Fatalf("recovery overwrote a newer decision: before=%+v, after=%+v", before, after)
+	}
+}
+
 func TestMergePrecheckFailureArchivedLeavesNoBarrier(t *testing.T) {
 	f := maintenanceFixture(t)
 	saved, _ := publishedMaintenanceTask(t, f)
@@ -1612,7 +1667,7 @@ func TestMergePrecheckFailureArchivedLeavesNoBarrier(t *testing.T) {
 		t.Fatal("a failed precheck settlement did not raise a recovery barrier")
 	}
 
-	must0(t, app.TaskAction(saved.ID, "archive"))
+	must0(t, app.TaskAction(saved.ID, model.TaskActionArchive))
 	runMergePass(t, app)
 	if app.recoveryConflict() != nil {
 		t.Fatal("a resolved archival left a stale barrier")
@@ -1717,7 +1772,7 @@ func TestMergeRunOnceCancelledSiblingReleases(t *testing.T) {
 	must0(t, f.state.SaveControl(control))
 	runTask := saved.Clone()
 	runTask.RunID = new(control.Batch.ID)
-	must0(t, f.state.Put("task", saved.ID, runTask))
+	must0(t, store.Put(f.state, store.Tasks.Key(saved.ID), runTask))
 
 	sibling := executionTask(t, f, f.cfg.DefaultBranch)
 	sibling.Branch = saved.Branch

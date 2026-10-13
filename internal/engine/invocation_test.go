@@ -4,8 +4,6 @@ package engine
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,24 +23,15 @@ import (
 func admissionsByRole(t *testing.T, state *store.Store) map[string]int {
 	t.Helper()
 	counts := map[string]int{}
-	err := state.Snapshot(func(c *sql.Conn) error {
-		rows, err := c.QueryContext(context.Background(), "SELECT data FROM admissions ORDER BY at,id")
+	err := state.Snapshot(func(snapshot *store.Snapshot) error {
+		admissions, err := snapshot.Admissions()
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var data string
-			if err := rows.Scan(&data); err != nil {
-				return err
-			}
-			var admission store.Admission
-			if err := json.Unmarshal([]byte(data), &admission); err != nil {
-				return err
-			}
+		for _, admission := range admissions {
 			counts[admission.Role]++
 		}
-		return rows.Err()
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +65,7 @@ func TestInvocationAdmitsOncePerTurn(t *testing.T) {
 	script.Queue(routes.Repair,
 		runnertest.Reply{Answer: "Rewrote the draft", Effect: writeFile("feature.txt", "second draft\n")},
 		runnertest.Reply{Answer: "Wrote the fixed output", Effect: writeFile("feature.txt", "fixed output\n")})
-	if err := app.TaskAction(task.ID, "retry"); err != nil {
+	if err := app.TaskAction(task.ID, model.TaskActionRetry); err != nil {
 		t.Fatal(err)
 	}
 	saved = driveTask(t, f, app, task.ID)
@@ -312,7 +301,7 @@ func TestUnstartedSessionRecovery(t *testing.T) {
 			if err := os.WriteFile(marker, []byte("retain workspace\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if err := app.TaskAction(task.ID, "retry"); err != nil {
+			if err := app.TaskAction(task.ID, model.TaskActionRetry); err != nil {
 				t.Fatal(err)
 			}
 			saved := driveTask(t, f, app, task.ID)
@@ -379,7 +368,7 @@ func TestSessionRecoveryPreservesEstablishedAndUnknownThreads(t *testing.T) {
 			defer clients.Close()
 			_, err := app.invoke(context.Background(), clients, invocation{
 				cycleID: task.CycleID, task: &task, role: "repair", route: f.routes.Repair, workspace: f.repo,
-				resume: task.RepairSession, keep: func(id *string) { task.RepairSession = id },
+				session: &task.RepairSession,
 			})
 			if !errors.Is(err, tc.startErr) || task.RepairSession == nil || *task.RepairSession != session.ID || len(task.Sessions) != 1 || len(f.script.Starts(f.routes.Repair)) != 1 {
 				t.Fatalf("unsafe fresh-session fallback: task=%+v, error=%v", task, err)
@@ -397,12 +386,10 @@ func TestFirstTurnCheckpointFailureStopsWork(t *testing.T) {
 	f := newFixture(t)
 	task := executionTask(t, f, f.cfg.DefaultBranch)
 	putTask(t, f, task)
-	if err := f.state.Snapshot(func(c *sql.Conn) error {
-		_, err := c.ExecContext(context.Background(), `CREATE TRIGGER refuse_first_turn BEFORE UPDATE ON records
-			WHEN NEW.kind='task' AND EXISTS (SELECT 1 FROM json_each(NEW.data,'$.sessions') WHERE json_extract(value,'$.first_turn_started')=1)
-			BEGIN SELECT RAISE(FAIL,'first-turn checkpoint refused'); END`)
-		return err
-	}); err != nil {
+	db := f.rawDB(t)
+	if _, err := db.Exec(`CREATE TRIGGER refuse_first_turn BEFORE UPDATE ON records
+		WHEN NEW.kind='task' AND EXISTS (SELECT 1 FROM json_each(NEW.data,'$.sessions') WHERE json_extract(value,'$.first_turn_started')=1)
+		BEGIN SELECT RAISE(FAIL,'first-turn checkpoint refused'); END`); err != nil {
 		t.Fatal(err)
 	}
 	f.script.Queue(f.routes.Executor, runnertest.Reply{Answer: "Should not execute", Effect: writeFile("unexpected.txt", "must not exist")})
@@ -411,7 +398,7 @@ func TestFirstTurnCheckpointFailureStopsWork(t *testing.T) {
 	defer clients.Close()
 	_, err := app.invoke(context.Background(), clients, invocation{
 		cycleID: task.CycleID, task: &task, role: "executor", route: f.routes.Executor, workspace: f.repo,
-		keep: func(id *string) { task.ExecutionSession = id },
+		session: &task.ExecutionSession,
 	})
 	if err == nil || !strings.Contains(err.Error(), "first-turn checkpoint refused") || errors.Is(err, model.BlockedRunnerUnavailable) {
 		t.Fatalf("failed checkpoint did not stop invocation: %v", err)
@@ -439,7 +426,7 @@ func TestSessionReplacementRequiresAdmission(t *testing.T) {
 	defer clients.Close()
 	_, err := app.invoke(context.Background(), clients, invocation{
 		cycleID: task.CycleID, task: &task, role: "repair", route: f.routes.Repair, workspace: f.repo,
-		resume: task.RepairSession, keep: func(id *string) { task.RepairSession = id },
+		session: &task.RepairSession,
 	})
 	if err == nil || len(f.script.Starts(f.routes.Repair)) != 1 || len(f.script.Turns(f.routes.Repair)) != 0 {
 		t.Fatalf("replacement bypassed exhausted admission budget: %v", err)
@@ -450,4 +437,30 @@ func TestSessionReplacementRequiresAdmission(t *testing.T) {
 	}
 	assertAdmissions(t, f.state, 1, "only the failed resume was admitted")
 	assertNoOpenClients(t, f.script)
+}
+
+// A runner that started and then failed to establish its session still ran a sandbox. With no session record yet to
+// carry the broker's account of it, the record is kept as evidence on the task rather than lost with the released
+// child.
+func TestFailedSessionStartRetainsSandboxEvidence(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.script.RecordSandbox(&model.SandboxRecord{ImageID: "sha256:unstarted-session", Runs: 1})
+	f.script.FailStart(f.routes.Executor, errors.New("scripted executor start failure"))
+	task := executionTask(t, f, f.cfg.DefaultBranch)
+	putTask(t, f, task)
+	saved := driveTask(t, f, f.newApp(t), task.ID)
+	if saved.Status != model.StatusBlocked || saved.BlockedReason == nil || *saved.BlockedReason != model.BlockedRunnerUnavailable || len(saved.Sessions) != 0 {
+		t.Fatalf("failed session start outcome = %+v", saved)
+	}
+	events, err := f.state.Events(new(task.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind == model.EventSandboxEvidence && strings.Contains(event.Message, "sha256:unstarted-session") {
+			return
+		}
+	}
+	t.Fatalf("the sandbox of a failed session start was not retained: %+v", events)
 }

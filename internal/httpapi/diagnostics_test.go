@@ -15,6 +15,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
 
@@ -77,7 +78,7 @@ func TestDiagnosticCancellationJoinsBeforeRemovingScratch(t *testing.T) {
 						}
 					}
 					t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-					if err := state.Put("settings", "config", cfg); err != nil {
+					if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 						t.Fatal(err)
 					}
 				}

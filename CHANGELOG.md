@@ -5,6 +5,135 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Dashboard conveniences: the current view lives in the URL hash (`#queue`, `#proposals`,
+  `#prs`, `#settings`), so Back/Forward switch views and reconnecting after a reload or an
+  expired session returns to it; the browser tab title names the view and the count of
+  tasks needing attention; hovering a relative time shows the exact local date and time;
+  task details copy the branch name and workspace path (run evidence copies the branch);
+  filtered empty lists offer **Clear search and filters**.
+- `make fmt` rewrites the Go and dashboard formatting that `make check` verifies.
+- Maintenance delivery mode (`delivery_mode: maintenance`): features are excluded and a
+  small, clean-reviewed, verified maintenance PR may be squash-merged by a dedicated
+  merger identity after fresh GitHub checks, review state and protections confirm the
+  recorded head. `auto_merge_max_lines`, `auto_merge_max_files` and
+  `auto_merge_excluded_paths` bound the footprint, and CI, security, deployment and
+  migration paths always stay manual. Maintenance reviews, merge outcomes (**confirmed**,
+  **observed**, **uncertain**, **Manual**) and the footprint appear in the dashboard,
+  task details and run evidence.
+- Merge destination protection: the merge runs only when an active repository ruleset
+  (`OCTOMUS_MERGE_RULESET_ID`) restricts the merger to the configured default branch.
+  Merge setup uses `OCTOMUS_MERGE_TOKEN` or `OCTOMUS_MERGE_TOKEN_FILE`, the opt-in
+  `deploy/docker/maintenance.compose.yaml` overlay and
+  [docs/maintenance-merging.md](docs/maintenance-merging.md).
+- `OCTOMUS_SANDBOX_CA_FILE`: a host-owned PEM bundle added to the broker image's system
+  roots for runner sessions, for model endpoints behind a private certificate authority.
+- The egress gateway binds each `CONNECT` tunnel to its TLS ClientHello: the plaintext SNI
+  must match the allowlisted host, and missing, malformed or mismatched names and
+  Encrypted ClientHello are refused.
+- `OCTOMUS_SANDBOX_MAX_SECONDS` (default 21,600) sets each container's hard lifetime.
+  Saving settings, connection checks, execution preflights and every new runner
+  connection reject a session or command timeout that does not fit it.
+- The sandbox self-test result is bound to a fingerprint of the live broker, gateway
+  identity and policy, and deployment settings; a broker or gateway restart, a changed
+  setting or an unavailable gateway makes earlier proof noncurrent.
+- Stable conflict `code` values in `409` API responses (`config_revision_conflict`,
+  `active_work`, `unresolved_work`, `recovery_pending`, `action_conflict`), and state
+  `capabilities` with blocker messages and per-cycle `allowed_actions` that follow the
+  server's own control checks.
+- Cancelling a connection check or model-catalog request stops its runner work, and both
+  share one 90-second deadline.
+- Releases are gated on production-image acceptance on native amd64 and arm64: the shipped
+  control-plane, broker, gateway and sandbox images run real Codex and OpenCode clients
+  against a synthetic provider. A release stages its assets behind a hidden input
+  receipt (original run, source commit and hashes), can recover an interrupted upload or
+  promotion without rebuilding, and publishes `release-images.json` and the OCI archives.
+
+### Changed
+
+- Schema version 9 indexes exact decision identities and version 10 restores complete
+  summary text from raw records. Both upgrade version 8 behind the verified automatic
+  backup and leave raw records and notification history untouched.
+- Decision admission checks the complete stored history for each repository, target and
+  problem identity; planning prompts still carry at most 100 decisions.
+- A definitively missing Codex thread is replaced only when no accepted first turn is
+  recorded, and the replacement consumes a new admission.
+- Storage measurement bounds directory entries, honours cancellation and shares one
+  30-second deadline, and owned-root cleanup is bounded too; a failed baseline cleanup is
+  reported in activity events and preserved on the record.
+- A sandbox's hard lifetime starts before Docker's start request, and a start whose
+  response was lost keeps an incomplete record, revokes its lease and force-removes the
+  container.
+- External pull requests record `local_head_available`; when their recorded commit is not
+  in the trusted checkout the summary stays but its diff is marked unavailable.
+- Titles, errors and external PR context keep complete text until they are redacted, so
+  a saved prefix cannot defeat redaction after credentials change.
+- `deploy/docker/setup.sh` resolves the repository through Docker Compose's effective
+  environment, including an exported `OCTOMUS_GITHUB_REPO` and quoted `.env` values.
+- The installer's dedicated-VM next steps print the start command with `--sandbox off` and
+  link the deployment guide's VM section.
+- The release archive no longer ships `AGENTS.md`, `CONTRIBUTING.md` or `docs/releasing.md`;
+  shipped documents link to them on GitHub.
+- Release binaries and Docker images build with Go 1.27.2.
+
+### Fixed
+
+- The dashboard's cycle history keeps loaded older pages, refreshes a selected older
+  cycle independently of live status, and **Load older cycles** fills any gap left by
+  new cycles.
+- The dashboard marks every failure activity kind (planning, worker, recovery, cleanup,
+  housekeeping and baseline errors) as an error, not only generic errors.
+- After `OCTOMUS_GITHUB_REPO` changed and the service restarted, audits, Run once and
+  continuous cycles were refused until an unrelated setting was saved; startup now pins
+  the saved configuration to the deployment's repository.
+- Run once, audits and configuration saves stay disabled in the dashboard while a
+  planning preflight runs instead of drawing a `409`.
+- A retried task no longer regains a new-PR slot on restart when open PRs already fill
+  `max_open_prs`.
+- The one-minute PR admission window starts when a PR inventory arrives rather than when
+  its request began, so a refresh slower than a minute no longer blocks new-PR work while
+  the dashboard shows capacity.
+- A failed GitHub sign-in on restart is reported as a GitHub authentication failure naming
+  `OCTOMUS_GITHUB_TOKEN_FILE` instead of blaming the trusted checkout.
+- `GET /api/proposals` scrubs proposal text before cutting it to its 2,000-character
+  bound, so a credential straddling the cut no longer leaks in part.
+- Bearer tokens stay redacted when a runner's cut stderr tail splits the `Bearer` line.
+- The gitlink refusal redacts a work-tree path before bounding it, so a credential crossing
+  the diagnostic limit is no longer reported in part; the limit counts characters and marks
+  the cut.
+- A cancellation the store refused is no longer discarded when the worker exits or its
+  orphaned task is recovered: the durable cancellation marker settles the task as cancelled
+  with the worker's own cause kept in an error event, instead of reporting it as blocked, and
+  a task that already reached an output checkpoint still stays `publication_uncertain`.
+- A runner child that has not ended when its cleanup budget does is reported as the
+  sandbox's own failure rather than a plain error: a replacement child is still refused
+  before it starts, and the task is blocked as a runner failure an operator can retry,
+  instead of an unclassified failure.
+- The broker's account of a sandbox that actually ran is kept when a runner fails to
+  establish its session: with no session record yet to carry it, it becomes a
+  `sandbox_evidence` activity event on the task or cycle instead of being dropped with the
+  released child.
+- Operations on the shared trusted checkout are serialized: concurrent fetches no longer
+  race each other's refs or the automatic maintenance a task's clone was copying, which
+  failed with `failed to copy file ... objects/maintenance.lock: No such file or
+  directory`. Clones of the checkout still run together, other repositories and task
+  workspaces are unaffected, and a cancelled task or cycle stops waiting instead of
+  holding its worker open.
+- A nested repository that a runner committed itself no longer reaches review,
+  verification or publication. The gitlink refusal covers the reviewed change set against
+  its comparison base as well as the snapshot's own staged commit, so a submodule the base
+  already carries stays allowed while an added or retargeted gitlink blocks the task as
+  `workspace_invalid`.
+- Coalesced dashboard reads let only the newest requested revision become confirmed fresh
+  state: a request for the revision that is already loading drops the older queued read, so
+  an obsolete in-flight intent can no longer confirm a superseded revision as current.
+  Retained content stays visible and marked stale until the newest read succeeds.
+
+### Removed
+
+- `docs/index.md`, which repeated the README.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

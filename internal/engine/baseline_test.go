@@ -13,6 +13,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
 // baselineApp is an App over a plain local repository with no routes configured: a baseline needs none.
@@ -40,7 +41,7 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 		t.Fatal(err)
 	}
 	state := openStore(t, data)
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	return New(state, data), cfg
@@ -95,10 +96,10 @@ func TestStartBaselineRefusesStale(t *testing.T) {
 	} else if !IsActionConflict(err) {
 		t.Fatalf("conflict kind: %v", err)
 	}
-	if running, err := app.Store.RunningBaselines(); err != nil || len(running) != 0 {
+	if running, err := app.store.RunningBaselines(); err != nil || len(running) != 0 {
 		t.Fatalf("rejected start persisted work: %d %v", len(running), err)
 	}
-	if latest, err := app.Store.LatestBaseline(); err != nil || latest != nil {
+	if latest, err := app.store.LatestBaseline(); err != nil || latest != nil {
 		t.Fatal("stale start created a baseline record")
 	}
 	if entries, err := os.ReadDir(filepath.Join(app.dataDir, "baselines")); err == nil && len(entries) != 0 {
@@ -126,23 +127,23 @@ func TestBaselineViewStaleness(t *testing.T) {
 	check.Revision = &revision
 	check.CompletedAt = &completed
 	check.WorkspaceRemoved = true
-	if err := app.Store.Put("baseline", check.ID, check); err != nil {
+	if err := store.Put(app.store, store.Baselines.Key(check.ID), check); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Store.Put("settings", "baseline_latest", check.ID); err != nil {
+	if err := store.Put(app.store, store.Setting[string]("baseline_latest"), check.ID); err != nil {
 		t.Fatal(err)
 	}
 	view, err := app.BaselineView(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := view["check"].(*model.BaselineCheck); !ok || got.ID != check.ID {
-		t.Fatalf("view check: %v", view["check"])
+	if got := view.Check; got == nil || got.ID != check.ID {
+		t.Fatalf("view check: %v", view.Check)
 	}
-	if view["config_matches"] != true || view["revision_status"] != "unknown" {
+	if view.ConfigMatches == nil || !*view.ConfigMatches || view.RevisionStatus != "unknown" {
 		t.Fatalf("view: %v", view)
 	}
-	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs != nil {
+	if obs := view.DefaultObservation; obs != nil {
 		t.Fatalf("observation should be empty: %v", obs)
 	}
 	observation := &model.DefaultBranchObservation{
@@ -152,8 +153,8 @@ func TestBaselineViewStaleness(t *testing.T) {
 	status := func(label string, want string) {
 		t.Helper()
 		setObservation(app, observation)
-		if view, _ := app.BaselineView(nil); view["revision_status"] != want {
-			t.Fatalf("%s: revision_status = %v; want %s", label, view["revision_status"], want)
+		if view, _ := app.BaselineView(nil); view.RevisionStatus != want {
+			t.Fatalf("%s: revision_status = %v; want %s", label, view.RevisionStatus, want)
 		}
 	}
 	status("fresh match", "matches_last_observation")
@@ -178,40 +179,43 @@ func TestBaselineViewStaleness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs == nil || obs.Revision != observation.Revision {
-		t.Fatalf("observation of the live target was not shown: %v", view["default_observation"])
+	if obs := view.DefaultObservation; obs == nil || obs.Revision != observation.Revision {
+		t.Fatalf("observation of the live target was not shown: %v", view.DefaultObservation)
 	}
 	changed := cfg.Clone()
 	changed.DefaultBranch = "moved"
-	if err := app.Store.Put("settings", "config", changed); err != nil {
+	if err := store.Put(app.store, store.ConfigKey, changed); err != nil {
 		t.Fatal(err)
 	}
 	view, err = app.BaselineView(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view["config_matches"] != false || view["revision_status"] != "unknown" {
-		t.Fatalf("changed config: %v %v", view["config_matches"], view["revision_status"])
+	if view.ConfigMatches == nil || *view.ConfigMatches || view.RevisionStatus != "unknown" {
+		t.Fatalf("changed config: %v %v", view.ConfigMatches, view.RevisionStatus)
 	}
-	if obs, _ := view["default_observation"].(*model.DefaultBranchObservation); obs != nil {
+	if obs := view.DefaultObservation; obs != nil {
 		t.Fatalf("observation of another target was shown as the live one: %v", obs)
 	}
-	if encoded, err := json.Marshal(view["default_observation"]); err != nil || string(encoded) != "null" {
+	if encoded, err := json.Marshal(view.DefaultObservation); err != nil || string(encoded) != "null" {
 		t.Fatalf("hidden observation must encode as null: %s, %v", encoded, err)
 	}
 	noCommands := changed.Clone()
 	noCommands.VerificationCommands = []string{}
-	if err := app.Store.Put("settings", "config", noCommands); err != nil {
+	if err := store.Put(app.store, store.ConfigKey, noCommands); err != nil {
 		t.Fatal(err)
 	}
 	view, err = app.BaselineView(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view["eligible"] != false {
+	if view.Eligible != false {
 		t.Fatal("invalid config must report ineligible")
 	}
-	reason, _ := view["reason"].(string)
+	reason := ""
+	if view.Reason != nil {
+		reason = *view.Reason
+	}
 	if !strings.Contains(reason, "verification") {
 		t.Fatalf("reason %q must name the verification problem", reason)
 	}

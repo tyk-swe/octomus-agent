@@ -127,12 +127,12 @@ func fixture(t *testing.T, cycles []model.Cycle, tasks []model.Task) (*store.Sto
 	}
 	t.Cleanup(func() { s.Close() })
 	for _, c := range cycles {
-		if err := s.Put("cycle", c.ID, c); err != nil {
+		if err := store.Put(s, store.Cycles.Key(c.ID), c); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, task := range tasks {
-		if err := s.Put("task", task.ID, task); err != nil {
+		if err := store.Put(s, store.Tasks.Key(task.ID), task); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -580,7 +580,7 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 			HeadRepository: "fixture/project", BaseRepository: "fixture/project"},
 		AutoMerge: merge,
 	}
-	must(t, s.Put("pr", "fixture/project:3", observation))
+	must(t, store.Put(s, store.PRs.Key("fixture/project:3"), observation))
 	value := exported(t, s, "cycle-a")
 	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
 	evidence := linked["auto_merge"].(map[string]any)
@@ -609,7 +609,7 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 			mutate(&mutated)
 			record := observation
 			record.AutoMerge = &mutated
-			must(t, s.Put("pr", "fixture/project:3", record))
+			must(t, store.Put(s, store.PRs.Key("fixture/project:3"), record))
 			value := exported(t, s, "cycle-a")
 			linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
 			if linked["auto_merge"] != nil {
@@ -617,7 +617,7 @@ func TestRunEvidenceIncludesSavedMergeEvidence(t *testing.T) {
 			}
 		})
 	}
-	must(t, s.Put("pr", "fixture/project:3", observation))
+	must(t, store.Put(s, store.PRs.Key("fixture/project:3"), observation))
 	value = exported(t, s, "cycle-a")
 	if get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "status") != "merged" {
 		t.Fatal("the exact-bound record did not restore the evidence")
@@ -650,10 +650,11 @@ func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
 	}
 	checkpoint := delivered.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", delivered.ID, checkpoint))
+	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
 	published := delivered.Clone()
 	published.Status = model.StatusPublished
-	must(t, s.CompletePublication(published, pr, merge))
+	published, err := s.CompletePublication(published, pr, merge)
+	must(t, err)
 
 	intent := merge.Clone()
 	intent.Status = model.AutoMergeMerging
@@ -670,7 +671,8 @@ func TestRunEvidenceKeepsArchivedTerminalMerge(t *testing.T) {
 	if !applied {
 		t.Fatal("the confirmed merge did not settle")
 	}
-	must(t, s.RevokeTaskMerges(delivered.ID, "The authorizing task was archived"))
+	published.Lifecycle.ArchivedAt = new(model.Now())
+	must(t, s.ArchiveTask(published))
 
 	value := exported(t, s, "cycle-a")
 	linked := get(findProposal(t, value, "p1"), "linked_tasks", 0).(map[string]any)
@@ -720,8 +722,9 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	}
 	checkpoint := delivered.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", delivered.ID, checkpoint))
-	must(t, s.CompletePublication(func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA))
+	must(t, store.Put(s, store.Tasks.Key(delivered.ID), checkpoint))
+	_, err := s.CompletePublication(func() model.Task { p := delivered.Clone(); p.Status = model.StatusPublished; return p }(), pr, mergeA)
+	must(t, err)
 	applied, err := s.SettleMerge("fixture/project", 5, *mergeA, model.AutoMergeManual, "The diff touches a sensitive path", "", nil, true)
 	if err != nil || !applied {
 		t.Fatalf("manual settle = %v, %v", applied, err)
@@ -741,8 +744,9 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 	superseding.ComparisonBase = "source01"
 	prB := pr
 	prB.Head = "out00002"
-	must(t, s.Put("task", superseding.ID, func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublishing; return p }()))
-	must(t, s.CompletePublication(func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB))
+	must(t, store.Put(s, store.Tasks.Key(superseding.ID), func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublishing; return p }()))
+	_, err = s.CompletePublication(func() model.Task { p := superseding.Clone(); p.Status = model.StatusPublished; return p }(), prB, mergeB)
+	must(t, err)
 
 	value := exported(t, s, "cycle-a")
 	evidence := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge")
@@ -755,7 +759,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 		t.Fatalf("the superseding delivery substituted its evidence: %v", snap)
 	}
 
-	pristine, err := store.Get[model.Task](s, "task", delivered.ID)
+	pristine, err := store.Get(s, store.Tasks.Key(delivered.ID))
 	must(t, err)
 	for name, mutate := range map[string]func(*model.Task){
 		"repository":  func(m *model.Task) { m.AutoMergeSnapshot.Repository = "other/repo" },
@@ -772,7 +776,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 			snap.State = pristine.AutoMergeSnapshot.State.Clone()
 			mutated.AutoMergeSnapshot = &snap
 			mutate(&mutated)
-			must(t, s.Put("task", delivered.ID, mutated))
+			must(t, store.Put(s, store.Tasks.Key(delivered.ID), mutated))
 			value := exported(t, s, "cycle-a")
 			if get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge") != nil {
 				t.Fatalf("%s leaked mismatched snapshot evidence", name)
@@ -780,7 +784,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 		})
 	}
 
-	must(t, s.Put("task", delivered.ID, *pristine))
+	must(t, store.Put(s, store.Tasks.Key(delivered.ID), *pristine))
 	value = exported(t, s, "cycle-a")
 	if get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason") != "The diff touches a sensitive path" {
 		t.Fatal("restored snapshot did not export")
@@ -794,7 +798,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 		Repository: "fixture/project", ObservedAt: model.Now(), DeliveredHead: &output,
 		PR: pr, AutoMerge: &current,
 	}
-	must(t, s.Put("pr", "fixture/project:5", observation))
+	must(t, store.Put(s, store.PRs.Key("fixture/project:5"), observation))
 	value = exported(t, s, "cycle-a")
 	if got := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason"); got != "Squash merged by Octomus" {
 		t.Fatalf("the current matching record did not take precedence: %v", got)
@@ -802,7 +806,7 @@ func TestRunEvidencePrefersSupersededMergeSnapshot(t *testing.T) {
 
 	empty := observation
 	empty.AutoMerge = nil
-	must(t, s.Put("pr", "fixture/project:5", empty))
+	must(t, store.Put(s, store.PRs.Key("fixture/project:5"), empty))
 	value = exported(t, s, "cycle-a")
 	if got := get(findProposal(t, value, "p1"), "linked_tasks", 0, "auto_merge", "reason"); got != "The diff touches a sensitive path" {
 		t.Fatalf("the snapshot did not stand alone without the current record: %v", got)

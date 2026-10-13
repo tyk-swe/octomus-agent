@@ -104,11 +104,11 @@ func connectOpenCode(ctx context.Context, cfg config.Config, cwd, entity string,
 	}
 	healthDoc, _ := asObject(health)
 	if healthDoc["healthy"] != true {
-		return fail(fmt.Errorf("OpenCode is not healthy"))
+		return fail(errors.New("OpenCode is not healthy"))
 	}
 	version, ok := strAt(healthDoc, "version")
 	if !ok || len(version) > 100 {
-		return fail(fmt.Errorf("Missing OpenCode version"))
+		return fail(errors.New("Missing OpenCode version"))
 	}
 	server.version = version
 	effective, err := server.call("GET", "/config", cwd, nil, 60)
@@ -116,7 +116,7 @@ func connectOpenCode(ctx context.Context, cfg config.Config, cwd, entity string,
 		return fail(err)
 	}
 	if !appliedPolicy(effective, agent) {
-		return fail(fmt.Errorf("OpenCode did not apply Octomus unattended policy"))
+		return fail(errors.New("OpenCode did not apply Octomus unattended policy"))
 	}
 	return server, nil
 }
@@ -238,9 +238,9 @@ func readJSONBody(r io.Reader) (any, error) {
 		return nil, err
 	}
 	if len(data) > MaxMessage {
-		return nil, fmt.Errorf("OpenCode message exceeds 16 MB protocol limit")
+		return nil, errors.New("OpenCode message exceeds 16 MB protocol limit")
 	}
-	v, err := decodeJSON(data)
+	v, err := wirejson.Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("Invalid OpenCode JSON response: %w", err)
 	}
@@ -293,32 +293,32 @@ func (o *OpenCode) Start(route config.Route, cwd string, resume *string) (string
 	doc, _ := asObject(session)
 	id, ok := strAt(doc, "id")
 	if !ok {
-		return "", fmt.Errorf("Missing OpenCode session identity")
+		return "", errors.New("Missing OpenCode session identity")
 	}
 	if _, err := segment(id); err != nil {
 		return "", err
 	}
 	if resume != nil && id != *resume {
-		return "", fmt.Errorf("OpenCode substituted the requested session")
+		return "", errors.New("OpenCode substituted the requested session")
 	}
 	directory, ok := strAt(doc, "directory")
 	if !ok || !config.SamePath(directory, cwd) {
-		return "", fmt.Errorf("OpenCode session belongs to a different workspace")
+		return "", errors.New("OpenCode session belongs to a different workspace")
 	}
 	sessionModel, _ := asObject(doc["model"])
 	providerID, providerOK := strAt(sessionModel, "providerID")
 	if providerOK != (route.Provider != nil) || (providerOK && providerID != *route.Provider) {
-		return "", fmt.Errorf("OpenCode substituted the requested model or variant")
+		return "", errors.New("OpenCode substituted the requested model or variant")
 	}
 	if s, _ := strAt(sessionModel, "id"); s != route.Model {
-		return "", fmt.Errorf("OpenCode substituted the requested model or variant")
+		return "", errors.New("OpenCode substituted the requested model or variant")
 	}
 	variant, variantOK := strAt(sessionModel, "variant")
 	if !variantMatches(variant, variantOK, route) {
-		return "", fmt.Errorf("OpenCode substituted the requested model or variant")
+		return "", errors.New("OpenCode substituted the requested model or variant")
 	}
 	if !wirejson.Equal(doc["permission"], permissions) {
-		return "", fmt.Errorf("OpenCode session has unexpected permissions")
+		return "", errors.New("OpenCode session has unexpected permissions")
 	}
 	return id, nil
 }
@@ -420,7 +420,7 @@ func (o *OpenCode) turnInner(wctx context.Context, session, path string, route c
 			done = true
 		case event, ok := <-events:
 			if !ok {
-				return "", fmt.Errorf("OpenCode event stream disconnected")
+				return "", errors.New("OpenCode event stream disconnected")
 			}
 			if event.err != nil {
 				return "", event.err
@@ -505,19 +505,19 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 	info, _ := asObject(doc["info"])
 	id, ok := strAt(info, "id")
 	if !ok {
-		return "", fmt.Errorf("Missing OpenCode response identity")
+		return "", errors.New("Missing OpenCode response identity")
 	}
 	if _, err := segment(id); err != nil {
 		return "", err
 	}
 	if s, _ := strAt(info, "sessionID"); s != session {
-		return "", fmt.Errorf("OpenCode returned an unrelated response")
+		return "", errors.New("OpenCode returned an unrelated response")
 	}
 	if s, _ := strAt(info, "parentID"); s != message {
-		return "", fmt.Errorf("OpenCode returned an unrelated response")
+		return "", errors.New("OpenCode returned an unrelated response")
 	}
 	if s, _ := strAt(info, "role"); s != "assistant" {
-		return "", fmt.Errorf("OpenCode returned an unrelated response")
+		return "", errors.New("OpenCode returned an unrelated response")
 	}
 	if err := checkModel(info, route); err != nil {
 		return "", err
@@ -527,22 +527,22 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 	}
 	timeDoc, _ := asObject(info["time"])
 	if _, ok := timeDoc["completed"].(json.Number); !ok {
-		return "", fmt.Errorf("OpenCode returned an incomplete result")
+		return "", errors.New("OpenCode returned an incomplete result")
 	}
 	finish, _ := strAt(info, "finish")
 	if finish != "stop" && !(schema != nil && finish == "tool-calls") {
-		return "", fmt.Errorf("OpenCode turn did not complete successfully")
+		return "", errors.New("OpenCode turn did not complete successfully")
 	}
 	if schema != nil {
 		output, ok := info["structured"]
 		if !ok || output == nil {
-			return "", fmt.Errorf("OpenCode returned no structured result")
+			return "", errors.New("OpenCode returned no structured result")
 		}
 		return marshal(output)
 	}
 	parts, ok := asArray(doc["parts"])
 	if !ok {
-		return "", fmt.Errorf("OpenCode returned no response parts")
+		return "", errors.New("OpenCode returned no response parts")
 	}
 	var answer strings.Builder
 	for _, p := range parts {
@@ -551,14 +551,14 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 			continue
 		}
 		if s, _ := strAt(part, "sessionID"); s != session {
-			return "", fmt.Errorf("OpenCode returned an unrelated response part")
+			return "", errors.New("OpenCode returned an unrelated response part")
 		}
 		if s, _ := strAt(part, "messageID"); s != id {
-			return "", fmt.Errorf("OpenCode returned an unrelated response part")
+			return "", errors.New("OpenCode returned an unrelated response part")
 		}
 		text, ok := strAt(part, "text")
 		if !ok {
-			return "", fmt.Errorf("Invalid OpenCode text result")
+			return "", errors.New("Invalid OpenCode text result")
 		}
 		if answer.Len() > 0 {
 			answer.WriteByte('\n')
@@ -566,7 +566,7 @@ func (o *OpenCode) validateTurn(value any, session, message string, route config
 		answer.WriteString(text)
 	}
 	if strings.TrimSpace(answer.String()) == "" {
-		return "", fmt.Errorf("OpenCode returned no final result")
+		return "", errors.New("OpenCode returned no final result")
 	}
 	return answer.String(), nil
 }
@@ -628,11 +628,11 @@ func checkModel(info map[string]any, route config.Route) error {
 	modelID, _ := strAt(info, "modelID")
 	providerID, providerOK := strAt(info, "providerID")
 	if modelID != route.Model || providerOK != (route.Provider != nil) || (providerOK && providerID != *route.Provider) {
-		return fmt.Errorf("OpenCode substituted the requested model")
+		return errors.New("OpenCode substituted the requested model")
 	}
 	variant, variantOK := strAt(info, "variant")
 	if !variantMatches(variant, variantOK, route) {
-		return fmt.Errorf("OpenCode substituted the requested variant")
+		return errors.New("OpenCode substituted the requested variant")
 	}
 	return nil
 }
@@ -649,7 +649,7 @@ func segment(id string) (string, error) {
 		}
 	}
 	if !valid {
-		return "", fmt.Errorf("Invalid OpenCode identity")
+		return "", errors.New("Invalid OpenCode identity")
 	}
 	var encoded strings.Builder
 	for i := 0; i < len(id); i++ {

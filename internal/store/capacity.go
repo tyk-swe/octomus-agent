@@ -57,7 +57,7 @@ func releaseReservation(c *sql.Conn, taskID string) error {
 
 func savedInventory(c *sql.Conn) (*model.OpenPRInventory, error) {
 	var inventory model.OpenPRInventory
-	found, err := txGet(c, "settings", "pr_inventory", &inventory)
+	found, err := txGet(c, prInventoryKey, &inventory)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 			return errRollback
 		}
 		var canonical model.Task
-		found, err := txGet(c, "task", task.ID, &canonical)
+		found, err := txGet(c, Tasks.Key(task.ID), &canonical)
 		if err != nil {
 			return err
 		}
@@ -163,13 +163,13 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		next = task.Clone()
 		next.Status = model.StatusExecuting
 		next.UpdatedAt = model.Now()
-		if err := txPut(c, "task", next.ID, next); err != nil {
+		if err := txPut(c, Tasks.Key(next.ID), next); err != nil {
 			return err
 		}
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now(), false); err != nil {
 			return err
 		}
-		return txEvent(c, next.ID, "status", "Executing")
+		return txEvent(c, next.ID, model.EventStatus, "Executing")
 	})
 	if admitted {
 		*task = next
@@ -205,7 +205,7 @@ func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []s
 				return errRollback
 			}
 		}
-		if err := txPut(c, "settings", "pr_inventory", inventory); err != nil {
+		if err := txPut(c, prInventoryKey, inventory); err != nil {
 			return err
 		}
 		represented := inventory.OwnedBranches()
@@ -216,7 +216,7 @@ func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []s
 		for _, reservation := range reservations {
 			if slices.Contains(released, reservation.TaskID) {
 				var task model.Task
-				found, err := txGet(c, "task", reservation.TaskID, &task)
+				found, err := txGet(c, Tasks.Key(reservation.TaskID), &task)
 				if err != nil {
 					return err
 				}

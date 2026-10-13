@@ -39,8 +39,8 @@ func DecodeStrict[T any](data []byte, dst *T) error {
 	return nil
 }
 
-// DecodeRecord decodes a saved record: unknown keys are ignored, so older binaries can read newer records, but every
-// other rule (required fields, duplicates, exact case, no null, valid UTF-8, no trailing data) holds.
+// DecodeRecord decodes a saved record: unknown fields are ignored after validating their JSON, so older binaries can
+// read newer records. Required fields, unique keys, exact case, non-null typed values and valid Unicode still hold.
 func DecodeRecord[T any](data []byte, dst *T) error {
 	var decoded T
 	if err := marked(decode(data, &decoded, false, false)); err != nil {
@@ -66,6 +66,7 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 		fields[strings.Split(typ.Field(i).Tag.Get("json"), ",")[0]] = i
 	}
 	seen := make([]bool, typ.NumField())
+	seenUnknown := make(map[string]struct{})
 	dec := json.NewDecoder(bytes.NewReader(data))
 	token, err := dec.Token()
 	if err != nil {
@@ -92,6 +93,13 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 				if strict {
 					return fmt.Errorf("unknown field %q", name)
 				}
+				if _, duplicate := seenUnknown[name]; duplicate {
+					return fmt.Errorf("duplicate field %q", name)
+				}
+				seenUnknown[name] = struct{}{}
+				if _, err := Parse(raw); err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
 				continue
 			}
 			if seen[i] {
@@ -103,13 +111,13 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 			}
 		}
 	default:
-		return fmt.Errorf("expected an object")
+		return errors.New("expected an object")
 	}
 	if _, err := dec.Token(); err != nil {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("trailing JSON data")
+		return errors.New("trailing JSON data")
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		f := typ.Field(i)
@@ -130,7 +138,7 @@ func decode(data []byte, dst any, strict, defaultAll bool) error {
 func decodeValue(raw []byte, v reflect.Value) error {
 	raw = bytes.TrimSpace(raw)
 	if bytes.Equal(raw, []byte("null")) && v.Kind() != reflect.Pointer && v.Kind() != reflect.Interface {
-		return fmt.Errorf("null is not allowed")
+		return errors.New("null is not allowed")
 	}
 	if _, ok := v.Addr().Interface().(json.Unmarshaler); ok {
 		return json.Unmarshal(raw, v.Addr().Interface())
@@ -140,7 +148,7 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		dec := json.NewDecoder(bytes.NewReader(raw))
 		token, err := dec.Token()
 		if err != nil || token != json.Delim('{') {
-			return fmt.Errorf("expected a map")
+			return errors.New("expected a map")
 		}
 		result := reflect.MakeMap(v.Type())
 		seen := make(map[string]struct{})
@@ -203,13 +211,8 @@ func decodeValue(raw []byte, v reflect.Value) error {
 		v.Set(result)
 		return nil
 	case reflect.Interface:
-		if err := ValidStrings(raw); err != nil {
-			return err
-		}
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.UseNumber()
-		var value any
-		if err := dec.Decode(&value); err != nil {
+		value, err := Parse(raw)
+		if err != nil {
 			return err
 		}
 		if value == nil {
@@ -273,6 +276,13 @@ func Record(value any) ([]byte, error) {
 }
 
 func record(value any) ([]byte, error) {
+	return json.Marshal(NormalizeRecord(value))
+}
+
+// NormalizeRecord copies a record's top-level nil collections to empty JSON
+// collections. Composed serializers use it to retain a durable record's wire
+// semantics when flattening through an alias without its MarshalJSON method.
+func NormalizeRecord[T any](value T) T {
 	v := reflect.ValueOf(value)
 	copy := reflect.New(v.Type()).Elem()
 	copy.Set(v)
@@ -289,7 +299,7 @@ func record(value any) ([]byte, error) {
 			}
 		}
 	}
-	return json.Marshal(copy.Interface())
+	return copy.Interface().(T)
 }
 
 func Clone[T any](value T) T { return clone(reflect.ValueOf(value)).Interface().(T) }
@@ -341,7 +351,7 @@ func clone(v reflect.Value) reflect.Value {
 
 func ValidStrings(data []byte) error {
 	if !utf8.Valid(data) {
-		return fmt.Errorf("invalid UTF-8")
+		return errors.New("invalid UTF-8")
 	}
 	inString := false
 	for i := 0; i < len(data); i++ {
@@ -360,7 +370,7 @@ func ValidStrings(data []byte) error {
 			continue
 		}
 		if i+5 > len(data) {
-			return fmt.Errorf("invalid Unicode escape")
+			return errors.New("invalid Unicode escape")
 		}
 		n, err := strconv.ParseUint(string(data[i+1:i+5]), 16, 16)
 		if err != nil {
@@ -368,15 +378,15 @@ func ValidStrings(data []byte) error {
 		}
 		i += 4
 		if n >= 0xdc00 && n <= 0xdfff {
-			return fmt.Errorf("unpaired low surrogate")
+			return errors.New("unpaired low surrogate")
 		}
 		if n >= 0xd800 && n <= 0xdbff {
 			if i+7 > len(data) || string(data[i+1:i+3]) != `\u` {
-				return fmt.Errorf("unpaired high surrogate")
+				return errors.New("unpaired high surrogate")
 			}
 			low, err := strconv.ParseUint(string(data[i+3:i+7]), 16, 16)
 			if err != nil || low < 0xdc00 || low > 0xdfff {
-				return fmt.Errorf("unpaired high surrogate")
+				return errors.New("unpaired high surrogate")
 			}
 			i += 6
 		}

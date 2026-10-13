@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
-  import { api, ApiError } from './api';
-  import { clockTime, plural, relative } from './format';
+  import { onDestroy, untrack } from 'svelte';
+  import { Resource } from './resource';
+  import { client, ApiError } from './api';
+  import { clockTime, plural } from './format';
   import type {
     Backend,
     Config,
@@ -12,11 +13,22 @@
     SettingsView,
     TransformedField
   } from './types';
+  import RelativeTime from './RelativeTime.svelte';
   import RouteEditor from './RouteEditor.svelte';
   import { BACKENDS, backendLabel } from './modelRoutes';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
-  import { parseCommands, type Preflight, type SetupStatus } from './setup';
+  import { type Preflight, type SetupStatus } from './setup';
+  import {
+    configurationDraft,
+    configurationPatch,
+    discardConfigurationDraft,
+    draftCommands as commandsForDraft,
+    draftExcluded as excludedForDraft,
+    draftDirty,
+    replaceDraftField,
+    type ConfigurationDraft
+  } from './configurationDraft';
   import Icon from './Icon.svelte';
   import { LIMITS, limitHelp } from './limits';
   let {
@@ -34,42 +46,38 @@
     onbaselinechanged: () => void;
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
-  let config = $state<Config | null>(null),
-    revision = $state(''),
-    savedJson = $state(''),
-    savedCommands = $state(''),
-    transformed = $state<TransformedField[]>([]),
-    replaced = $state<Record<string, boolean>>({}),
-    loading = $state(false),
+  let draft = $state<ConfigurationDraft | null>(null);
+  const config = $derived(draft?.values ?? null);
+  const revision = $derived(draft?.revision ?? '');
+  const savedConfig = $derived(draft?.saved ?? null);
+  const transformed = $derived(draft?.transformed ?? []);
+  const replaced = $derived(draft?.replaced ?? {});
+  let loading = $state(false),
     loadError = $state(''),
     error = $state(''),
     conflict = $state(false),
     message = $state(''),
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
-    commands = $state(''),
-    excluded = $state(''),
-    savedExcluded = $state(''),
     preflight = $state<Preflight | null>(null);
   const busy = $derived(pending !== '');
-  const dirty = $derived(
-    config !== null &&
-      (JSON.stringify(config) !== savedJson ||
-        commands !== savedCommands ||
-        excluded !== savedExcluded)
+  const dirty = $derived(draft !== null && draftDirty(draft));
+  const draftCommands = $derived(draft ? commandsForDraft(draft) : []);
+  const draftExcluded = $derived(draft ? excludedForDraft(draft) : []);
+  let disposed = false;
+  let received: SettingsView | null = null;
+  const settingsResource = new Resource(
+    (_key: string, signal) => client.settings(signal),
+    (state) => {
+      received = state.value;
+      loading = state.loading;
+      loadError = state.error;
+    }
   );
-  const savedConfig = $derived<Config | null>(savedJson ? JSON.parse(savedJson) : null);
-  // Saved commands can contain newlines or whitespace that the line editor cannot round-trip.
-  const draftCommands = $derived(
-    commands !== savedCommands || replaced.verification_commands
-      ? parseCommands(commands)
-      : (config?.verification_commands ?? [])
-  );
-  const draftExcluded = $derived(
-    excluded !== savedExcluded || replaced.auto_merge_excluded_paths
-      ? parseCommands(excluded)
-      : (config?.auto_merge_excluded_paths ?? [])
-  );
+  onDestroy(() => {
+    disposed = true;
+    settingsResource.dispose();
+  });
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
   const locked = (field: string) => transformedByField.has(field) && !replaced[field];
   const pinnedRepository = $derived(status?.sandbox.pinned_repository ?? null);
@@ -108,73 +116,35 @@
   ];
   async function load() {
     if (loading || busy || dirty) return;
-    loading = true;
-    loadError = '';
-    try {
-      const view = await api<SettingsView>('/config');
-      if (!dirty) acceptSaved(view);
-    } catch (e) {
-      loadError = (e as Error).message;
-    } finally {
-      loading = false;
+    if (await settingsResource.refresh('settings')) {
+      // Edits typed during a reload still belong to this draft.
+      if (!disposed && !dirty && received) acceptSaved(received);
     }
   }
+
   function acceptSaved(view: SettingsView) {
-    if (!savedJson || view.revision !== revision) {
+    if (!draft || view.revision !== revision) {
       error = '';
       conflict = false;
       message = '';
       preflight = null;
     }
-    config = view.config;
-    savedJson = JSON.stringify(view.config);
-    revision = view.revision;
-    transformed = view.transformed_fields;
-    commands = view.config.verification_commands.join('\n');
-    savedCommands = commands;
-    excluded = view.config.auto_merge_excluded_paths.join('\n');
-    savedExcluded = excluded;
-    replaced = {};
+    draft = configurationDraft(view);
     loadError = '';
   }
-  function clearPath(segments: (string | number)[]) {
-    if (!config) return;
-    let node: unknown = config;
-    for (const segment of segments.slice(0, -1)) {
-      node = (node as Record<string, unknown>)?.[segment as string];
-      if (node == null) return;
-    }
-    const leaf = segments.at(-1);
-    if (leaf === undefined || node == null) return;
-    if (Array.isArray(node)) node[leaf as number] = '';
-    else if (segments[0] === 'runner_storage_paths')
-      delete (node as Record<string, unknown>)[leaf as string];
-    else (node as Record<string, unknown>)[leaf as string] = '';
-  }
   function unlockField(field: string) {
-    for (const path of transformedByField.get(field)?.paths ?? []) clearPath(path);
-    if (field === 'verification_commands') commands = '';
-    if (field === 'auto_merge_excluded_paths') excluded = '';
-    replaced[field] = true;
+    if (draft) replaceDraftField(draft, field);
   }
   function discard() {
     if (!dirty || busy) return;
-    config = JSON.parse(savedJson);
-    commands = savedCommands;
-    excluded = savedExcluded;
-    replaced = {};
+    if (draft) draft = discardConfigurationDraft(draft);
     error = '';
     conflict = false;
     message = 'Changes discarded. Saved configuration restored.';
   }
   async function reload() {
     if (busy || loading) return;
-    if (config) {
-      config = JSON.parse(savedJson);
-      commands = savedCommands;
-      excluded = savedExcluded;
-      replaced = {};
-    }
+    if (draft) draft = discardConfigurationDraft(draft);
     error = '';
     conflict = false;
     message = '';
@@ -188,28 +158,18 @@
     conflict = false;
     message = '';
     try {
-      const draft: Config = {
-        ...config,
-        verification_commands: draftCommands,
-        auto_merge_excluded_paths: draftExcluded
-      };
-      const patch: Record<string, unknown> = {};
-      for (const key of Object.keys(draft) as (keyof Config)[]) {
-        if (JSON.stringify(draft[key]) !== JSON.stringify(savedConfig?.[key]))
-          patch[key] = draft[key];
-      }
-      const view = await api<SettingsView>('/config', 'PUT', {
-        expected_revision: revision,
-        config: patch
-      });
+      const patch = configurationPatch(draft!);
+      const view = await client.saveSettings(revision, patch);
+      if (disposed) return;
       acceptSaved(view);
       message = 'Configuration saved.';
       onsaved();
     } catch (e) {
+      if (disposed) return;
       error = (e as Error).message;
-      conflict = e instanceof ApiError && e.status === 409 && /\breload\b/i.test(error);
+      conflict = e instanceof ApiError && e.code === 'config_revision_conflict';
     } finally {
-      pending = '';
+      if (!disposed) pending = '';
     }
   }
   function routeCatalog(route: Route) {
@@ -225,15 +185,17 @@
     conflict = false;
     message = '';
     try {
-      const models = await api<Model[]>('/model-catalog', 'POST', { backend, binary });
+      const models = await client.catalog(backend, binary);
+      if (disposed) return;
       catalogs[backend] = { binary, models, loaded: true };
       const available = models.filter((model) => model.available).length;
       message = `${plural(available, `${backendLabel(backend)} model`)} available. Routes are never silently substituted.`;
     } catch (e) {
+      if (disposed) return;
       error = (e as Error).message;
       catalogs[backend] = { binary, models: [], loaded: false, error };
     } finally {
-      pending = '';
+      if (!disposed) pending = '';
     }
   }
   async function doctor(mode: CycleMode) {
@@ -244,10 +206,8 @@
     message = '';
     const at = clockTime();
     try {
-      const result = await api<{ message: string; checked_revision: string }>(
-        `/doctor?mode=${mode}`,
-        'POST'
-      );
+      const result = await client.doctor(mode);
+      if (disposed) return;
       message = result.message;
       preflight = {
         mode,
@@ -257,13 +217,14 @@
         at
       };
     } catch (e) {
+      if (disposed) return;
       error = (e as Error).message;
       preflight =
         e instanceof ApiError && e.checkedRevision
           ? { mode, ok: false, detail: error, checkedRevision: e.checkedRevision, at }
           : null;
     } finally {
-      pending = '';
+      if (!disposed) pending = '';
     }
   }
   function focusControl(target: string) {
@@ -318,7 +279,7 @@
     >
     <button class="button" onclick={load} disabled={loading || busy || dirty}>Retry</button>
   </div>{/if}
-{#if config}
+{#if config && draft}
   <SetupChecklist
     draft={config}
     saved={savedConfig}
@@ -409,7 +370,7 @@
           <label class="full"
             >Verification commands<textarea
               id="verification-commands"
-              bind:value={commands}
+              bind:value={draft.commands}
               rows="3"
               readonly={locked('verification_commands')}
               placeholder={'npm test\nnpm run build'}
@@ -567,7 +528,7 @@
             <label class="full"
               >Manual-merge paths<textarea
                 id="auto-merge-excluded-paths"
-                bind:value={excluded}
+                bind:value={draft.excluded}
                 rows="3"
                 readonly={locked('auto_merge_excluded_paths')}
                 placeholder={'deploy/\nsecrets.txt'}
@@ -709,7 +670,7 @@
         {#if health.last_delivered_at}<div>
             <dt>Last delivered</dt>
             <dd>
-              {relative(health.last_delivered_at)}
+              <RelativeTime value={health.last_delivered_at} />
             </dd>
           </div>{/if}
         {#if health.last_error}<div>

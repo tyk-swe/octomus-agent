@@ -198,8 +198,7 @@ func footprintReason(reason, name string) string {
 }
 
 func maintenanceRemoteFootprintWithin(additions, deletions, files uint64, saved, live config.Config) bool {
-	maxLines := min(saved.AutoMergeMaxLines, live.AutoMergeMaxLines)
-	maxFiles := min(saved.AutoMergeMaxFiles, live.AutoMergeMaxFiles)
+	maxLines, maxFiles := model.AutoMergeLimits(saved, live)
 	return maxLines > 0 && maxFiles > 0 && files > 0 && files <= maxFiles &&
 		additions <= math.MaxUint64-deletions && additions+deletions <= maxLines
 }

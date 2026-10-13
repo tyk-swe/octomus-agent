@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -168,7 +167,10 @@ func TestGoldenOpensOnMain(t *testing.T) {
 			t.Fatalf("backups = %v", backups(t, path))
 		}
 	}
-	tasks, err := store.List[model.Task](s, "task")
+	if events, err := s.Events(nil); err != nil || len(events) == 0 {
+		t.Fatalf("golden events: %d, %v", len(events), err)
+	}
+	tasks, err := store.List(s, store.Tasks)
 	must(t, err)
 	if len(tasks) != 3 {
 		t.Fatalf("%d tasks", len(tasks))
@@ -189,7 +191,7 @@ func TestGoldenOpensOnMain(t *testing.T) {
 	if !ok || third.Status != model.StatusPublished || len(third.Proposal.Dependencies) != 1 || third.Proposal.Dependencies[0] != goldenSecondTask {
 		t.Fatalf("third task: %+v", third)
 	}
-	cycles, err := store.List[model.Cycle](s, "cycle")
+	cycles, err := store.List(s, store.Cycles)
 	must(t, err)
 	if len(cycles) != 2 {
 		t.Fatalf("%d cycles", len(cycles))
@@ -209,12 +211,12 @@ func TestGoldenOpensOnMain(t *testing.T) {
 	if byCycle[goldenFailedCycle].Status != model.CycleFailed || byCycle[goldenFailedCycle].Number != 2 || byCycle[goldenFailedCycle].Error == nil {
 		t.Fatalf("failed cycle: %+v", byCycle[goldenFailedCycle])
 	}
-	prs, err := store.List[model.PRObservation](s, "pr")
+	prs, err := store.List(s, store.PRs)
 	must(t, err)
 	if len(prs) != 1 || prs[0].PR.Number != 42 || prs[0].PR.State != "open" || !prs[0].PR.Owned {
 		t.Fatalf("prs: %+v", prs)
 	}
-	decisions, err := store.List[model.DecisionRecord](s, "decision")
+	decisions, err := store.List(s, store.Decisions)
 	must(t, err)
 	if len(decisions) != 3 {
 		t.Fatalf("%d decisions", len(decisions))
@@ -252,17 +254,17 @@ func TestReleasedGoldensOpenOnMain(t *testing.T) {
 			if got := queryInt(t, raw(t, path), "PRAGMA user_version"); got != store.ReleaseVersion() {
 				t.Fatalf("schema version %d, want %d", got, store.ReleaseVersion())
 			}
-			_, err = store.List[model.Task](s, "task")
+			_, err = store.List(s, store.Tasks)
 			must(t, err)
-			_, err = store.List[model.Cycle](s, "cycle")
+			_, err = store.List(s, store.Cycles)
 			must(t, err)
-			_, err = store.List[model.PRObservation](s, "pr")
+			_, err = store.List(s, store.PRs)
 			must(t, err)
-			_, err = store.List[model.DecisionRecord](s, "decision")
+			_, err = store.List(s, store.Decisions)
 			must(t, err)
-			_, err = store.Get[config.Config](s, "settings", "config")
+			_, err = store.Get(s, store.ConfigKey)
 			must(t, err)
-			_, err = store.Get[model.Control](s, "settings", "control")
+			_, err = store.Get(s, store.ControlKey)
 			must(t, err)
 		})
 	}
@@ -346,7 +348,7 @@ func TestMigrationUpgradesGolden(t *testing.T) {
 	if n := queryInt(t, raw(t, path), "SELECT count(*) FROM records WHERE kind='task' AND json_extract(data,'$.probe_note')='v8'"); n != 3 {
 		t.Fatalf("%d rewritten task records", n)
 	}
-	tasks, err := store.List[model.Task](s, "task")
+	tasks, err := store.List(s, store.Tasks)
 	must(t, err)
 	if len(tasks) != 3 {
 		t.Fatalf("%d tasks after the record rewrite", len(tasks))
@@ -356,7 +358,7 @@ func TestMigrationUpgradesGolden(t *testing.T) {
 	must(t, err)
 	upgrade := 0
 	for _, event := range events {
-		if event.Kind == "upgrade" {
+		if event.Kind == model.EventUpgrade {
 			upgrade++
 			if !strings.Contains(event.Message, "version 7 to 8") {
 				t.Fatalf("upgrade event: %+v", event)
@@ -429,7 +431,7 @@ func TestMigrationFailureRollsBack(t *testing.T) {
 	}
 	s, err := store.OpenPlan(path, v7GoldenDDL(t))
 	must(t, err)
-	if tasks, err := store.List[model.Task](s, "task"); err != nil || len(tasks) != 3 {
+	if tasks, err := store.List(s, store.Tasks); err != nil || len(tasks) != 3 {
 		t.Fatalf("%v %v", tasks, err)
 	}
 	must(t, s.Close())

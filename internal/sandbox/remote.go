@@ -19,6 +19,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/process"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 // Remote runs every untrusted child in a container through the sandbox broker. It never falls back to the host: when
@@ -346,7 +347,7 @@ func newRemoteChild(conn net.Conn, reader *bufio.Reader, sink io.Writer, stdin b
 					errBroken = werr != nil
 				}
 			case wire.FrameExit:
-				if err := json.Unmarshal(payload, &c.report); err != nil {
+				if err := wirejson.DecodeRecord(payload, &c.report); err != nil {
 					c.lose(err)
 				}
 				return
@@ -387,16 +388,34 @@ func (c *remoteChild) lose(err error) {
 	c.lost = &Error{Err: err, Started: true}
 }
 
-// Wait reports how the sandbox ended. A lost stream, an unconfirmed kill and every error the broker reports but its
-// time limit (wire.TimeLimitReason), such as a sandbox it could not start or remove, are the sandbox's failures, never
-// the program's result, even when the broker had killed it.
+// Wait reports a command result only when the broker classifies it as one. Time-limit wording is diagnostic, not
+// policy. Old error-free reports remain readable; an old unclassified time-limit error conservatively fails as
+// infrastructure until broker and control plane are upgraded together.
 func (c *remoteChild) Wait() (process.Status, error) {
 	<-c.done
 	if c.lost != nil {
 		return process.Status{}, c.lost
 	}
-	if c.report.Error != "" && !(c.report.Killed && c.report.Error == wire.TimeLimitReason) {
-		return process.Status{}, &Error{Err: errors.New(c.report.Error), Started: true}
+	message := c.report.Error
+	switch c.report.Outcome {
+	case "", wire.ExitCommand:
+	case wire.ExitTimeLimit:
+		if c.report.Killed {
+			if message == "" {
+				message = wire.TimeLimitReason
+			}
+			return process.ExitStatus(process.Exit{Code: c.report.Code, OOM: c.report.OOM, Killed: true, Reason: message}), nil
+		}
+		message = "Sandbox broker reported an invalid time-limit result"
+	case wire.ExitFailure:
+		if message == "" {
+			message = "Sandbox broker reported a failure without diagnostics"
+		}
+	default:
+		message = "Sandbox broker reported an unknown exit outcome"
+	}
+	if message != "" {
+		return process.Status{}, &Error{Err: errors.New(message), Started: true}
 	}
 	return process.ExitStatus(process.Exit{Code: c.report.Code, OOM: c.report.OOM, Killed: c.report.Killed, Reason: c.report.Error}), nil
 }
@@ -410,7 +429,7 @@ func (c *remoteChild) Terminate() { c.signal(wire.SignalTerminate) }
 
 // killReportWait is how long a kill waits for the broker's exit report, which confirms the container is gone and
 // carries the sandbox's evidence. The broker bounds its teardown, removal included, well inside it.
-const killReportWait = 60 * time.Second
+const killReportWait = wire.KillReportWait
 
 // Kill stops the sandbox and waits for the broker's report of it. Its output is discarded from then on, so a reader
 // that stopped cannot hold the report back. Cutting the stream afterwards holds even when the kill frame cannot be

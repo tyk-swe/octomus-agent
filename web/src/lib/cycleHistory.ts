@@ -1,4 +1,4 @@
-import { get } from './api';
+import { client } from './api';
 import type { CycleSummary, Page } from './types';
 
 type ReadPage = (path: string, signal: AbortSignal) => Promise<Page<CycleSummary>>;
@@ -22,7 +22,8 @@ export class CycleHistory {
 
   constructor(
     private changed: (state: CycleHistoryState) => void,
-    private read: ReadPage = get
+    private read: ReadPage = (path, signal) =>
+      client.cycles(new URL(path, 'http://local').searchParams, signal)
   ) {}
 
   cancel() {

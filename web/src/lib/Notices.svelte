@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { relative } from './format';
   import Icon from './Icon.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import { sandboxVerdict } from './sandbox';
   import type { Snapshot } from './types';
 
@@ -103,9 +103,9 @@
             'no complete inventory observed'}. New-PR work waits; unknown capacity is never treated
           as zero.{/if}</span
       >
-      {#if data.pr_capacity.observed_at}Observed {relative(
-          data.pr_capacity.observed_at
-        )}.{/if}</span
+      {#if data.pr_capacity.observed_at}Observed <RelativeTime
+          value={data.pr_capacity.observed_at}
+        />.{/if}</span
     >
   </div>
 {/if}

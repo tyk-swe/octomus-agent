@@ -1,5 +1,5 @@
 // Shared trusted-checkout ref mutations: real local-Git regressions for the
-// per-repository fetch lock.
+// shared checkout gate.
 package git_test
 
 import (
@@ -104,19 +104,6 @@ func TestConcurrentFetchSerializesSharedCheckout(t *testing.T) {
 	}
 	defer os.Remove(trigger)
 
-	key := filepath.Clean(c.Repository)
-	waited := make(chan struct{}, 1)
-	restore := git.SetRepoLockWaitHook(func(repository string) {
-		if repository != key {
-			return
-		}
-		select {
-		case waited <- struct{}{}:
-		default:
-		}
-	})
-	defer restore()
-
 	first := make(chan error, 1)
 	go func() { first <- git.Fetch(ctx, c) }()
 	if !waitForFile(entered, 15*time.Second) {
@@ -125,27 +112,15 @@ func TestConcurrentFetchSerializesSharedCheckout(t *testing.T) {
 	second := make(chan error, 1)
 	go func() { second <- git.Fetch(ctx, c) }()
 
-	var secondErr error
-	held := false
-	select {
-	case secondErr = <-second:
-		// The second fetch finished while the first held the ref lock: without
-		// coordination it raced and failed.
-	case <-waited:
-		// The second fetch is waiting for the shared checkout's lock.
-		held = true
-	case <-time.After(15 * time.Second):
-		t.Fatal("the second fetch neither finished nor waited for the shared checkout")
+	if !testutil.WaitUntil(15*time.Second, func() bool { return git.CheckoutWriterWaitingForTest(c.Repository) }) {
+		t.Fatal("the second fetch never waited for the shared checkout")
 	}
 	os.Remove(trigger)
 	if err := <-first; err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
-	if held {
-		secondErr = <-second
-	}
-	if secondErr != nil {
-		t.Fatalf("second fetch: %v", secondErr)
+	if err := <-second; err != nil {
+		t.Fatalf("second fetch: %v", err)
 	}
 
 	head, err := git.Git(ctx, c, c.Repository, []string{"rev-parse", "refs/remotes/origin/feature"})
@@ -169,33 +144,18 @@ func TestConcurrentFetchSerializesSharedCheckout(t *testing.T) {
 func TestFetchWaiterHonorsContext(t *testing.T) {
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
-	release, err := git.AcquireRepoLockForTest(ctx, c.Repository)
+	release, err := git.AcquireCheckoutForTest(ctx, c.Repository)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
 
-	key := filepath.Clean(c.Repository)
-	waited := make(chan struct{}, 1)
-	restore := git.SetRepoLockWaitHook(func(repository string) {
-		if repository != key {
-			return
-		}
-		select {
-		case waited <- struct{}{}:
-		default:
-		}
-	})
-	defer restore()
-
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- git.Fetch(waitCtx, c) }()
-	select {
-	case <-waited:
-	case <-time.After(15 * time.Second):
-		t.Fatal("the fetch never waited for the held mutation lock")
+	if !testutil.WaitUntil(15*time.Second, func() bool { return git.CheckoutWriterWaitingForTest(c.Repository) }) {
+		t.Fatal("the fetch never waited for the held checkout gate")
 	}
 	started := time.Now()
 	cancel()
@@ -217,7 +177,7 @@ func TestFetchWaiterHonorsContext(t *testing.T) {
 func TestFetchForkHeadsUsesSharedCheckoutLock(t *testing.T) {
 	c, _ := fixtureRoot(t)
 	ctx := context.Background()
-	release, err := git.AcquireRepoLockForTest(ctx, c.Repository)
+	release, err := git.AcquireCheckoutForTest(ctx, c.Repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,27 +185,12 @@ func TestFetchForkHeadsUsesSharedCheckoutLock(t *testing.T) {
 	releaseOnce := func() { once.Do(release) }
 	defer releaseOnce()
 
-	key := filepath.Clean(c.Repository)
-	waited := make(chan struct{}, 1)
-	restore := git.SetRepoLockWaitHook(func(repository string) {
-		if repository != key {
-			return
-		}
-		select {
-		case waited <- struct{}{}:
-		default:
-		}
-	})
-	defer restore()
-
 	done := make(chan error, 1)
 	go func() {
 		_, err := git.FetchForkHeads(ctx, c, []uint64{1})
 		done <- err
 	}()
-	select {
-	case <-waited:
-	case <-time.After(15 * time.Second):
+	if !testutil.WaitUntil(15*time.Second, func() bool { return git.CheckoutWriterWaitingForTest(c.Repository) }) {
 		t.Fatal("FetchForkHeads never waited for the shared checkout")
 	}
 	releaseOnce()
@@ -265,7 +210,7 @@ func TestFetchIsIndependentAcrossRepositories(t *testing.T) {
 	held, _ := fixtureRoot(t)
 	other, _ := fixtureRoot(t)
 	ctx := context.Background()
-	release, err := git.AcquireRepoLockForTest(ctx, held.Repository)
+	release, err := git.AcquireCheckoutForTest(ctx, held.Repository)
 	if err != nil {
 		t.Fatal(err)
 	}

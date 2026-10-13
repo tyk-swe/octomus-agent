@@ -76,11 +76,11 @@ func capacityOf(cfg config.Config, inventory model.OpenPRInventory, reservations
 // prCapacity is the capacity the dashboard shows: the saved inventory's union with reservations, reported as ready
 // only while this process holds a fresh observation under the same policy.
 func (a *App) prCapacity(cfg config.Config) (model.PRCapacity, error) {
-	reservations, err := a.Store.PRReservations(cfg.GitHubRepo)
+	reservations, err := a.store.PRReservations(cfg.GitHubRepo)
 	if err != nil {
 		return model.PRCapacity{}, err
 	}
-	stored, err := a.Store.OpenPRInventory()
+	stored, err := a.store.OpenPRInventory()
 	if err != nil {
 		return model.PRCapacity{}, err
 	}

@@ -11,8 +11,7 @@ days**; remediation and coordinated disclosure timing depend on the report.
 The latest published release is `v0.2.0`. Security fixes target the latest
 published release; older releases are unsupported and operators should upgrade.
 Report findings against the latest release, or against `main` with a commit ID
-when it is ahead of it. This is a maintenance policy, not a guarantee of a fix
-within a particular time.
+when it is ahead of it. This is not a guarantee of a fix within a particular time.
 
 ## Intended deployment
 
@@ -26,5 +25,6 @@ the intended repository. The operator token grants control of work and policy.
 
 Read the [threat model](docs/threat-model.md) before enabling work. Unexpected
 publication, verification bypass, disclosure of secrets, sandbox escapes, egress
-allowlist bypasses and other boundary failures are appropriate private reports. Prompt injection is an acknowledged design risk;
-report concrete incidents and any failure beyond the documented boundaries.
+allowlist bypasses and other boundary failures are appropriate private reports. Prompt
+injection is an acknowledged design risk; report concrete incidents and any failure beyond
+the documented boundaries.

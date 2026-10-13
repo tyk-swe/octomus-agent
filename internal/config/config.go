@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -88,31 +89,31 @@ func (r Route) Validate(ready bool) error {
 		return fmt.Errorf("Model must be at most %d bytes with no surrounding spaces or control characters", max)
 	}
 	if !valid(r.Effort, 20) {
-		return fmt.Errorf("Effort must be at most 20 bytes with no surrounding spaces or control characters")
+		return errors.New("Effort must be at most 20 bytes with no surrounding spaces or control characters")
 	}
 	if r.Provider != nil && !valid(*r.Provider, 100) {
-		return fmt.Errorf("Provider must be at most 100 bytes with no surrounding spaces or control characters")
+		return errors.New("Provider must be at most 100 bytes with no surrounding spaces or control characters")
 	}
 	if r.Variant != nil && (*r.Variant == "" || !valid(*r.Variant, 100)) {
-		return fmt.Errorf("Variant must be a non-empty name of at most 100 bytes with no surrounding spaces or control characters")
+		return errors.New("Variant must be a non-empty name of at most 100 bytes with no surrounding spaces or control characters")
 	}
 	switch r.Backend {
 	case BackendCodex:
 		if r.Provider != nil || r.Variant != nil {
-			return fmt.Errorf("Codex routes use reasoning effort, not an OpenCode provider or variant")
+			return errors.New("Codex routes use reasoning effort, not an OpenCode provider or variant")
 		}
 		if ready && (r.Model == "" || r.Effort == "") {
-			return fmt.Errorf("Set the Codex model and effort for every required route")
+			return errors.New("Set the Codex model and effort for every required route")
 		}
 	case BackendOpencode:
 		if r.Effort != "" {
-			return fmt.Errorf("OpenCode routes use a variant, not Codex reasoning effort")
+			return errors.New("OpenCode routes use a variant, not Codex reasoning effort")
 		}
 		if ready && (r.Model == "" || r.Provider == nil || *r.Provider == "") {
-			return fmt.Errorf("Set the OpenCode provider and model for every required route")
+			return errors.New("Set the OpenCode provider and model for every required route")
 		}
 	default:
-		return fmt.Errorf("Invalid backend")
+		return errors.New("Invalid backend")
 	}
 	return nil
 }
@@ -237,27 +238,27 @@ func (c Config) validateMode(ready, audit bool) error {
 		}
 	}
 	if len(c.Categories) == 0 {
-		return fmt.Errorf("Select valid improvement categories")
+		return errors.New("Select valid improvement categories")
 	}
 	for _, v := range c.Categories {
 		if !slices.Contains(Categories(), v) {
-			return fmt.Errorf("Select valid improvement categories")
+			return errors.New("Select valid improvement categories")
 		}
 	}
 	switch c.DeliveryMode {
 	case DeliveryModeStandard:
 	case DeliveryModeMaintenance:
 		if len(c.EffectiveCategories()) == 0 {
-			return fmt.Errorf("Maintenance delivery requires at least one enabled non-feature category")
+			return errors.New("Maintenance delivery requires at least one enabled non-feature category")
 		}
 	default:
-		return fmt.Errorf("Delivery mode must be standard or maintenance")
+		return errors.New("Delivery mode must be standard or maintenance")
 	}
 	if !between(c.AutoMergeMaxLines, 1, 10000) {
-		return fmt.Errorf("Auto-merge line limit must be 1–10000")
+		return errors.New("Auto-merge line limit must be 1–10000")
 	}
 	if !between(c.AutoMergeMaxFiles, 1, 100) {
-		return fmt.Errorf("Auto-merge file limit must be 1–100")
+		return errors.New("Auto-merge file limit must be 1–100")
 	}
 	if err := validExcludedPaths(c.AutoMergeExcludedPaths); err != nil {
 		return err
@@ -286,7 +287,7 @@ func (c Config) validateMode(ready, audit bool) error {
 	}
 	for backend, path := range c.RunnerStoragePaths {
 		if (backend != "codex" && backend != "opencode") || !filepath.IsAbs(path) {
-			return fmt.Errorf("Runner storage measurement requires an absolute path for Codex or OpenCode")
+			return errors.New("Runner storage measurement requires an absolute path for Codex or OpenCode")
 		}
 	}
 	for _, binary := range []string{c.CodexBinary, c.OpencodeBinary} {
@@ -296,7 +297,7 @@ func (c Config) validateMode(ready, audit bool) error {
 	}
 	for _, command := range c.VerificationCommands {
 		if strings.TrimSpace(command) == "" || len(command) > 4096 {
-			return fmt.Errorf("Each verification command must be non-empty and at most 4096 bytes")
+			return errors.New("Each verification command must be non-empty and at most 4096 bytes")
 		}
 	}
 	if ready {
@@ -309,7 +310,7 @@ func (c Config) validateMode(ready, audit bool) error {
 			return err
 		}
 		if !audit && len(c.VerificationCommands) == 0 {
-			return fmt.Errorf("Set at least one meaningful repository verification command")
+			return errors.New("Set at least one meaningful repository verification command")
 		}
 	}
 	return nil
@@ -317,7 +318,7 @@ func (c Config) validateMode(ready, audit bool) error {
 
 func validExcludedPaths(paths []string) error {
 	if len(paths) > 100 {
-		return fmt.Errorf("At most 100 additional manual-merge paths are supported")
+		return errors.New("At most 100 additional manual-merge paths are supported")
 	}
 	seen := map[string]struct{}{}
 	for _, entry := range paths {
@@ -358,16 +359,16 @@ func (c Config) ValidateBaseline() error {
 		return err
 	}
 	if len(c.VerificationCommands) == 0 {
-		return fmt.Errorf("Set at least one meaningful repository verification command")
+		return errors.New("Set at least one meaningful repository verification command")
 	}
 	return nil
 }
 func (c Config) validateRepository() error {
 	if _, err := os.Stat(c.Repository + string(os.PathSeparator) + ".git"); !filepath.IsAbs(c.Repository) || err != nil {
-		return fmt.Errorf("Repository must be an absolute path to a Git checkout")
+		return errors.New("Repository must be an absolute path to a Git checkout")
 	}
 	if !ValidGitHubRepo(c.GitHubRepo) {
-		return fmt.Errorf("GitHub repository must be owner/name")
+		return errors.New("GitHub repository must be owner/name")
 	}
 	return nil
 }
@@ -390,7 +391,7 @@ func ValidGitHubRepo(repo string) bool {
 }
 func ValidateBinary(binary string) error {
 	if strings.TrimSpace(binary) == "" || len(binary) > 4096 || strings.ContainsFunc(binary, unicode.IsControl) {
-		return fmt.Errorf("Set a valid runner executable path")
+		return errors.New("Set a valid runner executable path")
 	}
 	return nil
 }

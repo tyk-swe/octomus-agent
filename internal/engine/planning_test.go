@@ -180,7 +180,7 @@ func TestAuditPlansWithoutQueueing(t *testing.T) {
 	if err != nil || control.Mode != model.OperatingModePaused || control.Batch != nil {
 		t.Fatalf("audit changed queue mode: %+v, %v", control, err)
 	}
-	tasks, err := store.List[model.Task](f.state, "task")
+	tasks, err := store.List(f.state, store.Tasks)
 	if err != nil || len(tasks) != 1 || tasks[0].ID != existing.ID || tasks[0].Status != model.StatusQueued || tasks[0].RunID != nil {
 		t.Fatalf("audit disturbed or queued executable work: %+v, %v", tasks, err)
 	}
@@ -194,14 +194,14 @@ func TestAuditStartsAfterDeploymentRepositoryChange(t *testing.T) {
 	// Saved while the deployment pinned the repository's former name; the restarted deployment pins its current one.
 	saved := f.cfg.Clone()
 	saved.GitHubRepo = "fixture/former-name"
-	if err := f.state.Put("settings", "config", saved); err != nil {
+	if err := store.Put(f.state, store.ConfigKey, saved); err != nil {
 		t.Fatal(err)
 	}
 	app := f.pausedApp(t, WithDeployment(Deployment{Repository: f.repo, GitHubRepo: f.cfg.GitHubRepo}))
 	if err := app.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if err := control(app, "audit"); err != nil {
+	if err := control(app, model.ControlAudit); err != nil {
 		t.Fatalf("audit after the deployment's repository changed: %v", err)
 	}
 	if cycle := waitOnlyCycle(t, app); cycle.Status != model.CycleCompleted || cycle.Repository != f.cfg.GitHubRepo {
@@ -214,7 +214,7 @@ func TestRunOnceCommitsPlan(t *testing.T) {
 	f := newFixture(t)
 	completePlan(t, f).queue(f)
 	app := f.pausedApp(t)
-	if err := control(app, "cycle"); err != nil {
+	if err := control(app, model.ControlCycle); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.tick(); err != nil {
@@ -222,7 +222,7 @@ func TestRunOnceCommitsPlan(t *testing.T) {
 	}
 	cycle := waitOnlyCycle(t, app)
 	assertPlanningPass(t, f, cycle)
-	tasks, err := store.List[model.Task](f.state, "task")
+	tasks, err := store.List(f.state, store.Tasks)
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("complete plan did not commit one task: %d, %v", len(tasks), err)
 	}
@@ -246,7 +246,7 @@ func planningErrors(t *testing.T, state *store.Store, entity string) []model.Eve
 	}
 	found := []model.Event{}
 	for _, event := range events {
-		if event.Kind == "planning_error" {
+		if event.Kind == model.EventPlanningError {
 			found = append(found, event)
 		}
 	}
@@ -268,9 +268,9 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 				t.Fatal(err)
 			}
 			app := f.pausedApp(t)
-			action := "cycle"
+			action := model.ControlCycle
 			if mode == model.OperatingModeContinuous {
-				action = "resume"
+				action = model.ControlResume
 			}
 			if err := control(app, action); err != nil {
 				t.Fatal(err)
@@ -295,7 +295,7 @@ func TestFailedPlanningCommitsNothing(t *testing.T) {
 			if turns := f.script.Turns(f.routes.ProposalReviewer); len(turns) != 0 {
 				t.Fatalf("proposal review ran after discovery failed: %+v", turns)
 			}
-			tasks, err := store.List[model.Task](f.state, "task")
+			tasks, err := store.List(f.state, store.Tasks)
 			if err != nil || len(tasks) != 0 {
 				t.Fatalf("partial plan leaked tasks: %+v, %v", tasks, err)
 			}
@@ -339,7 +339,7 @@ func TestConsolidationCoversEveryProposal(t *testing.T) {
 	if cycle.Status != model.CycleFailed || cycle.Error == nil || !strings.Contains(*cycle.Error, "omitted or invented") || !strings.Contains(*cycle.Error, `omitted "d0-feature"`) {
 		t.Fatalf("incomplete consolidation was accepted or its error does not name the omitted proposal: %+v", cycle)
 	}
-	tasks, err := store.List[model.Task](f.state, "task")
+	tasks, err := store.List(f.state, store.Tasks)
 	if err != nil || len(tasks) != 0 {
 		t.Fatalf("incomplete consolidation leaked executable work: %+v, %v", tasks, err)
 	}
@@ -487,7 +487,7 @@ func TestPlanningRejectsMutatedWorkspace(t *testing.T) {
 				t.Fatalf("planning ran %d sessions and %d turns; want %d before the failure", want, len(f.planningTurns()), test.admissions(f.cfg.DiscoveryAgents))
 			}
 			assertAdmissions(t, f.state, test.admissions(f.cfg.DiscoveryAgents), "planning turns before the failure")
-			tasks, err := store.List[model.Task](f.state, "task")
+			tasks, err := store.List(f.state, store.Tasks)
 			if err != nil || len(tasks) != 0 {
 				t.Fatalf("mutated planning workspace leaked executable work: %+v, %v", tasks, err)
 			}
@@ -661,7 +661,7 @@ func TestAdmissionBudgetIsAtomic(t *testing.T) {
 	state := testStore(t)
 	cfg := testConfig(t.TempDir())
 	cfg.MaxSessionsPerDay = 5
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -708,7 +708,7 @@ func TestUnaffordableAuditChangesNothing(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(control, original) {
 		t.Fatalf("unaffordable audit changed control: %+v, %v", control, err)
 	}
-	cycles, err := store.List[model.Cycle](state, "cycle")
+	cycles, err := store.List(state, store.Cycles)
 	if err != nil || len(cycles) != 0 {
 		t.Fatalf("unaffordable audit created a cycle: %d, %v", len(cycles), err)
 	}

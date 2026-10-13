@@ -1,8 +1,8 @@
 <script lang="ts">
   import Badge from './Badge.svelte';
   import { taskIcon } from './evidence';
-  import { relative } from './format';
   import Icon from './Icon.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import type { TaskRow } from './types';
 
   let { tasks, onselect }: { tasks: TaskRow[]; onselect: (id: string) => void } = $props();
@@ -17,7 +17,7 @@
           ><span class="tier">{task.tier}</span><span>{task.category}</span><span
             class="dot-separator">·</span
           ><code>{task.target}</code><span class="dot-separator">·</span><span
-            >updated {relative(task.updated_at)}</span
+            >updated <RelativeTime value={task.updated_at} /></span
           ></span
         ></span
       ><Badge label={task.status} tone={task.status} /><Icon name="chevron" size={16} /></button

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -67,7 +66,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	cfg.VerificationCommands = []string{"echo ghp_syntheticsecrettoken123", "true"}
 	longPath := "/" + strings.Repeat("storage", 2500)
 	cfg.RunnerStoragePaths = map[string]string{"codex": longPath}
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := cfg.Fingerprint()
@@ -125,7 +124,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	if commands := display["verification_commands"].([]any); commands[0] != "echo [redacted]" {
 		t.Fatalf("saved view commands: %v", commands)
 	}
-	saved, err := store.Get[config.Config](state, "settings", "config")
+	saved, err := store.Get(state, store.ConfigKey)
 	if err != nil || saved == nil {
 		t.Fatal(err)
 	}
@@ -156,7 +155,7 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("replacement: %d %s", response.Code, response.Body.String())
 	}
-	saved, _ = store.Get[config.Config](state, "settings", "config")
+	saved, _ = store.Get(state, store.ConfigKey)
 	if !reflect.DeepEqual(saved.RunnerStoragePaths, map[string]string{"opencode": "/o"}) || len(saved.VerificationCommands) != 0 {
 		t.Fatalf("replacement did not apply exactly: %+v", saved)
 	}
@@ -202,35 +201,26 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	loaded, err := store.Get[config.Config](reopened, "settings", "config")
+	loaded, err := store.Get(reopened, store.ConfigKey)
 	if err != nil || loaded == nil || !reflect.DeepEqual(*loaded, *saved) {
 		t.Fatalf("reopened config: %v, err=%v", loaded, err)
 	}
 }
 
 func TestConfigConflicts(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "lib", "Settings.svelte"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := regexp.MustCompile(`e\.status === 409 && /([^/]+)/i\.test\(error\)`).FindSubmatch(source)
-	if found == nil {
-		t.Fatal("Settings.svelte no longer tests a 409 error with /…/i; update this contract")
-	}
-	asksReload := regexp.MustCompile(`(?i)` + string(found[1]))
 
 	app, state := testApp(t)
 	router := Router(app, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
-	if err := state.Put("settings", "config", cfg); err != nil {
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
 	revision, err := cfg.Fingerprint()
 	if err != nil {
 		t.Fatal(err)
 	}
-	conflict := func(body string) string {
+	conflict := func(body string, code engine.ActionErrorCode) {
 		t.Helper()
 		response := call(t, router, "PUT", "/api/config", body)
 		if response.Code != http.StatusConflict {
@@ -240,19 +230,18 @@ func TestConfigConflicts(t *testing.T) {
 		if message == "" {
 			t.Fatalf("409 without an error message: %s", response.Body.String())
 		}
-		return message
+		if actual := decode(t, response)["code"]; actual != string(code) {
+			t.Fatalf("conflict code=%v; want %s", actual, code)
+		}
 	}
 
-	stale := conflict(`{"expected_revision":"` + strings.Repeat("0", 64) + `","config":{"max_retries":3}}`)
-	if !asksReload.MatchString(stale) {
-		t.Errorf("stale-revision conflict %q does not match %s; the dashboard would hide its reload control", stale, asksReload)
-	}
+	conflict(`{"expected_revision":"`+strings.Repeat("0", 64)+`","config":{"max_retries":3}}`, engine.ConfigRevisionConflict)
 
 	task := queuedTask(cfg)
-	if err := state.Put("task", task.ID, task); err != nil {
+	if err := store.Put(state, store.Tasks.Key(task.ID), task); err != nil {
 		t.Fatal(err)
 	}
-	unresolved := conflict(`{"expected_revision":"` + revision + `","config":{"github_repo":"fixture/other"}}`)
+	conflict(`{"expected_revision":"`+revision+`","config":{"github_repo":"fixture/other"}}`, engine.UnresolvedWorkConflict)
 
 	control, err := app.Control()
 	if err != nil {
@@ -262,10 +251,5 @@ func TestConfigConflicts(t *testing.T) {
 	if err := state.SaveControl(control); err != nil {
 		t.Fatal(err)
 	}
-	running := conflict(`{"expected_revision":"` + revision + `","config":{"max_retries":3}}`)
-	for _, message := range []string{unresolved, running} {
-		if asksReload.MatchString(message) {
-			t.Errorf("conflict %q matches %s, so the dashboard would offer a reload that cannot resolve it", message, asksReload)
-		}
-	}
+	conflict(`{"expected_revision":"`+revision+`","config":{"max_retries":3}}`, engine.ActiveWorkConflict)
 }

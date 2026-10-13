@@ -1,7 +1,6 @@
 package export
 
 import (
-	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
@@ -391,15 +390,9 @@ func commandEvidence(task model.Task) CommandEvidence {
 	required := task.ExecutionConfig().VerificationCommands
 	commands := make([]CommandResult, 0, len(required))
 	for _, command := range required {
-		var recorded []model.Verification
-		for _, result := range task.Verification {
-			if result.Command == command {
-				recorded = append(recorded, result)
-			}
-		}
-		out := CommandResult{Command: command, ResultsRecorded: len(recorded), State: CommandNoResult}
-		if n := len(recorded); n > 0 {
-			latest := recorded[n-1]
+		history := task.VerificationFor(command)
+		out := CommandResult{Command: command, ResultsRecorded: history.Recorded, State: CommandNoResult}
+		if latest := history.Latest; latest != nil {
 			var matches *bool
 			if task.OutputCommit != nil {
 				matches = new(*task.OutputCommit == latest.Revision)
@@ -616,16 +609,14 @@ func assemble(cycle model.Cycle, tasks []model.Task) RunEvidenceV1 {
 	}
 }
 
-const cycleTasksQuery = "SELECT r.data FROM record_meta m INDEXED BY meta_cycle JOIN records r ON r.kind=m.kind AND r.id=m.id WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY r.id"
-
 // runRecords reads one cycle and its tasks from the snapshot c. A missing cycle
 // is a nil cycle, not an error.
-func runRecords(c *sql.Conn, cycleID string) (*model.Cycle, []model.Task, error) {
-	cycle, err := store.RecordAt[model.Cycle](c, "cycle", cycleID)
+func runRecords(c *store.Snapshot, cycleID string) (*model.Cycle, []model.Task, error) {
+	cycle, err := c.Cycle(cycleID)
 	if err != nil || cycle == nil {
 		return nil, nil, err
 	}
-	tasks, err := store.QueryRecords[model.Task](c, cycleTasksQuery, cycleID)
+	tasks, err := c.TasksForCycle(cycleID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -638,7 +629,7 @@ func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 	var cycle *model.Cycle
 	var tasks []model.Task
 	var merges map[string]*model.AutoMergeState
-	err := s.Snapshot(func(c *sql.Conn) (err error) {
+	err := s.Snapshot(func(c *store.Snapshot) (err error) {
 		cycle, tasks, err = runRecords(c, cycleID)
 		if err != nil {
 			return err
@@ -655,7 +646,7 @@ func RunEvidence(s *store.Store, cycleID string) (map[string]any, error) {
 // Run exports one cycle's run evidence from the state database at stateDB,
 // opened read-only. A missing cycle is an error, never an empty export.
 func Run(stateDB, cycleID string) (map[string]any, error) {
-	return export(stateDB, "run evidence export", func(c *sql.Conn) (RunEvidenceV1, error) {
+	return export(stateDB, "run evidence export", func(c *store.Snapshot) (RunEvidenceV1, error) {
 		cycle, tasks, err := runRecords(c, cycleID)
 		if err != nil {
 			return RunEvidenceV1{}, err

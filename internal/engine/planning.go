@@ -77,10 +77,10 @@ func (a *App) planCycle(ctx context.Context, cfg config.Config, cycle model.Cycl
 				a.setRecoveryError(pauseErr)
 			}
 		} else {
-			_ = a.Store.SaveControl(control)
+			_ = a.store.SaveControl(control)
 		}
 		if err != nil {
-			_ = a.Store.Event(cycle.ID, "planning_error", message)
+			_ = a.store.Event(cycle.ID, model.EventPlanningError, message)
 		}
 	}
 	a.gate.Unlock()
@@ -101,7 +101,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 			return err
 		}
 	}
-	reservations, err := a.Store.PRReservations(cfg.GitHubRepo)
+	reservations, err := a.store.PRReservations(cfg.GitHubRepo)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func (a *App) plan(ctx context.Context, cfg config.Config, cycle *model.Cycle) e
 	for i := range proposals {
 		proposals[i].ProblemKey = proposals[i].ProblemIdentity()
 	}
-	history, err := a.Store.DuplicateTasks(cfg.GitHubRepo, proposals)
+	history, err := a.store.DuplicateTasks(cfg.GitHubRepo, proposals)
 	if err != nil {
 		return err
 	}
@@ -165,7 +165,7 @@ func (a *App) seedRediscoveries(cycle *model.Cycle, requests []rediscoveryReques
 		if id == "" {
 			return errors.New("Missing rediscovery identity")
 		}
-		old, err := store.Get[model.Task](a.Store, "task", id)
+		old, err := store.Get(a.store, store.Tasks.Key(id))
 		if err != nil || old == nil {
 			if err == nil {
 				err = fmt.Errorf("Missing rediscovery task %s", id)
@@ -189,7 +189,7 @@ func (a *App) commitPlan(cycle model.Cycle, tasks []model.Task) error {
 	if err := a.ctx.Err(); err != nil {
 		return err
 	}
-	return a.Store.CommitPlan(a.ctx, cycle, tasks)
+	return a.store.CommitPlan(a.ctx, cycle, tasks)
 }
 
 func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *model.Cycle) (model.OpenPRInventory, error) {
@@ -240,10 +240,10 @@ func (a *App) captureGrounding(ctx context.Context, cfg config.Config, cycle *mo
 		}
 	}
 	if len(missing) > 0 {
-		_ = a.Store.Event(cycle.ID, "grounding", fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))
+		_ = a.store.Event(cycle.ID, model.EventGrounding, fmt.Sprintf("Fork PR heads unavailable locally: %v", missing))
 	}
 	limit := 100
-	history, err := a.Store.HistoryPage("task", store.HistoryQuery{Limit: &limit})
+	history, err := a.store.TaskPage(store.HistoryQuery{Limit: &limit})
 	if err != nil {
 		return model.OpenPRInventory{}, err
 	}
@@ -443,7 +443,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	roleWorkspace := filepath.Join(roleRoot, "workspace")
 	outcome.answer, outcome.err = a.invoke(ctx, a.runners(ctx, cfg, cycleID), invocation{
 		cycleID: cycleID, role: label, route: route, workspace: roleWorkspace,
-		prompt: prompt, schema: schema, ownsClients: true,
+		prompt: prompt, schema: schema,
 		prepare: func() error {
 			return a.withPlanningWorkspace(ctx, func() error {
 				return gitops.CloneAt(ctx, cfg, roleWorkspace, revision)
@@ -467,7 +467,7 @@ func (a *App) role(ctx context.Context, cfg config.Config, cycleID, revision, la
 	})
 	if outcome.err == nil {
 		if err := a.removePlanningWorkspace(roleRoot); err != nil {
-			_ = a.Store.Event(cycleID, "cleanup_error", fmt.Sprintf("%s: %s", label, redact.Error(err)))
+			_ = a.store.Event(cycleID, model.EventCleanupError, fmt.Sprintf("%s: %s", label, redact.Error(err)))
 		}
 	}
 	return outcome
@@ -517,14 +517,14 @@ func (a *App) attachOutcomes(cycle *model.Cycle, outcomes []roleOutcome) error {
 
 // saveCycle writes the cycle with the sessions the store holds, which running roles append as they finish.
 func (a *App) saveCycle(cycle *model.Cycle) error {
-	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
+	current, err := store.Get(a.store, store.Cycles.Key(cycle.ID))
 	if err != nil {
 		return err
 	}
 	if current != nil {
 		cycle.Sessions = current.Sessions
 	}
-	return a.Store.Put("cycle", cycle.ID, *cycle)
+	return store.Put(a.store, store.Cycles.Key(cycle.ID), *cycle)
 }
 
 func (a *App) commitTasks(cfg config.Config, cycle *model.Cycle) error {

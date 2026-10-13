@@ -239,7 +239,7 @@ func TestReadOnlyExportsReturnBeforeTouchingApplicationState(t *testing.T) {
 		Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: "fixture/project",
 	}
-	if err := s.Put("cycle", c.ID, c); err != nil {
+	if err := store.Put(s, store.Cycles.Key(c.ID), c); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ReserveSession(0, store.NewAdmission("cycle-a", nil, "discovery", config.NewRoute("fixture", "low"))); err != nil {

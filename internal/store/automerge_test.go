@@ -6,6 +6,7 @@ import (
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
 func mergeFixture(number uint64, withMerge bool) (model.Task, model.PullRequest, *model.AutoMergeState) {
@@ -32,7 +33,7 @@ func mergeFixture(number uint64, withMerge bool) (model.Task, model.PullRequest,
 
 func prMerge(t *testing.T, s *store.Store, number uint64) *model.AutoMergeState {
 	t.Helper()
-	prs, err := store.List[model.PRObservation](s, "pr")
+	prs, err := store.List(s, store.PRs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,10 +49,11 @@ func publishAtCheckpoint(t *testing.T, s *store.Store, task model.Task, p model.
 	t.Helper()
 	checkpoint := task.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", task.ID, checkpoint))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	published := task.Clone()
 	published.Status = model.StatusPublished
-	must(t, s.CompletePublication(published, p, merge))
+	_, err := s.CompletePublication(published, p, merge)
+	must(t, err)
 }
 
 func intentFrom(merge model.AutoMergeState, attempt string) model.AutoMergeState {
@@ -69,7 +71,7 @@ func TestCompletePublicationRecordsMergeEvidence(t *testing.T) {
 	task, p, merge := mergeFixture(7, true)
 	publishAtCheckpoint(t, s, task, p, merge)
 
-	saved, err := store.Get[model.Task](s, "task", task.ID)
+	saved, err := store.Get(s, store.Tasks.Key(task.ID))
 	if err != nil || saved == nil || saved.Status != model.StatusPublished {
 		t.Fatalf("published task = %+v, %v", saved, err)
 	}
@@ -79,7 +81,7 @@ func TestCompletePublicationRecordsMergeEvidence(t *testing.T) {
 		recorded.PolicyRevision != merge.PolicyRevision {
 		t.Fatalf("recorded merge evidence = %+v", recorded)
 	}
-	prs, _ := store.List[model.PRObservation](s, "pr")
+	prs, _ := store.List(s, store.PRs)
 	if prs[0].DeliveredHead == nil || *prs[0].DeliveredHead != p.Head {
 		t.Fatalf("delivered head = %+v", prs[0].DeliveredHead)
 	}
@@ -107,23 +109,46 @@ func TestCompletePublicationRollsBackTogether(t *testing.T) {
 	task, p, merge := mergeFixture(8, true)
 	checkpoint := task.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", task.ID, checkpoint))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	published := task.Clone()
 	published.Status = model.StatusPublished
-	if err := s.CompletePublication(published, p, merge); err == nil {
+	if _, err := s.CompletePublication(published, p, merge); err == nil {
 		t.Fatal("the injected failure did not roll the publication back")
 	}
-	saved, err := store.Get[model.Task](s, "task", task.ID)
+	saved, err := store.Get(s, store.Tasks.Key(task.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved == nil || saved.Status != model.StatusPublishing {
 		t.Fatalf("the rollback overwrote the durable checkpoint: %+v", saved)
 	}
-	prs, err := store.List[model.PRObservation](s, "pr")
+	prs, err := store.List(s, store.PRs)
 	must(t, err)
 	if len(prs) != 0 {
 		t.Fatalf("pr record persisted despite the rollback: %+v", prs)
+	}
+}
+
+func TestArchiveRollsBackWithMergeRevocation(t *testing.T) {
+	t.Parallel()
+	s, err := store.OpenPlan(statePath(t), store.SchemaDDL()+`
+		CREATE TRIGGER fail_merge_revoke BEFORE UPDATE ON records
+		WHEN NEW.kind='pr' BEGIN SELECT RAISE(FAIL, 'merge revocation refused'); END;`)
+	must(t, err)
+	defer s.Close()
+	task, p, merge := mergeFixture(8, true)
+	publishAtCheckpoint(t, s, task, p, merge)
+	before, err := store.Get(s, store.Tasks.Key(task.ID))
+	must(t, err)
+	archived := before.Clone()
+	archived.Lifecycle.ArchivedAt = new(model.Now())
+	if err := s.ArchiveTask(archived); err == nil {
+		t.Fatal("archival did not attempt coupled merge revocation")
+	}
+	saved, err := store.Get(s, store.Tasks.Key(task.ID))
+	must(t, err)
+	if !wirejson.Equal(*saved, *before) || !wirejson.Equal(*prMerge(t, s, p.Number), *merge) {
+		t.Fatal("refused revocation partially committed the archive or merge authority")
 	}
 }
 
@@ -134,24 +159,24 @@ func TestCompletePublicationRejectsStaleCheckpoints(t *testing.T) {
 	queued := task.Clone()
 	queued.Status = model.StatusQueued
 	queued.OutputCommit = nil
-	must(t, s.Put("task", task.ID, queued))
-	if err := s.CompletePublication(task, p, merge); err == nil {
+	must(t, store.Put(s, store.Tasks.Key(task.ID), queued))
+	if _, err := s.CompletePublication(task, p, merge); err == nil {
 		t.Fatal("a task that never checkpointed accepted a publication")
 	}
-	if saved, _ := store.Get[model.Task](s, "task", task.ID); saved == nil || saved.Status != model.StatusQueued {
+	if saved, _ := store.Get(s, store.Tasks.Key(task.ID)); saved == nil || saved.Status != model.StatusQueued {
 		t.Fatalf("the refused publication overwrote the task: %+v", saved)
 	}
 	checkpoint := task.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", task.ID, checkpoint))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	other := task.Clone()
 	other.Status = model.StatusPublished
 	otherHead := "b" + strings.Repeat("0", 39)
 	other.OutputCommit = &otherHead
-	if err := s.CompletePublication(other, p, merge); err == nil {
+	if _, err := s.CompletePublication(other, p, merge); err == nil {
 		t.Fatal("a publication with a different output overwrote the checkpoint")
 	}
-	if saved, _ := store.Get[model.Task](s, "task", task.ID); saved == nil || saved.Status != model.StatusPublishing {
+	if saved, _ := store.Get(s, store.Tasks.Key(task.ID)); saved == nil || saved.Status != model.StatusPublishing {
 		t.Fatalf("the refused publication overwrote the checkpoint: %+v", saved)
 	}
 }
@@ -172,7 +197,7 @@ func TestClaimMergeOnlyPendingWaitingOrContinuousManual(t *testing.T) {
 	must(t, err)
 	found := false
 	for _, event := range events {
-		if event.Kind == "automerge" && strings.Contains(event.Message, "attempt") {
+		if event.Kind == model.EventAutomerge && strings.Contains(event.Message, "attempt") {
 			found = true
 		}
 	}
@@ -218,7 +243,7 @@ func TestClaimMergeOnlyPendingWaitingOrContinuousManual(t *testing.T) {
 	events, err = s.Events(new(task.ID))
 	must(t, err)
 	for _, event := range events {
-		if event.Kind == "automerge" && strings.Contains(event.Message, "attempt") {
+		if event.Kind == model.EventAutomerge && strings.Contains(event.Message, "attempt") {
 			attempts++
 		}
 	}
@@ -300,7 +325,7 @@ func TestSettleMergeExactExpected(t *testing.T) {
 		recorded.ResultSource == nil || *recorded.ResultSource != store.MergeResultConfirmed {
 		t.Fatalf("settled merge = %+v", recorded)
 	}
-	prs, _ := store.List[model.PRObservation](s, "pr")
+	prs, _ := store.List(s, store.PRs)
 	if prs[0].PR.State != "merged" {
 		t.Fatalf("PR state not updated atomically: %+v", prs[0].PR)
 	}
@@ -383,13 +408,14 @@ func TestRevokeTaskMergesAndCandidatePaging(t *testing.T) {
 	if len(seen) != 12 {
 		t.Fatalf("paged candidates = %d of 12", len(seen))
 	}
-	must(t, s.RevokeTaskMerges(owner.ID, "The authorizing task was archived"))
+	owner.Lifecycle.ArchivedAt = new(model.Now())
+	must(t, s.ArchiveTask(owner))
 	candidates, err := s.MergeCandidates(0, 100)
 	must(t, err)
 	if len(candidates) != 11 {
 		t.Fatalf("revocation left %d pending records", len(candidates))
 	}
-	prs, _ := store.List[model.PRObservation](s, "pr")
+	prs, _ := store.List(s, store.PRs)
 	for _, observation := range prs {
 		if observation.AutoMerge != nil && observation.AutoMerge.TaskID == owner.ID &&
 			observation.AutoMerge.Status != model.AutoMergeManual {
@@ -476,7 +502,7 @@ func TestUnfinishedBranchWorkRepositoryScope(t *testing.T) {
 	blocked := task()
 	blocked.Branch = "octomus/work"
 	blocked.Status = model.StatusBlocked
-	must(t, s.Put("task", blocked.ID, blocked))
+	must(t, store.Put(s, store.Tasks.Key(blocked.ID), blocked))
 	pending, err = s.UnfinishedBranchWork("fixture/project", "octomus/work", blocked.ID)
 	must(t, err)
 	if pending {
@@ -496,14 +522,14 @@ func TestUnfinishedBranchWorkRepositoryScope(t *testing.T) {
 	archived.Branch = "octomus/work"
 	archived.Status = model.StatusBlocked
 	archived.Lifecycle.ArchivedAt = new(model.Now())
-	must(t, s.Put("task", archived.ID, archived))
+	must(t, store.Put(s, store.Tasks.Key(archived.ID), archived))
 	pending, err = s.UnfinishedBranchWork("fixture/project", "octomus/work", "other")
 	must(t, err)
 	if !pending {
 		t.Fatal("an unarchived blocked sibling should hold the branch")
 	}
 	blocked.Lifecycle.ArchivedAt = new(model.Now())
-	must(t, s.Put("task", blocked.ID, blocked))
+	must(t, store.Put(s, store.Tasks.Key(blocked.ID), blocked))
 	pending, err = s.UnfinishedBranchWork("fixture/project", "octomus/work", "other")
 	must(t, err)
 	if pending {
@@ -539,7 +565,7 @@ func TestMergeObservationPreservesAndRevokesEvidence(t *testing.T) {
 	if recorded == nil || recorded.Authorized || recorded.Status != model.AutoMergeManual {
 		t.Fatalf("a moved-head merge claimed the reviewed delivery: %+v", recorded)
 	}
-	prs, _ := store.List[model.PRObservation](s, "pr")
+	prs, _ := store.List(s, store.PRs)
 	if prs[0].PR.State != "merged" {
 		t.Fatalf("observation PR state = %+v", prs[0].PR)
 	}
@@ -585,27 +611,27 @@ func TestCompletePublicationRefusesUnresolvedIntent(t *testing.T) {
 	}
 	checkpoint := task.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", task.ID, checkpoint))
+	must(t, store.Put(s, store.Tasks.Key(task.ID), checkpoint))
 	published := task.Clone()
 	published.Status = model.StatusPublished
-	if err := s.CompletePublication(published, p, merge); err == nil {
+	if _, err := s.CompletePublication(published, p, merge); err == nil {
 		t.Fatal("a republished task overwrote an unresolved merge intent")
 	}
 	recorded := prMerge(t, s, 60)
 	if recorded == nil || recorded.Status != model.AutoMergeMerging || *recorded.AttemptID != "attempt-1" {
 		t.Fatalf("the in-flight intent was overwritten: %+v", recorded)
 	}
-	if saved, _ := store.Get[model.Task](s, "task", task.ID); saved == nil || saved.Status != model.StatusPublishing {
+	if saved, _ := store.Get(s, store.Tasks.Key(task.ID)); saved == nil || saved.Status != model.StatusPublishing {
 		t.Fatalf("the refused publication overwrote the checkpoint: %+v", saved)
 	}
 	observed := p
 	observed.Number = 64
 	raw := merge.Clone()
 	raw.Status = model.AutoMergeMerging
-	must(t, s.Put("pr", "fixture/project:64", model.PRObservation{
+	must(t, store.Put(s, store.PRs.Key("fixture/project:64"), model.PRObservation{
 		Repository: "fixture/project", ObservedAt: model.Now(), PR: observed, AutoMerge: &raw,
 	}))
-	if err := s.CompletePublication(published, observed, merge); err == nil {
+	if _, err := s.CompletePublication(published, observed, merge); err == nil {
 		t.Fatal("a republished task overwrote an uncommitted intent")
 	}
 }
@@ -620,7 +646,8 @@ func TestRevokeTaskMergesRetainsInFlightIntent(t *testing.T) {
 	if !claimed {
 		t.Fatal("claim failed")
 	}
-	must(t, s.RevokeTaskMerges(task.ID, "The authorizing task was archived"))
+	task.Lifecycle.ArchivedAt = new(model.Now())
+	must(t, s.ArchiveTask(task))
 	recorded := prMerge(t, s, 61)
 	if recorded == nil || recorded.Authorized || recorded.Status != model.AutoMergeMerging ||
 		recorded.AttemptID == nil || *recorded.AttemptID != "attempt-1" {
@@ -704,7 +731,8 @@ func TestRevokeTaskMergesPreservesTerminalOutcome(t *testing.T) {
 			attemptID := before.AttemptID
 			attemptedAt := before.AttemptedAt
 
-			must(t, s.RevokeTaskMerges(task.ID, "The authorizing task was archived"))
+			task.Lifecycle.ArchivedAt = new(model.Now())
+			must(t, s.ArchiveTask(task))
 
 			after := prMerge(t, s, test.number)
 			if after == nil {
@@ -827,7 +855,7 @@ func TestCompletePublicationSnapshotsSupersededEvidence(t *testing.T) {
 	if current == nil || current.TaskID != taskB.ID || current.Head != mergeB.Head {
 		t.Fatalf("the superseding delivery did not take the PR record: %+v", current)
 	}
-	old, err := store.Get[model.Task](s, "task", taskA.ID)
+	old, err := store.Get(s, store.Tasks.Key(taskA.ID))
 	must(t, err)
 	if old == nil || old.AutoMergeSnapshot == nil {
 		t.Fatal("the superseded task lost its merge evidence")
@@ -844,7 +872,7 @@ func TestCompletePublicationSnapshotsSupersededEvidence(t *testing.T) {
 		state.PolicyRevision != mergeA.PolicyRevision || state.Authorized {
 		t.Fatalf("snapshot lost the exact evidence: %+v", state)
 	}
-	newest, err := store.Get[model.Task](s, "task", taskB.ID)
+	newest, err := store.Get(s, store.Tasks.Key(taskB.ID))
 	must(t, err)
 	if newest.AutoMergeSnapshot != nil {
 		t.Fatalf("the superseding task recorded a snapshot: %+v", newest.AutoMergeSnapshot)
@@ -868,17 +896,17 @@ func TestCompletePublicationSnapshotRollsBackWithFailure(t *testing.T) {
 	if !applied {
 		t.Fatal("settle failed")
 	}
-	must(t, s.Put("sentinel", "fail-publish", true))
+	must(t, store.Put(s, store.AnyKey[bool]("sentinel", "fail-publish"), true))
 	taskB, pB, mergeB := mergeFixture(71, true)
 	checkpoint := taskB.Clone()
 	checkpoint.Status = model.StatusPublishing
-	must(t, s.Put("task", taskB.ID, checkpoint))
+	must(t, store.Put(s, store.Tasks.Key(taskB.ID), checkpoint))
 	published := taskB.Clone()
 	published.Status = model.StatusPublished
-	if err := s.CompletePublication(published, pB, mergeB); err == nil {
+	if _, err := s.CompletePublication(published, pB, mergeB); err == nil {
 		t.Fatal("the injected failure did not roll back")
 	}
-	old, err := store.Get[model.Task](s, "task", taskA.ID)
+	old, err := store.Get(s, store.Tasks.Key(taskA.ID))
 	must(t, err)
 	if old.AutoMergeSnapshot != nil {
 		t.Fatalf("the rolled-back snapshot survived: %+v", old.AutoMergeSnapshot)
@@ -895,7 +923,7 @@ func TestUnfinishedBranchWorkCancelledReleases(t *testing.T) {
 	cancelled := task()
 	cancelled.Branch = "octomus/work"
 	cancelled.Status = model.StatusCancelled
-	must(t, s.Put("task", cancelled.ID, cancelled))
+	must(t, store.Put(s, store.Tasks.Key(cancelled.ID), cancelled))
 	pending, err := s.UnfinishedBranchWork("fixture/project", "octomus/work", "other")
 	must(t, err)
 	if pending {
@@ -903,7 +931,7 @@ func TestUnfinishedBranchWorkCancelledReleases(t *testing.T) {
 	}
 	queued := task()
 	queued.Branch = "octomus/work"
-	must(t, s.Put("task", queued.ID, queued))
+	must(t, store.Put(s, store.Tasks.Key(queued.ID), queued))
 	pending, err = s.UnfinishedBranchWork("fixture/project", "octomus/work", "other")
 	must(t, err)
 	if !pending {

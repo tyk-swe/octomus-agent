@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { CycleSummary, ProposalDetail, ProposalRow } from './types';
+  import type { CycleAction, CycleSummary, ProposalDetail, ProposalRow } from './types';
   /** A proposal row with the full detail this view has requested for it. */
   export type ProposalEntry = ProposalRow & {
     detail?: ProposalDetail;
@@ -10,8 +10,8 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte';
-  import { api } from './api';
+  import { onDestroy, tick, untrack } from 'svelte';
+  import { client } from './api';
   import { CycleHistory, type CycleHistoryState } from './cycleHistory';
   import Badge from './Badge.svelte';
   import { DECISIONS, cycleLabel, decisionTone } from './evidence';
@@ -32,9 +32,9 @@
     search = $bindable(),
     filter = $bindable(),
     cycle = $bindable(),
-    busy = $bindable(),
-    pendingAction = $bindable(),
-    error = $bindable(),
+    busy,
+    pendingAction,
+    onaction,
     onrefresh,
     oninspect,
     onintent,
@@ -50,7 +50,7 @@
     cycle: string;
     busy: boolean;
     pendingAction: string;
-    error: string;
+    onaction: (cycle: string, action: CycleAction) => Promise<void>;
     onrefresh: () => Promise<void>;
     oninspect: (cycle: string, proposal: string) => void;
     /** An operator interaction, which drops a pending focus redirect; background loads must not. */
@@ -60,6 +60,7 @@
   } = $props();
   const PROPOSAL_FILTERS = ['all', ...DECISIONS];
   let entries = $state<ProposalEntry[]>([]);
+  let error = $state('');
   let historyState = $state<CycleHistoryState>({
     rows: [],
     cursor: null,
@@ -152,9 +153,7 @@
     if (p.detail || p.detailLoading === revision) return;
     p.detailLoading = revision;
     try {
-      const detail = await api<ProposalDetail>(
-        `/proposals/${encodeURIComponent(p.cycle_id)}/${encodeURIComponent(p.id)}`
-      );
+      const detail = await client.proposal(p.cycle_id, p.id);
       if (!disposed && p.content_revision === revision && detail.content_revision === revision) {
         p.detail = detail;
         p.detailError = undefined;
@@ -165,23 +164,17 @@
       if (p.detailLoading === revision) p.detailLoading = undefined;
     }
   }
-  async function cycleAction(value: 'archive' | 'discard') {
+  async function cycleAction(value: CycleAction) {
     if (busy || refreshMessage) return;
     let applied = false;
-    let ownsBusy = true;
-    busy = true;
-    pendingAction = value;
     error = '';
     try {
-      await api(`/cycles/${encodeURIComponent(cycle)}/${value}`, 'POST');
+      await onaction(cycle, value);
       if (disposed) return;
       applied = true;
       refreshMessage = value === 'archive' ? 'Cycle archived.' : 'Cycle workspaces discarded.';
       // History recovery guards duplicate cycle actions independently. The
       // accepted mutation must leave running work pausable during its reads.
-      busy = false;
-      pendingAction = '';
-      ownsBusy = false;
       history.cancel();
       void loadCycles();
       await onrefresh();
@@ -189,12 +182,15 @@
       if (!disposed) {
         if (!applied) error = `Cycle action failed. ${(e as Error).message}`;
       }
-    } finally {
-      if (ownsBusy && !disposed) {
-        busy = false;
-        pendingAction = '';
-      }
     }
+  }
+  async function clearListFilters() {
+    onintent();
+    search = '';
+    filter = 'all';
+    cycle = 'all';
+    await tick();
+    document.querySelector<HTMLInputElement>('.search-box input')?.focus();
   }
   function retryCycleHistory() {
     if (cyclesLoading) return;
@@ -207,6 +203,7 @@
   <p class="muted">
     Audits record recommendations without queuing work. A later execution cycle plans afresh.
   </p>
+  {#if error}<div class="notice error" role="alert">{error}</div>{/if}
   {#if refreshMessage || refreshError}<RecoveryNotice
       message={refreshMessage}
       error={refreshError}
@@ -225,13 +222,13 @@
         disabled={cyclesLoading}
         onclick={loadOlderCycles}>Load older cycles</button
       >{/if}
-    {#if selectedCycle && selectedCycle.status !== 'running' && !selectedCycle.lifecycle.discarded_at}
-      {#if !selectedCycle.lifecycle.archived_at}<button
+    {#if selectedCycle && selectedCycle.allowed_actions.length > 0}
+      {#if selectedCycle.allowed_actions.includes('archive')}<button
           class="button"
           disabled={busy || !!refreshMessage}
           onclick={() => cycleAction('archive')}
           >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
-        >{:else if !selectedCycle.lifecycle.discarded_at}<button
+        >{:else if selectedCycle.allowed_actions.includes('discard')}<button
           class="button danger"
           disabled={busy || !!refreshMessage}
           onclick={() => cycleAction('discard')}
@@ -303,6 +300,10 @@
               ? 'Try another cycle, filter or search term.'
               : 'Discovery explores your project. Two adversarial reviewers challenge each proposal before the orchestrator decides.'}
           </p>
+          {#if search || filter !== 'all' || cycle !== 'all'}<button
+              class="button"
+              onclick={clearListFilters}>Clear search and filters</button
+            >{/if}
         </div>{/if}
     </div>
   </section>

@@ -69,40 +69,50 @@ filesystem, no capabilities and `no-new-privileges`. See
 3. The broker attaches to the container before starting it, so no output is lost. The
    control plane's stream to the broker is the sandbox's lifeline: if it closes, because the
    turn ended, the operator cancelled or the control plane crashed, the broker kills and
-   removes the container. The hard lifetime starts before the broker sends Docker's start
-   request. A delayed start response still consumes that lifetime, and cannot block kill
-   requests or a closed lifeline. A kill that arrived before Docker started the container
-   is applied again once its start is confirmed.
-4. The broker revokes the lease and removes the container, then reports the exit code,
-   whether Docker reported an out-of-memory kill and whether a time limit stopped it. A
-   sandbox it could not remove keeps its slot until a retry succeeds, and its report says so.
+   removes the container. The hard lifetime starts before Docker's start request, so a
+   delayed start cannot extend it or block a kill.
+4. The broker confirms lease revocation and container removal independently, then reports
+   the exit code, whether Docker reported an out-of-memory kill and whether a time limit
+   stopped it. A sandbox it could not remove keeps its slot until a retry succeeds, and its
+   report says so; a failed lease deletion is likewise an infrastructure failure, never an
+   assumed revocation. An unanswered create also keeps its slot, because elapsed time never
+   proves the daemon will not finish creating the container. If the daemon never settles
+   that request, restart the broker after resolving the daemon problem: startup sweeps every
+   container carrying this instance's label.
+
+Exit reports carry a machine-readable outcome (`command`, `time_limit` or `failure`)
+separate from their diagnostic text. Unknown outcomes, malformed time-limit reports and
+missing exit-status or Docker evidence fail closed rather than defaulting to success, so
+upgrade the broker and control plane together. Login lease rotation likewise requires
+confirmed removal of every previous login authorization before granting another and leaves
+other sandboxes' leases intact. If a rotation fails, retry the login after correcting the
+removal failure, or restart the broker so its sweep clears the remaining authorization.
 
 Executors, fresh reviewers and repair turns each get a new sandbox. Persistent repair
 threads resume from the runner session store (below), not from a live process. These turns
 share the task's home, so what one leaves there, shell startup files included, reaches the
 next; only git's own per-user configuration in it is ignored. Because what a turn leaves
 can still change what git shows inside the next one, the fresh reviewer's prompt also
-carries the change set as Octomus's own git reads it from the trusted metadata. That
-account ignores every `.gitattributes` file, shows every file as text and every submodule
-entry as the commits it points at, and shows each control, invisible or line-separator
-character and each byte that is not UTF-8 as a `⟦…⟧` escape, so no statement hides behind
-a line break git does not split at. It lists every changed file with its line counts, and
-a change set whose list exceeds 32 KiB is not reviewed. Within 64 KiB it embeds the
-complete diff, or else the whole diffs of the smallest files, and names each file whose
-diff it leaves out: the reviewer reads those in its sandbox and treats them as unverified.
-The account is authoritative over what git in the reviewer's sandbox shows, apart from the
-differences the prompt names as expected. Each verification run starts from a fresh clone
-of exactly the reviewed commit, so nothing an agent left beside it can influence the
-result. Each verification command gets a fresh sandbox. Commands in one verification run share a home
-directory, so `npm ci` in one command can serve `npm test` in the next. The home starts empty at every new run.
-When the sandbox rather than the command fails (the broker refuses or loses the command,
-or cannot confirm how it ended), the command has no result. The task is blocked as
-`runner_unavailable` for a retry, with no verification record and no repair round spent,
-and a baseline check ends interrupted rather than failed. If the command ran before the
-sandbox failed, the broker's sandbox record is kept as a `sandbox_evidence` event. A start
-whose response was lost or exceeded the hard lifetime may also have run the command:
-the broker preserves an incomplete record, revokes its lease and force-removes its known
-container ID. It reports an infrastructure failure without inventing a command exit.
+carries the change set as Octomus's own git reads it from the trusted metadata: it ignores
+every `.gitattributes` file, shows every file as text and each submodule entry as the
+commit it points at, and shows control, invisible and line-separator characters and
+non-UTF-8 bytes as `⟦…⟧` escapes. It lists every changed file with its line counts (a list
+over 32 KiB is not reviewed) and embeds the complete diff within 64 KiB, or else the whole
+diffs of the smallest files, naming each file it leaves out; the reviewer reads those in its
+sandbox and treats them as unverified. The account is authoritative over what git in the
+reviewer's sandbox shows, apart from the differences the prompt names as expected.
+
+Each verification run starts from a fresh clone of exactly the reviewed commit, so nothing
+an agent left beside it can influence the result. Each command gets a fresh sandbox, and
+the commands of one run share a home that starts empty, so `npm ci` can serve a later
+`npm test`. When the sandbox rather than the command fails (the broker refuses or loses
+it, or cannot confirm how it ended), the command has no result: the task is blocked as
+`runner_unavailable` for a retry with no verification record and no repair round spent,
+and a baseline check ends interrupted rather than failed. If the command ran first, the
+broker's record is kept as a `sandbox_evidence` event; where a start may have run it
+without a reply, the broker preserves an incomplete record, revokes the lease,
+force-removes the container and reports an infrastructure failure without inventing an
+exit.
 
 OpenCode serves HTTP on the sandbox's own loopback. A helper inside the sandbox
 (`octomus-agent --sandbox-init`) checks its readiness and relays its API as HTTP/2 over
@@ -117,38 +127,32 @@ Task details show a sandbox record for every session and verification command:
 - the hosts the gateway let it reach, and those it refused, with counts.
 
 A refused host is often the first sign of prompt injection, or of a registry missing from
-`OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach (a failed
-lookup or connection, or too many open tunnels) is listed apart, as unreachable.
+`OCTOMUS_EGRESS_BUILD_HOSTS`. An allowlisted host the gateway could not reach is listed
+apart, as unreachable.
 
-Each list names at most 64 hosts and counts the rest under `other`. Within one sandbox, the
-gateway log names each host past a list's first 64 the first time it appears, outside the
-log's per-minute budget, for up to 1,024 such hosts per sandbox. A session whose turns ran
-in several sandboxes, such as a resumed repair thread, merges their lists under the same
-limit, so its list can count under `other` a host one of those sandboxes named; the log
-names that host only where its per-minute budget allowed.
+Each list names at most 64 hosts and counts the rest under `other`; the gateway log names
+further hosts (up to 1,024 per sandbox) the first time they appear. A session spanning
+several sandboxes, such as a resumed repair thread, merges their lists under the same
+limit.
 
-When the broker could not read part of a sandbox's record, the record is marked
-**incomplete**: the gateway's count was unreachable or lost to a gateway restart, or
-Docker did not say whether the memory limit killed a process or confirm the start. Empty
-host lists in an incomplete record do not mean the sandbox made no connections; `docker compose logs
-egress` may still hold them.
+A record is marked **incomplete** when the broker could not read part of it (the gateway's
+count was unreachable or lost to a restart, or Docker did not report the memory-limit
+outcome or confirm the start). Empty host lists in such a record do not mean the sandbox
+made no connections; `docker compose logs egress` may still hold them.
 
 The OOM flag comes from Docker's `State.OOMKilled`. On systemd-managed cgroup v2 hosts,
 containerd can miss an OOM event if systemd removes the cgroup before its memory counters
-are read; [containerd documents this reporting limitation](https://github.com/containerd/containerd/blob/ee2735368117d2eb259779949d5e75cdafec9761/internal/cri/server/events.go#L210-L227).
-Consequently, `oom: false` does not rule out an OOM kill, even with `incomplete: false`:
-the incomplete flag records collection failures the broker can detect. Exit code 137
-alone never sets the OOM flag. This reporting limitation does not disable the configured
-memory limit.
+are read ([containerd documents this limitation](https://github.com/containerd/containerd/blob/ee2735368117d2eb259779949d5e75cdafec9761/internal/cri/server/events.go#L210-L227)).
+So `oom: false` does not rule out an OOM kill, even with `incomplete: false`, and exit
+code 137 alone never sets the flag. The configured memory limit still applies.
 
 Host names come from untrusted code, so they stay in private task records and the
-dashboard. They are never part of exported [run evidence](run-evidence.md). Planning
-sessions and baseline commands carry the same record.
+dashboard and never appear in exported [run evidence](run-evidence.md). Planning sessions
+and baseline commands carry the same record.
 
 ## What a sandbox can see
 
-Mounts use the same absolute path inside the sandbox as in the control plane, so runner
-working directories and OpenCode session checks line up.
+Mounts use the same absolute paths as in the control plane.
 
 | Mount | runner | verify | probe |
 | --- | --- | --- | --- |
@@ -182,16 +186,15 @@ Each sandbox receives proxy variables carrying its own random credential. The ga
   its plaintext SNI name to match the `CONNECT` host. Missing, malformed, duplicate or
   mismatched names and Encrypted ClientHello (ECH, including GREASE) are refused. Clients
   must use plaintext SNI with ECH disabled;
-- bounds that inspection to 10 seconds, a 64 KiB ClientHello and 128 KiB of encoded TLS
-  records. It accepts fragmented records and TCP writes and replays the original bytes
-  unchanged after validation. A refusal after the `CONNECT` response closes the tunnel;
+- bounds that inspection to 10 seconds, a 64 KiB ClientHello and 128 KiB of TLS records,
+  replays the original bytes unchanged after validation, and closes the tunnel on a
+  refusal after the `CONNECT` response;
 - bounds open tunnels per sandbox and connections per source, closes every refused
   connection, and ends a sandbox's tunnels as soon as its lease is revoked;
-- logs each tunnel as a JSON line when it opens and again when it closes, and each refusal
+- logs each tunnel's open and close and each refusal as JSON lines
   (`docker compose logs egress`); past 120 tunnels or 20 refusals a minute from one
-  sandbox, the rest are counted in a single `suppressed` line instead, except the first
-  line for a host its [record](#what-each-session-recorded) does not name. Docker rotates
-  that log, and the gateway itself runs under memory and process limits.
+  sandbox the rest are counted in one `suppressed` line, except the first line for a host
+  its [record](#what-each-session-recorded) does not name.
 
 Two allowlists come from the deployment's `.env`:
 
@@ -202,23 +205,18 @@ Two allowlists come from the deployment's `.env`:
 
 Entries are host names or `*.suffix`, with an optional `:port` (default 443). An empty
 `OCTOMUS_EGRESS_MODEL_HOSTS=` allows no model hosts; only a variable missing from `.env`
-gets the Codex hosts above. List only what the project needs. Every allowed host is a way
-out for data, and an allowlist is not data-loss prevention: an allowed multi-tenant
-service, such as a package registry or a model API used with someone else's key, can still
-carry data to an account that is not yours.
+gets the Codex hosts above. List only what the project needs: an allowlist is not
+data-loss prevention, and an allowed multi-tenant service, such as a package registry or
+a model API used with someone else's key, can still carry data to an account that is not
+yours.
 
-The gateway binds the initial [SNI](https://www.rfc-editor.org/rfc/rfc6066.html#section-3)
-to the allowlisted `CONNECT` authority and vets its resolved addresses. It does not
-terminate TLS, validate the upstream certificate, or inspect encrypted HTTP `Host` /
-`:authority` values. Clients remain responsible for certificate verification. A shared
-endpoint that accepts an allowed SNI but routes a different encrypted HTTP authority can
-still permit domain fronting; allowing a multi-tenant endpoint also allows its supported
-accounts and services. Tunnel audit names identify the `CONNECT` authority, confirmed
-against the initial plaintext SNI, and do not attest to every encrypted application
-destination. [ECH](https://www.rfc-editor.org/rfc/rfc9849.html) is refused because the
-visible outer name cannot establish the encrypted inner name. The inspection follows
-the [TLS record and handshake framing](https://www.rfc-editor.org/rfc/rfc8446.html#section-5.1)
-without rewriting either.
+The gateway does not terminate TLS or validate the upstream certificate, so clients remain
+responsible for certificate verification. It also cannot see encrypted HTTP `Host` /
+`:authority` values, so a shared endpoint that accepts an allowed SNI but routes a
+different authority can still permit domain fronting. Tunnel audit names identify the
+`CONNECT` authority confirmed against the plaintext SNI, not every encrypted application
+destination. ECH is refused because its visible outer name cannot establish the encrypted
+inner name.
 
 ## Private provider certificates
 
@@ -248,19 +246,18 @@ mount read-only. Runner sessions receive `SSL_CERT_FILE` and
 file or set those variables. Removing the setting and restarting the broker removes
 the generated bundle.
 
-This option configures runner sessions; it does not modify the login service or
-verification environment. A derived sandbox image may contain different system
-roots from the broker image; include any required additional anchors in the supplied
-bundle. Alternatively, leave this setting unset and manage client trust in the
-derived image. The gateway still enforces its existing
-allowlist, destination-address and SNI checks, and never terminates TLS. The file
-adds certificate trust, not network destinations.
+This option configures runner sessions only, not the login service or verification
+environment. A derived sandbox image may carry different system roots from the broker
+image, so include any additional anchors in the supplied bundle, or leave this setting
+unset and manage trust in the derived image. The gateway still enforces its allowlist,
+destination-address and SNI checks and never terminates TLS: the file adds certificate
+trust, not network destinations.
 
 ## Signing in a runner
 
 `docker compose run --rm login …` runs Codex or OpenCode from the sandbox image to store a
 login in the `octomus-runner` volume. Runner sandboxes can write that volume, so the login
-gives nothing they leave there more reach than they have:
+is confined so that nothing they leave there gains reach:
 - it joins `octomus-sandbox-runner` and reaches out only through the egress gateway, under
   the runner allowlist. Just before it starts, a one-shot `login-lease` service with no
   network runs `octomus-agent --login-lease`, which grants it a lease and revokes the
@@ -286,8 +283,8 @@ docker run --rm -i --network none --read-only --user 10001:10001 \
   /runner/opencode/config/opencode.json < opencode.json > /dev/null
 ```
 
-Runner sandboxes can rewrite that file like everything else in the runner volume (see
-below), so keep your copy and install it again whenever in doubt.
+Runner sandboxes can rewrite that file like everything else in the runner volume, so keep
+your copy and reinstall it whenever in doubt.
 
 ## Resource limits
 
@@ -301,54 +298,41 @@ below), so keep your copy and install it again whenever in doubt.
 | `OCTOMUS_SANDBOX_MAX_SECONDS` | `21600` (6 hours) | Hard lifetime of each container, including runner startup; 60–604800 seconds |
 | `OCTOMUS_SANDBOX_RUNTIME` | Docker's default | Container runtime, for example `runsc` |
 
-The worst case is `OCTOMUS_SANDBOX_MAX` × `OCTOMUS_SANDBOX_MEMORY`. A planning pass starts
-eight to ten discovery agents at once, so size these for the host. Evidence of memory-limit
-kills depends on [Docker's OOM reporting](#what-each-session-recorded). Sandbox logs are
-never kept by Docker, so runner transcripts do not accumulate on the host's disk.
+The worst case is `OCTOMUS_SANDBOX_MAX` × `OCTOMUS_SANDBOX_MEMORY`, and a planning pass
+starts eight to ten discovery agents at once, so size these for the host. Docker keeps no
+sandbox logs, so runner transcripts do not accumulate on the host's disk.
 
 The Overview displays the broker's hard lifetime. In Docker mode, saving settings,
-connection checks and execution preflights reject a session timeout above that limit,
-or a command timeout whose additional 60-second verification shutdown grace does not
-fit. Every new runner connection rechecks the live limit, including later turns of a
-task already in progress. A non-probe request above the limit is refused by the broker instead of silently
-shortened; internal diagnostic probes remain capped. Raise the host-owned value in
-`.env` and recreate `sandboxd`, or lower the saved timeout. Runner startup consumes part
-of a container's hard lifetime, so leave margin when choosing a session timeout.
-At expiry, the broker begins teardown under a separate 45-second budget. A daemon that
-cannot confirm removal leaves an infrastructure failure and keeps the sandbox's capacity
-reserved while removal is retried; cancellation of an HTTP request is not proof that the
-daemon stopped its process.
-The task timeout may span several containers and need not fit one container's limit.
-Host mode retains the application's ordinary timeout range without a broker cap.
+connection checks, execution preflights and every new runner connection (including later
+turns of a task in progress) reject a session timeout above it, or a command timeout whose
+additional 60-second shutdown grace does not fit; the broker refuses such a request rather
+than shortening it. Raise the host-owned value in `.env` and recreate `sandboxd`, or lower
+the saved timeout, leaving margin for runner startup. At expiry the broker tears the
+sandbox down within a separate 45-second budget, and a daemon that cannot confirm removal
+leaves an infrastructure failure and keeps the slot reserved while removal is retried. The
+task timeout may span several containers, and host mode keeps the ordinary timeout range
+without a broker cap.
 
-Volumes have no disk quota. Octomus checks application storage before admitting work (see
-[configuration](configuration.md)); keep an eye on free space on a shared host.
-The storage walk keeps at most three directory descriptors open and bounds repeated
-ancestor traversal per owned workspace. An unreadable, excessively deep or expensive
-subtree blocks further admission for its owner without blocking unrelated workspaces.
-Owned-root cleanup has its own 30-second attempt deadline, checks cancellation between
-filesystem operations, and bounds entries, depth and repeated ancestor traversal. It
-uses at most three directory descriptors, repairs read-only directories without following
-symlinks, and removes long paths one component at a time. A bound, cancellation, changed
-directory or permission failure reports incomplete cleanup and leaves the remaining root
-for retry; a record is not marked discarded until its root is removed. Excessive depth
-may require the operator to simplify the tree before retrying.
+Volumes have no disk quota. Octomus checks application storage before admitting work
+(see [configuration](configuration.md) and
+[architecture](architecture.md#bounded-observation-and-storage)); keep an eye on free
+space on a shared host. Owned-root cleanup is bounded in time, entries and depth, never
+follows symlinks and reports incomplete cleanup rather than marking a record discarded
+until its root is removed. An excessively deep tree may need simplifying before a retry.
 
 ## Trusted git metadata
 
-Each owned clone keeps its git metadata in `repo.git` beside the work tree. The work tree
-holds only a `.git` pointer file, so tools inside the sandbox still find the history. The
-sandbox mounts `repo.git` read-only: agents can run `git status`, `git diff` and `git log`,
-but cannot commit, change configuration or plant hooks. The orchestrator commits their
-changes.
+Each owned clone keeps its git metadata in `repo.git` beside the work tree, which holds
+only a `.git` pointer file. The sandbox mounts `repo.git` read-only: agents can run
+`git status`, `git diff` and `git log` but cannot commit, change configuration or plant
+hooks, and the orchestrator commits their changes. Every orchestrator git command names
+`repo.git` explicitly and pins hooks, fsmonitor, the untracked cache and submodule
+recursion off, so replacing the pointer file changes nothing it reads. A snapshot that
+would add or move a submodule entry is refused, because it would publish content nobody
+reviewed.
 
-Every orchestrator git command on a work tree names `repo.git` explicitly and pins hooks,
-fsmonitor, the untracked cache and submodule recursion off. Replacing the pointer file with
-a directory or a link changes nothing the orchestrator reads. A snapshot that would add or
-move a submodule entry is refused, because it would publish content nobody reviewed.
-
-Planning agents inspect fork pull requests by SHA: the orchestrator fetches those heads into
-the trusted checkout before cloning, since sandboxes have no route to GitHub.
+Planning agents inspect fork pull requests by SHA, which the orchestrator fetches into the
+trusted checkout before cloning, since sandboxes have no route to GitHub.
 
 ## What the operator token can change
 
@@ -368,13 +352,6 @@ Those settings are host-owned, and the dashboard shows them read-only.
 
 ## Prove it: the self-test
 
-Proof is tied to the live broker and egress gateway identities and their reported policy.
-Each broker info request reads the gateway's boot identity and actual allowlist fingerprint
-from its local collector. Recreating only the gateway therefore invalidates earlier proof,
-even if the control plane still displays its original deployment environment. If the
-collector is unavailable or too old to report its identity, networked proof is noncurrent;
-run the self-test again after the gateway is available.
-
 **Check connection** runs the containment self-test before anything else. You can also run
 it from the Sandbox panel on the Overview, or with `POST /api/sandbox/self-test`. A probe
 sandbox checks, from inside:
@@ -393,19 +370,18 @@ sandbox checks, from inside:
 | Runs under memory and process limits | cgroup `memory.max` and `pids.max` (on cgroup v1, `memory.limit_in_bytes` and `pids.max`) match the broker's configured limits |
 | The egress gateway refuses unlisted, metadata and local targets | with a runner lease, the gateway refuses a name outside its effective model and build allowlists, and `169.254.169.254` and `localhost` as not host names |
 
-For the unlisted-name check, the broker asks the running gateway's local collector for a
-denied target: `example.com` when unlisted, otherwise a reserved `.invalid` name outside
-both allowlists. A networked self-test requires a reachable `OCTOMUS_EGRESS_COLLECTOR`;
-without the gateway's policy-selected target, it fails before starting the probe.
+For the unlisted-name check, the broker asks the running gateway's collector for a denied
+target (`example.com` when unlisted, otherwise a reserved `.invalid` name). A networked
+self-test requires a reachable `OCTOMUS_EGRESS_COLLECTOR` and fails before starting the
+probe without one.
 
 A failed check fails the connection check, names what the probe saw, and appears on the
 Overview. The last result is kept with a fingerprint of the image, broker process,
 Docker/API versions, runtime, limits, networks, live gateway identity and policy, and
-deployment settings. The probe reads fresh posture before and after its run; a change
-during the check cannot produce current proof. A broker or gateway restart, changed
-settings, or unavailable gateway invalidates old proof and requires a new self-test.
-Legacy saved results without a fingerprint remain readable but do not count as current
-containment evidence.
+deployment settings, read fresh from the live broker and the gateway's local collector
+before and after the run. A change during the check cannot produce current proof, and a
+broker or gateway restart (even of the gateway alone), changed settings or an unavailable
+collector invalidates old proof and requires a new self-test.
 
 ## Extend the sandbox image
 
@@ -470,30 +446,8 @@ Automated tests hold:
 - the shipped compose file end to end with fixture runners: the self-test and a full Run
   once delivery through sandboxes (`make test-sandbox`);
 - required production image acceptance on native amd64 and arm64: the actual shipped
-  control-plane, broker, gateway and sandbox images, with both real pinned clients
-  (`make test-production-images`, given the retained `dist/images/*.oci.tar` inputs).
-
-The production image job builds each multi-platform OCI archive once with its SBOM
-and provenance. Each native runner imports the corresponding manifest without
-rebuilding, boots the embedded dashboard, and exercises real Codex and OpenCode
-completed turns, structured output, persisted-session resume in a fresh container,
-cancellation, verification and all eleven containment checks. A synthetic HTTPS
-provider supplies deterministic responses through the normal leased CONNECT gateway;
-no live provider account is used. The host inspects each of the four runner containers
-before allowing its turn to continue, verifies its exact image, network and mounts,
-and records its distinct container ID. Direct connections to the fixture's address
-must fail from both runner and verification containers. Complete broker evidence,
-provider CONNECT counts, and zero remaining sandboxes and leases are required.
-
-This acceptance needs a disposable Docker Engine 28+ host with Compose, Skopeo and
-OpenSSL. Its synthetic provider lives on a separate internal bridge using
-`11.255.254.0/24`, a globally numbered range reserved locally for the test; it does not
-contact the public owner of those addresses. The gateway is the only deployment
-service that also joins that bridge, and the provider publishes no host port. Using a globally classified address lets
-the test retain the production gateway's private-address denial. Temporary keys,
-provider state and volumes are removed at teardown. Release promotion verifies the
-retained native receipts and publishes the same index and manifest digests; see
-[releasing](releasing.md#container-images).
+  images with both real pinned clients (`make test-production-images`; see
+  [releasing](https://github.com/tyk-swe/octomus-agent/blob/main/docs/releasing.md#container-images)).
 
 Development checks on Docker Engine 29.8.1 found:
 - A plain internal network lets a container reach the host's SSH through its gateway, which

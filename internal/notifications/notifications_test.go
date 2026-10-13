@@ -42,9 +42,17 @@ func putTask(t *testing.T, state *store.Store, id, status string, reason *model.
 	if reason != nil {
 		task["blocked_reason"] = reason.String()
 	}
-	if err := state.Put("task", id, task); err != nil {
+	if err := putRaw(state, store.Tasks.Key(id).Raw(), task); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func putRaw(state *store.Store, key store.Key[json.RawMessage], record map[string]any) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return store.Put(state, key, data)
 }
 
 type receivedRequest struct {

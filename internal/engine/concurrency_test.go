@@ -27,6 +27,7 @@ func TestParallelTaskInitializationSharesCheckout(t *testing.T) {
 	}
 	app := f.newApp(t)
 	driveTask(t, f, app, first.ID)
+	driveTask(t, f, app, second.ID)
 	for _, task := range []model.Task{first, second} {
 		saved := loadTask(t, f.state, task.ID)
 		if saved.Status != model.StatusPublished {

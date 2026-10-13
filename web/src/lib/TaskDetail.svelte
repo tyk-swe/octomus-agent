@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, get, ApiError, fetchEvidence } from './api';
+  import { client } from './api';
+  import { Resource } from './resource';
   import Badge from './Badge.svelte';
   import { createCopyFeedback } from './copyFeedback.svelte';
   import {
@@ -13,18 +14,26 @@
     reviewVerdict,
     revisionMatchLabel
   } from './evidence';
+  import CopyText from './CopyText.svelte';
   import EvidenceFact from './EvidenceFact.svelte';
   import EvidenceText from './EvidenceText.svelte';
   import FindingCard from './FindingCard.svelte';
-  import { gb, relative, safeUrl } from './format';
+  import { gb, safeUrl } from './format';
   import Icon from './Icon.svelte';
   import { routeLabel } from './modelRoutes';
   import PanelDialog from './PanelDialog.svelte';
   import RecoveryNotice from './RecoveryNotice.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import ReviewChangeSet from './ReviewChangeSet.svelte';
   import SandboxRun from './SandboxRun.svelte';
   import Sha from './Sha.svelte';
-  import type { Task, Event, TaskEvidence } from './types';
+  import {
+    ERROR_EVENT_KINDS,
+    type Task,
+    type TaskAction,
+    type Event,
+    type TaskEvidence
+  } from './types';
   let {
     id,
     onclose,
@@ -47,18 +56,38 @@
   let loading = $state(false);
   let eventsLoading = $state(false),
     eventsError = $state('');
-  let eventsRequest: AbortController | null = null;
   let recoveryButton = $state<HTMLButtonElement>();
   let disposed = false;
-  let generation = 0;
-  let request: AbortController | null = null;
   let evidenceKey = '';
-  let evidenceGeneration = 0;
-  let evidenceRequest: AbortController | null = null;
-  let pendingEvidence: { cycleId: string; key: string } | null = null;
+  const taskResource = new Resource(client.task, (state) => {
+    task = state.value;
+    error = state.error;
+    loading = state.loading;
+    taskStale = state.stale;
+  });
+  const eventsResource = new Resource(client.events, (state) => {
+    events = state.value ?? [];
+    eventsError = state.error;
+    eventsLoading = state.loading;
+  });
+  const evidenceResource = new Resource<TaskEvidence | null>(
+    async (key, signal) => {
+      const [cycle, taskId] = JSON.parse(key) as [string, string, string, string];
+      const value = findTaskEvidence(await client.evidence(cycle, signal), taskId);
+      if (!value) throw new Error('This task has no recorded evidence in its planning cycle.');
+      return value;
+    },
+    (state) => {
+      evidence = state.value;
+      evidenceError = state.error;
+      evidenceLoading = state.loading;
+      evidenceStale = state.stale;
+    },
+    true
+  );
   const feedback = createCopyFeedback();
   const TABS = ['Overview', 'Sessions', 'Reviews', 'Verification', 'Activity'];
-  const ACTION_LABELS: Record<string, string> = {
+  const ACTION_LABELS: Record<TaskAction, string> = {
     retry: 'Retry task',
     cancel: 'Cancel task',
     supersede: 'Supersede and rediscover',
@@ -66,8 +95,8 @@
     archive: 'Archive task',
     discard: 'Discard workspace'
   };
-  const DESTRUCTIVE_ACTIONS = new Set(['discard', 'cancel']);
-  const ACTION_RESULTS: Record<string, string> = {
+  const DESTRUCTIVE_ACTIONS = new Set<TaskAction>(['discard', 'cancel']);
+  const ACTION_RESULTS: Record<TaskAction, string> = {
     retry: 'Task retry requested.',
     cancel: 'Task cancellation requested.',
     supersede: 'Rediscovery requested.',
@@ -92,117 +121,32 @@
     tab = TABS[next];
     document.getElementById('task-tab-' + tab)?.focus();
   }
-  function loadPendingEvidence() {
-    const pending = pendingEvidence;
-    pendingEvidence = null;
-    if (pending && !disposed) void loadEvidence(pending.cycleId, pending.key);
-  }
-  async function loadEvidence(cycleId: string, key: string, force = false) {
-    if (disposed) return;
-    if (evidenceKey === key && !force) return;
-    if (evidenceLoading && !force) {
-      // Let slow evidence make progress while coalescing changes to the latest task revision.
-      pendingEvidence = { cycleId, key };
-      evidenceStale = evidence !== null;
-      return;
-    }
-    pendingEvidence = null;
-    evidenceLoading = true;
-    evidenceStale = evidence !== null;
-    evidenceKey = key;
-    const current = ++evidenceGeneration;
-    evidenceRequest?.abort();
-    const controller = new AbortController();
-    evidenceRequest = controller;
-    const task = id;
-    try {
-      const run = await fetchEvidence(cycleId, controller.signal);
-      if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
-      evidence = findTaskEvidence(run, task);
-      evidenceError = evidence ? '' : 'This task has no recorded evidence in its planning cycle.';
-      evidenceStale = pendingEvidence !== null;
-    } catch (e) {
-      if (current !== evidenceGeneration || controller.signal.aborted || task !== id) return;
-      evidenceError = (e as Error).message;
-      if (e instanceof ApiError && e.status === 401) evidence = null;
-      evidenceStale = evidence !== null;
-    } finally {
-      if (current === evidenceGeneration) {
-        evidenceLoading = false;
-        evidenceRequest = null;
-        loadPendingEvidence();
-      }
-    }
-  }
-  async function loadEvents(force = false) {
-    if (disposed || (eventsLoading && !force)) return;
-    eventsRequest?.abort();
-    const controller = new AbortController();
-    eventsRequest = controller;
-    eventsLoading = true;
-    try {
-      const nextEvents = await get<Event[]>(
-        `/events?entity=${encodeURIComponent(id)}`,
-        controller.signal
-      );
-      if (eventsRequest === controller && !controller.signal.aborted) {
-        events = nextEvents;
-        eventsError = '';
-      }
-    } catch (e) {
-      if (eventsRequest === controller && !controller.signal.aborted)
-        eventsError = (e as Error).message;
-    } finally {
-      if (eventsRequest === controller) {
-        eventsLoading = false;
-        eventsRequest = null;
-      }
-    }
-  }
   async function load(force = false) {
-    if (disposed || (loading && !force)) return;
-    request?.abort();
-    const current = ++generation;
-    const controller = new AbortController();
-    request = controller;
-    loading = true;
-    void loadEvents(force);
-    try {
-      const nextTask = await get<Task>(`/tasks/${encodeURIComponent(id)}`, controller.signal);
-      if (current === generation && !controller.signal.aborted) {
-        task = nextTask;
-        error = '';
-        taskStale = false;
-        if (recoveryButton && document.activeElement === recoveryButton)
-          document.getElementById('task-title')?.focus();
-        actionRecovery = '';
-        // Evidence has its own request identity and must not hold current task controls or polling.
-        void loadEvidence(
-          nextTask.cycle_id,
-          `${nextTask.cycle_id}:${id}:${nextTask.updated_at}:${nextTask.status}`
-        );
-      }
-    } catch (e) {
-      if (current === generation && !controller.signal.aborted) {
-        error = (e as Error).message;
-        taskStale = task !== null;
-      }
-    } finally {
-      if (current === generation) loading = false;
+    if (disposed) return;
+    void eventsResource.refresh(id, force);
+    const loaded = await taskResource.refresh(id, force);
+    if (!loaded || disposed || !task) return;
+    if (recoveryButton && document.activeElement === recoveryButton)
+      document.getElementById('task-title')?.focus();
+    actionRecovery = '';
+    // Evidence and activity own independent requests, so their latency cannot
+    // delay current controls or task polling.
+    const key = JSON.stringify([task.cycle_id, id, task.updated_at, task.status]);
+    if (force || evidenceKey !== key || evidenceError) {
+      evidenceKey = key;
+      void evidenceResource.refresh(key, force);
     }
   }
   onMount(() => {
-    load();
-    const timer = setInterval(() => load(), 4000);
+    void load();
+    const timer = setInterval(() => void load(), 4000);
     return () => {
       disposed = true;
       clearInterval(timer);
       feedback.dispose();
-      generation++;
-      request?.abort();
-      eventsRequest?.abort();
-      evidenceGeneration++;
-      evidenceRequest?.abort();
+      taskResource.dispose();
+      eventsResource.dispose();
+      evidenceResource.dispose();
     };
   });
   let outcome = $derived(evidence ? outcomeVerdict(evidence) : null);
@@ -210,17 +154,18 @@
   let checks = $derived(checksVerdict(evidence));
   let delivery = $derived(prVerdict(evidence));
   let outputSha = $derived(evidence?.revisions.output ?? null);
-  async function action(value: string) {
+  async function action(value: TaskAction) {
     if (disposed || busy || actionRecovery) return;
     busy = true;
     actionError = '';
     try {
-      await api(`/tasks/${encodeURIComponent(id)}/${encodeURIComponent(value)}`, 'POST');
+      await client.taskAction(id, value);
       if (disposed) return;
       // The mutation is confirmed, but its old allowed_actions no longer describe the task.
       actionRecovery = ACTION_RESULTS[value];
       error = '';
-      taskStale = task !== null;
+      taskResource.invalidate();
+      evidenceResource.invalidate();
       await load(true);
       if (!disposed) onaction();
     } catch (e) {
@@ -305,9 +250,8 @@
             disabled={evidenceLoading}
             onclick={() =>
               task &&
-              loadEvidence(
-                task.cycle_id,
-                `${task.cycle_id}:${id}:${task.updated_at}:${task.status}`,
+              evidenceResource.refresh(
+                JSON.stringify([task.cycle_id, id, task.updated_at, task.status]),
                 true
               )}>{evidenceLoading ? 'Retrying evidence…' : 'Retry evidence'}</button
           >{/if}
@@ -382,7 +326,7 @@
           </div>
           <div>
             <dt>Branch</dt>
-            <dd><code>{task.branch}</code></dd>
+            <dd><CopyText value={task.branch} label="Branch name" oncopy={feedback.copy} /></dd>
           </div>
           <div>
             <dt>Source revision</dt>
@@ -402,7 +346,13 @@
           </div>
           <div class="full">
             <dt>Workspace</dt>
-            <dd><code>{task.workspace || 'Created when execution starts'}</code></dd>
+            <dd>
+              {#if task.workspace}<CopyText
+                  value={task.workspace}
+                  label="Workspace path"
+                  oncopy={feedback.copy}
+                />{:else}<code>Created when execution starts</code>{/if}
+            </dd>
           </div>
           <div>
             <dt>Dependencies</dt>
@@ -476,7 +426,7 @@
             </div>
             <p>Requested route: {routeLabel(session.route)}</p>
             <SandboxRun record={session.sandbox} />
-            <code>{session.id}</code><small>{relative(session.started_at)}</small
+            <code>{session.id}</code><small><RelativeTime value={session.started_at} /></small
             >{#if session.id === task.repair_session}<div class="inline-note">
                 This repair context is reused across rounds.
               </div>{/if}{#if session.summary}<pre class="prompt">{session.summary}</pre>{/if}
@@ -562,7 +512,7 @@
                     value={verification.revision}
                     label="Verified revision"
                     oncopy={feedback.copy}
-                  /> · {relative(verification.created_at)}
+                  /> · <RelativeTime value={verification.created_at} />
                 </p>
                 <SandboxRun record={verification.sandbox} />
                 <details class="command-output" open={!verification.success}>
@@ -587,11 +537,13 @@
           </p>{/if}
         <div class="activity-list">
           {#each events as event}<div class="activity-item">
-              <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}
+              <span
+                class={'activity-point ' +
+                  (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
               ></span>
               <div>
                 <p>{event.message}</p>
-                <small>{event.kind.replaceAll('_', ' ')} · {relative(event.at)}</small>
+                <small>{event.kind.replaceAll('_', ' ')} · <RelativeTime value={event.at} /></small>
               </div>
             </div>{:else}{#if !eventsError}<p class="muted">
                 {eventsLoading ? 'Loading activity…' : 'No activity recorded yet.'}
@@ -600,7 +552,9 @@
     </div>
     <div class="dialog-footer">
       <span class="muted" aria-live="polite"
-        >{feedback.status || `Created ${relative(task.created_at)}`}</span
+        >{#if feedback.status}{feedback.status}{:else}Created <RelativeTime
+            value={task.created_at}
+          />{/if}</span
       >
       <div class="actions">
         {#if task.pr_url}<a

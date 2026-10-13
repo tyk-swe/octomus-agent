@@ -45,7 +45,7 @@ func Publish(ctx context.Context, task model.Task) (pr model.PullRequest, err er
 			"Publication requires a clean maintenance-qualified review at the output revision")
 	}
 	for _, command := range c.VerificationCommands {
-		if v := latestVerification(task, command); v == nil || !v.Success || v.Revision != commit {
+		if v := task.VerificationFor(command).Latest; v == nil || !v.Success || v.Revision != commit {
 			return model.PullRequest{}, blocked(model.BlockedWorkspaceInvalid,
 				"Publication requires successful verification at the reviewed revision")
 		}
@@ -176,15 +176,6 @@ func validatePublication(task model.Task, p model.PullRequest, marker bool, reco
 	return nil
 }
 
-func latestVerification(task model.Task, command string) *model.Verification {
-	for i := len(task.Verification) - 1; i >= 0; i-- {
-		if task.Verification[i].Command == command {
-			return &task.Verification[i]
-		}
-	}
-	return nil
-}
-
 func prBody(task model.Task, existing *model.PullRequest, commit string) string {
 	var verification []string
 	commands := task.ExecutionConfig().VerificationCommands
@@ -192,7 +183,7 @@ func prBody(task model.Task, existing *model.PullRequest, commit string) string 
 		if slices.Contains(commands[:i], command) {
 			continue
 		}
-		v := latestVerification(task, command)
+		v := task.VerificationFor(command).Latest
 		if v == nil || v.Revision != commit {
 			continue
 		}

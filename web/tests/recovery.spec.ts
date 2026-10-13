@@ -1,5 +1,5 @@
 import { expect, type Page } from '@playwright/test';
-import type { CycleSummary } from '../src/lib/types';
+import type { CycleSummary, RunEvidenceV1 } from '../src/lib/types';
 import { deferred, login, nextPoll, openNavigation, test } from './synthetic';
 
 for (const list of [
@@ -124,8 +124,9 @@ test('a refused cycle archive remains retryable and distinct from history recove
     completed_at: '2026-09-10T00:01:00Z',
     error: null,
     session_count: 0,
-    decisions: {},
-    lifecycle: {}
+    decisions: { accepted: 0, rejected: 0, deferred: 0, candidate: 0 },
+    allowed_actions: ['archive'],
+    lifecycle: { archived_at: null, discarded_at: null }
   }));
   await page.route('**/api/cycles?*', async (route) => {
     if (state.outage)
@@ -142,6 +143,7 @@ test('a refused cycle archive remains retryable and distinct from history recove
       return;
     }
     cycles[1].lifecycle.archived_at = '2026-09-10T00:02:00Z';
+    cycles[1].allowed_actions = ['discard'];
     state.outage = true;
     await route.fulfill({ json: { ok: true } });
   });
@@ -228,5 +230,137 @@ test('a refused task action remains visible across polling until the next action
     expect(writes).toBe(2);
   } finally {
     retry.resolve();
+  }
+});
+
+test('updated task details mark retained evidence stale while its replacement is pending', async ({
+  page,
+  isMobile
+}) => {
+  const taskPath = '**/api/tasks/task-reviewed';
+  const replacement = deferred();
+  let updated = false;
+  let evidenceReads = 0;
+  await page.route(taskPath, async (route) => {
+    const task = await (await route.fetch()).json();
+    if (updated) {
+      task.proposal.title = 'Updated task awaiting replacement evidence';
+      task.updated_at = '2026-10-11T00:00:00Z';
+    }
+    await route.fulfill({ json: task });
+  });
+  await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+    if (++evidenceReads > 1) await replacement.promise;
+    await route.continue();
+  });
+  await page.clock.install();
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  const dialog = page.getByRole('dialog');
+  const stale = dialog.getByText('Retained · stale', { exact: true });
+  await expect(dialog.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+  await expect(stale).toHaveCount(0);
+  try {
+    updated = true;
+    await nextPoll(page, taskPath);
+    await expect(
+      dialog.getByRole('heading', { name: 'Updated task awaiting replacement evidence' })
+    ).toBeVisible();
+    await expect.poll(() => evidenceReads).toBe(2);
+    await expect(dialog.getByText('Clean at the output commit', { exact: true })).toBeVisible();
+    await expect(stale).toBeVisible();
+    replacement.resolve();
+    await expect(stale).toHaveCount(0);
+  } finally {
+    replacement.resolve();
+  }
+});
+
+// The task's own revision keys the evidence read, so a task that advances again while an
+// earlier read is still running coalesces: the newest revision is read after that one lands,
+// and no older response may be presented as the confirmed state in the meantime.
+test('coalesced evidence supersession keeps retained evidence stale until the newest revision confirms', async ({
+  page,
+  isMobile
+}) => {
+  const taskPath = '**/api/tasks/task-reviewed';
+  const outputs = ['4'.repeat(40), '5'.repeat(40), '6'.repeat(40)];
+  const updates = [
+    '2026-10-10T00:00:00.000000000+00:00',
+    '2026-10-10T00:05:00.000000000+00:00',
+    '2026-10-10T00:10:00.000000000+00:00'
+  ];
+  const holds: ReturnType<typeof deferred>[] = [];
+  const state = {
+    revision: 0,
+    taskReads: 0,
+    evidenceReads: [] as number[],
+    template: null as RunEvidenceV1 | null
+  };
+  await page.route(taskPath, async (route) => {
+    const task = await (await route.fetch()).json();
+    state.taskReads++;
+    task.updated_at = updates[state.revision];
+    await route.fulfill({ json: task });
+  });
+  await page.route('**/api/cycles/cycle-1/evidence', async (route) => {
+    // The revision that asked for this read, which may have moved on by the time it answers.
+    const revision = state.revision;
+    if (!state.template) state.template = (await (await route.fetch()).json()) as RunEvidenceV1;
+    state.evidenceReads.push(revision);
+    const hold = holds.shift();
+    if (hold) await hold.promise;
+    const evidence = structuredClone(state.template);
+    for (const proposal of evidence.proposals)
+      for (const task of proposal.linked_tasks)
+        if (task.id === 'task-reviewed') task.revisions.output = outputs[revision];
+    await route.fulfill({ json: evidence });
+  });
+  await page.clock.install();
+  await login(page);
+  await openNavigation(page, 'Task queue', !!isMobile);
+  await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
+  const dialog = page.getByRole('dialog');
+  const stale = dialog.getByText('Retained · stale', { exact: true });
+  const output = (index: number) => dialog.locator(`code[title="${outputs[index]}"]`);
+  const second = deferred();
+  const third = deferred();
+  try {
+    await expect(output(0)).toBeVisible();
+    await expect(stale).toHaveCount(0);
+    expect(state.evidenceReads).toEqual([0]);
+
+    // A newer revision takes the next read and holds it: retained evidence stays stale.
+    holds.push(second);
+    state.revision = 1;
+    await nextPoll(page, taskPath);
+    await expect.poll(() => state.evidenceReads).toEqual([0, 1]);
+    await expect(output(0)).toBeVisible();
+    await expect(stale).toBeVisible();
+
+    // A third revision queues behind that read instead of being fetched over it.
+    holds.push(third);
+    state.revision = 2;
+    await nextPoll(page, taskPath);
+    await expect.poll(() => state.taskReads).toBe(3);
+    expect(state.evidenceReads).toEqual([0, 1]);
+    await expect(output(0)).toBeVisible();
+    await expect(stale).toBeVisible();
+
+    // The older response lands but cannot confirm freshness while the newest key is queued.
+    second.resolve();
+    await expect(output(1)).toBeVisible();
+    await expect(stale).toBeVisible();
+    await expect.poll(() => state.evidenceReads).toEqual([0, 1, 2]);
+
+    // Only the newest revision's evidence becomes the confirmed, non-stale state.
+    third.resolve();
+    await expect(output(2)).toBeVisible();
+    await expect(stale).toHaveCount(0);
+    expect(state.evidenceReads).toEqual([0, 1, 2]);
+  } finally {
+    second.resolve();
+    third.resolve();
   }
 });

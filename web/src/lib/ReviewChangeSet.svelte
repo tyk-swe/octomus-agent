@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { relative } from './format';
+  import RelativeTime from './RelativeTime.svelte';
   import Sha from './Sha.svelte';
   let {
     comparisonBase,
@@ -25,6 +25,6 @@
   </div>
   <div>
     <dt>Recorded</dt>
-    <dd>{relative(createdAt)}</dd>
+    <dd><RelativeTime value={createdAt} /></dd>
   </div>
 </dl>

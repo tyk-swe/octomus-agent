@@ -30,10 +30,10 @@ type HistoryQuery struct {
 	Cycle  *string
 }
 
-type Page struct {
-	Items      []json.RawMessage `json:"items"`
-	Counts     map[string]int64  `json:"counts"`
-	NextCursor *int64            `json:"next_cursor"`
+type Page[T any] struct {
+	Items      []T              `json:"items"`
+	Counts     map[string]int64 `json:"counts"`
+	NextCursor *int64           `json:"next_cursor"`
 }
 
 func (q HistoryQuery) limit() int {
@@ -74,13 +74,13 @@ type pageRow struct {
 	id      string
 }
 
-func page(c *sql.Conn, kind string, query HistoryQuery) (Page, error) {
+func page[T any](c *sql.Conn, kind string, query HistoryQuery) (Page[T], error) {
 	limit := query.limit()
 	rows, err := pageRows(c, kind, query, limit+1)
 	if err != nil {
-		return Page{}, err
+		return Page[T]{}, err
 	}
-	return decodePage(rows, limit), nil
+	return decodePage[T](rows, limit)
 }
 
 func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, error) {
@@ -109,54 +109,31 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 	if err != nil {
 		return nil, err
 	}
-	collected, err := collectPageRows(rows)
-	if err != nil {
-		return nil, err
-	}
-	for i := range collected {
-		if collected[i].summary, err = boundRecordSummary(kind, collected[i].summary); err != nil {
-			return nil, err
-		}
-	}
-	return collected, nil
+	return collectPageRows(rows)
 }
 
-// record_meta retains whole source fields. Bound them only after applying the
-// current process's secret set: a database may outlive an operator token, and a
-// saved prefix cannot later be matched against the complete replacement value.
-func boundRecordSummary(kind, summary string) (string, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(summary), &fields); err != nil {
-		return "", err
-	}
-	text := fields
-	if kind == "pr" {
-		text = nil
-		if err := json.Unmarshal(fields["pr"], &text); err != nil {
-			return "", err
+// record_meta retains complete source strings. Typed projections apply the
+// current secret set before display bounds, so a rotated credential cannot be
+// cut into a prefix that the current scrubber no longer recognizes.
+func boundSummary(item any) {
+	switch summary := item.(type) {
+	case *TaskSummary:
+		summary.Title = boundText(summary.Title, 200)
+		if summary.Error != nil {
+			message := boundText(*summary.Error, 512)
+			summary.Error = &message
 		}
-	}
-	for _, field := range []struct {
-		name  string
-		limit int
-	}{{"title", 200}, {"error", 512}} {
-		value, found := text[field.name]
-		if !found {
-			continue
+	case *CycleSummary:
+		if summary.Error != nil {
+			message := boundText(*summary.Error, 512)
+			summary.Error = &message
 		}
-		var complete *string
-		if err := json.Unmarshal(value, &complete); err != nil {
-			return "", err
-		}
-		if complete != nil {
-			text[field.name], _ = json.Marshal(boundText(*complete, field.limit))
-		}
+	case *PRSummary:
+		summary.PR.Title = boundText(summary.PR.Title, 200)
+	case *ProposalSummary:
+		summary.Problem = boundText(summary.Problem, proposalTextLimit)
+		summary.Reason = boundText(summary.Reason, proposalTextLimit)
 	}
-	if kind == "pr" {
-		fields["pr"], _ = json.Marshal(text)
-	}
-	result, err := json.Marshal(fields)
-	return string(result), err
 }
 
 func boundText(text string, limit int) string {
@@ -168,36 +145,53 @@ func collectPageRows(rows *sql.Rows) ([]pageRow, error) {
 	return scanAll(rows, func(r *pageRow) []any { return []any{&r.summary, &r.seq, &r.id} })
 }
 
-func decodePage(rows []pageRow, limit int) Page {
+func decodePage[T any](rows []pageRow, limit int) (Page[T], error) {
 	var next *int64
 	if len(rows) > limit {
 		rows = rows[:limit]
 		seq := rows[len(rows)-1].seq
 		next = &seq
 	}
-	items := make([]json.RawMessage, 0, len(rows))
+	items := make([]T, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, json.RawMessage(r.summary))
+		var item T
+		if err := json.Unmarshal([]byte(r.summary), &item); err != nil {
+			return Page[T]{}, fmt.Errorf("Saved summary %s is unreadable: %w", r.id, err)
+		}
+		boundSummary(&item)
+		items = append(items, item)
 	}
-	return Page{Items: items, Counts: map[string]int64{}, NextCursor: next}
+	return Page[T]{Items: items, Counts: map[string]int64{}, NextCursor: next}, nil
 }
 
-func (s *Store) HistoryPage(kind string, query HistoryQuery) (Page, error) {
+func historyPage[T any](s *Store, kind string, query HistoryQuery) (Page[T], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if kind != "task" {
-		return page(s.conn, kind, query)
+		return page[T](s.conn, kind, query)
 	}
-	var result Page
+	var result Page[T]
 	err := s.transaction(false, func(c *sql.Conn) error {
 		var err error
-		result, err = page(c, kind, query)
+		result, err = page[T](c, kind, query)
 		if err != nil {
 			return err
 		}
 		return taskHistoryCounts(c, result.Counts)
 	})
 	return result, err
+}
+
+func (s *Store) TaskPage(query HistoryQuery) (Page[TaskSummary], error) {
+	return historyPage[TaskSummary](s, "task", query)
+}
+
+func (s *Store) CyclePage(query HistoryQuery) (Page[CycleSummary], error) {
+	return historyPage[CycleSummary](s, "cycle", query)
+}
+
+func (s *Store) PRPage(query HistoryQuery) (Page[PRSummary], error) {
+	return historyPage[PRSummary](s, "pr", query)
 }
 
 // History retains archived tasks; only the attention filter excludes them.
@@ -232,24 +226,7 @@ func taskHistoryCounts(c *sql.Conn, counts map[string]int64) error {
 // proposalTextLimit bounds the problem and reason of each listed proposal; ProposalDetail returns them whole.
 const proposalTextLimit = 2000
 
-// boundProposalText scrubs a listed proposal's complete problem and reason before cutting them to proposalTextLimit
-// characters, so the cut cannot leave part of a secret in a shape redaction no longer matches.
-func boundProposalText(item json.RawMessage) (json.RawMessage, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(item, &fields); err != nil {
-		return nil, err
-	}
-	for _, name := range []string{"problem", "reason"} {
-		var text *string
-		if json.Unmarshal(fields[name], &text) != nil || text == nil {
-			continue
-		}
-		fields[name], _ = json.Marshal(boundText(*text, proposalTextLimit))
-	}
-	return json.Marshal(fields)
-}
-
-func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
+func (s *Store) ProposalPage(q HistoryQuery) (Page[ProposalSummary], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	limit := q.limit()
@@ -257,35 +234,33 @@ func (s *Store) ProposalPage(q HistoryQuery) (Page, error) {
 		"SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]')),seq,proposal_id FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
 		q.before(), filterAll(q.Status), filterAll(q.Cycle), orEmpty(q.Q), int64(limit+1))
 	if err != nil {
-		return Page{}, err
+		return Page[ProposalSummary]{}, err
 	}
 	collected, err := collectPageRows(rows)
 	if err != nil {
-		return Page{}, err
+		return Page[ProposalSummary]{}, err
 	}
-	result := decodePage(collected, limit)
-	for i, item := range result.Items {
-		if result.Items[i], err = boundProposalText(item); err != nil {
-			return Page{}, err
-		}
+	result, err := decodePage[ProposalSummary](collected, limit)
+	if err != nil {
+		return Page[ProposalSummary]{}, err
 	}
 	counts, err := s.conn.QueryContext(background, "SELECT decision,count(*) FROM proposal_records WHERE (?1='' OR cycle_id=?1) GROUP BY decision", filterAll(q.Cycle))
 	if err != nil {
-		return Page{}, err
+		return Page[ProposalSummary]{}, err
 	}
 	defer counts.Close()
 	for counts.Next() {
 		var decision string
 		var count int64
 		if err := counts.Scan(&decision, &count); err != nil {
-			return Page{}, err
+			return Page[ProposalSummary]{}, err
 		}
 		result.Counts[decision] = count
 	}
 	return result, counts.Err()
 }
 
-func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
+func (s *Store) ProposalDetail(cycle, id string) (*ProposalDetail, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var data string
@@ -296,7 +271,11 @@ func (s *Store) ProposalDetail(cycle, id string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.RawMessage(data), nil
+	var detail ProposalDetail
+	if err := json.Unmarshal([]byte(data), &detail); err != nil {
+		return nil, err
+	}
+	return &detail, nil
 }
 
 // PageLimit bounds each oldest-first task scan below; a full page means more tasks may remain.
@@ -353,15 +332,17 @@ func (s *Store) CancelledWithLiveSessions(excludedIDs []string) ([]model.Task, e
         ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit)
 }
 
-// PublishingTasksExcept excludes live workers and cleanup claims before decoding their evidence.
-func (s *Store) PublishingTasksExcept(excludedIDs []string) ([]model.Task, error) {
+// ActiveTasksExcept excludes live workers and cleanup claims before decoding
+// their evidence. An exited worker may leave any active state behind when its
+// terminal checkpoint fails, not only publication.
+func (s *Store) ActiveTasksExcept(excludedIDs []string) ([]model.Task, error) {
 	ids, err := json.Marshal(excludedIDs)
 	if err != nil {
 		return nil, err
 	}
 	return listRecords[model.Task](s, `SELECT r.data FROM `+fromMeta+`
-        WHERE m.kind='task' AND m.status='publishing' AND m.archived IS NULL AND m.discarded IS NULL
-            AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id) AND json_extract(r.data,'$.output_commit') IS NOT NULL
+        WHERE m.kind='task' AND m.status IN (`+statusList(model.ActiveStatuses())+`) AND m.archived IS NULL AND m.discarded IS NULL
+            AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id)
         ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit)
 }
 
@@ -380,18 +361,18 @@ func (s *Store) StaleBaselines(after string) ([]model.BaselineCheck, error) {
 }
 
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
-	id, err := Get[string](s, "settings", "baseline_latest")
+	id, err := Get(s, latestBaselineKey)
 	if err != nil || id == nil {
 		return nil, err
 	}
-	return Get[model.BaselineCheck](s, "baseline", *id)
+	return Get(s, Baselines.Key(*id))
 }
 
 func (s *Store) TasksForCycle(id string) ([]model.Task, error) {
 	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.cycle_id=?1 ORDER BY m.seq", id)
 }
 
-func (s *Store) Snapshot(fn func(c *sql.Conn) error) error {
+func (s *Store) snapshot(fn func(c *sql.Conn) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transaction(false, fn)
@@ -454,7 +435,7 @@ func (s *Store) DuplicateTasks(repository string, proposals []model.Proposal) ([
 	tasks := make([]model.Task, 0, len(ids))
 	for _, id := range ids {
 		var task model.Task
-		found, err := txGet(s.conn, "task", id, &task)
+		found, err := txGet(s.conn, Tasks.Key(id), &task)
 		if err != nil {
 			return nil, err
 		}
@@ -484,7 +465,7 @@ func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
 	if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
 		return model.Control{}, err
 	}
-	if err := txPut(c, "settings", "control", next); err != nil {
+	if err := txPut(c, ControlKey, next); err != nil {
 		return model.Control{}, err
 	}
 	return next, nil
@@ -497,7 +478,7 @@ func (s *Store) StartBatch(control *model.Control, at time.Time) (model.Planning
 	var next model.Control
 	started, err := s.conditional(func(c *sql.Conn) error {
 		var live model.Control
-		found, err := txGet(c, "settings", "control", &live)
+		found, err := txGet(c, ControlKey, &live)
 		if err != nil {
 			return err
 		}
@@ -534,7 +515,7 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 			return err
 		}
 		var live model.Control
-		found, err := txGet(c, "settings", "control", &live)
+		found, err := txGet(c, ControlKey, &live)
 		if err != nil {
 			return err
 		}
@@ -548,10 +529,10 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 		if liveFingerprint != fingerprint || !wirejson.Equal(live, expected) || !capacity.Available() {
 			return errRollback
 		}
-		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
+		if err := txPut(c, Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
-		return txPut(c, "settings", "control", control)
+		return txPut(c, ControlKey, control)
 	})
 	return capacity, started, err
 }
@@ -566,14 +547,14 @@ func (s *Store) BatchCounts(id string) (uint64, uint64, error) {
 }
 
 type Dashboard struct {
-	Tasks          []json.RawMessage `json:"tasks"`
-	Cycles         []json.RawMessage `json:"cycles"`
-	PRs            []json.RawMessage `json:"prs"`
-	Events         []model.Event     `json:"events"`
-	Counts         map[string]int64  `json:"counts"`
-	AttentionTasks []json.RawMessage `json:"attention_tasks"`
-	MergedPRs      int64             `json:"merged_prs"`
-	SessionsToday  int64             `json:"sessions_today"`
+	Tasks          []TaskSummary    `json:"tasks"`
+	Cycles         []CycleSummary   `json:"cycles"`
+	PRs            []PRSummary      `json:"prs"`
+	Events         []model.Event    `json:"events"`
+	Counts         map[string]int64 `json:"counts"`
+	AttentionTasks []TaskSummary    `json:"attention_tasks"`
+	MergedPRs      int64            `json:"merged_prs"`
+	SessionsToday  int64            `json:"sessions_today"`
 }
 
 func (s *Store) Dashboard() (Dashboard, error) {
@@ -598,7 +579,7 @@ func (s *Store) Dashboard() (Dashboard, error) {
 		if err != nil {
 			return err
 		}
-		result.Tasks = make([]json.RawMessage, 0, 300)
+		result.Tasks = make([]TaskSummary, 0, 300)
 		listed := map[string]struct{}{}
 		for _, rows := range [][]pageRow{current, waiting, history} {
 			for _, row := range rows {
@@ -606,17 +587,22 @@ func (s *Store) Dashboard() (Dashboard, error) {
 					continue
 				}
 				listed[row.id] = struct{}{}
-				result.Tasks = append(result.Tasks, json.RawMessage(row.summary))
+				var task TaskSummary
+				if err := json.Unmarshal([]byte(row.summary), &task); err != nil {
+					return err
+				}
+				boundSummary(&task)
+				result.Tasks = append(result.Tasks, task)
 			}
 		}
 		twenty := 20
-		cycles, err := page(c, "cycle", HistoryQuery{Limit: &twenty})
+		cycles, err := page[CycleSummary](c, "cycle", HistoryQuery{Limit: &twenty})
 		if err != nil {
 			return err
 		}
 		result.Cycles = cycles.Items
 		hundred := 100
-		prs, err := page(c, "pr", HistoryQuery{Limit: &hundred})
+		prs, err := page[PRSummary](c, "pr", HistoryQuery{Limit: &hundred})
 		if err != nil {
 			return err
 		}
@@ -634,7 +620,7 @@ func (s *Store) Dashboard() (Dashboard, error) {
 			return err
 		}
 		attention, five := "attention", 5
-		attentionPage, err := page(c, "task", HistoryQuery{Status: &attention, Limit: &five})
+		attentionPage, err := page[TaskSummary](c, "task", HistoryQuery{Status: &attention, Limit: &five})
 		if err != nil {
 			return err
 		}
@@ -731,7 +717,7 @@ func (s *Store) RecordPRObservation(repository string, p model.PullRequest, deli
 		PR:                   p,
 		AutoMerge:            preserveAutoMerge(previous, p),
 	}
-	return txPut(s.conn, "pr", recordID, observation)
+	return txPut(s.conn, PRs.Key(recordID), observation)
 }
 
 // decisionRecords excludes alternatives absorbed by an accepted proposal in the same cycle,

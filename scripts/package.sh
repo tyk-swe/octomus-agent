@@ -4,8 +4,7 @@
 set -eu
 fail() { echo "$*" >&2; exit 1; }
 version=v$(cat VERSION)
-case "$version" in v[0-9]*) ;; *) fail 'VERSION must start with a digit' ;; esac
-case "$version" in *[!a-zA-Z0-9.+-]*) fail 'Invalid VERSION' ;; esac
+python3 scripts/release.py version --tag "$version" > /dev/null
 case "$(go env GOARCH)" in
   amd64) target=x86_64-unknown-linux-gnu ;;
   arm64) target=aarch64-unknown-linux-gnu ;;

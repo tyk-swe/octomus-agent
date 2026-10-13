@@ -57,30 +57,40 @@ func originURL(ctx context.Context, c config.Config, repo string) (string, error
 	return Git(ctx, c, repo, []string{"remote", "get-url", "origin"})
 }
 
-// Fetch updates the trusted checkout's refs from origin. It holds the shared
-// checkout's mutation lock so concurrent tasks, merge checks and baseline
-// checks cannot race the same remote-tracking ref update; the wait honors ctx.
+// Fetch updates the trusted checkout from its origin. It is a shared-checkout writer: see checkoutGate.
 func Fetch(ctx context.Context, c config.Config) error {
-	release, err := lockRepo(ctx, c.Repository)
-	if err != nil {
+	return withCheckout(ctx, c, true, func() error {
+		_, err := remoteGit(ctx, c, c.Repository, fetchArgs("fetch", "--prune", "origin"))
 		return err
-	}
-	defer release()
-	_, err = remoteGit(ctx, c, c.Repository, []string{"fetch", "--prune", "origin"})
-	return err
+	})
+}
+
+// fetchArgs keeps automatic maintenance inside the checkout gate. Git otherwise detaches maintenance after
+// fetch exits, allowing a clone to race the object cleanup after the writer has released the gate.
+func fetchArgs(args ...string) []string {
+	return append([]string{"-c", "maintenance.autoDetach=false", "-c", "gc.autoDetach=false"}, args...)
 }
 
 const forkHeadNamespace = "refs/octomus/pr/"
 
 // FetchForkHeads copies fork PR heads into the trusted checkout, whose objects every clone inherits, so planning
 // sandboxes can inspect them by SHA without any route to GitHub. Heads the remote no longer serves are reported, not
-// fatal: grounding records them as unavailable context rather than failing the cycle.
+// fatal: grounding records them as unavailable context rather than failing the cycle. It holds the trusted checkout
+// for writing for the whole replacement: deleting the stale refs and fetching the current ones are separate commands,
+// and another shared-checkout operation must not interleave with that sequence (see checkoutGate).
 func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]uint64, error) {
-	release, err := lockRepo(ctx, c.Repository)
-	if err != nil {
+	var missing []uint64
+	if err := withCheckout(ctx, c, true, func() error {
+		var err error
+		missing, err = replaceForkHeads(ctx, c, numbers)
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	defer release()
+	return missing, nil
+}
+
+func replaceForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]uint64, error) {
 	stale, err := Git(ctx, c, c.Repository, []string{"for-each-ref", "--format=%(refname)", forkHeadNamespace})
 	if err != nil {
 		return nil, err
@@ -96,7 +106,7 @@ func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]u
 	refspec := func(n uint64) string {
 		return fmt.Sprintf("+refs/pull/%d/head:%s%d", n, forkHeadNamespace, n)
 	}
-	all := []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin"}
+	all := fetchArgs("fetch", "--no-tags", "--no-write-fetch-head", "origin")
 	for _, n := range numbers {
 		all = append(all, refspec(n))
 	}
@@ -108,7 +118,7 @@ func FetchForkHeads(ctx context.Context, c config.Config, numbers []uint64) ([]u
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if _, err := remoteGit(ctx, c, c.Repository, []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n)}); err != nil {
+		if _, err := remoteGit(ctx, c, c.Repository, fetchArgs("fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec(n))); err != nil {
 			missing = append(missing, n)
 		}
 	}
@@ -155,6 +165,25 @@ func Snapshot(ctx context.Context, c config.Config, path string, message string)
 
 const maxReportedPath = 200
 
+// reportedPathCut marks a path this diagnostic shortened.
+const reportedPathCut = "…"
+
+// reportedPath prepares a work-tree path for a diagnostic message. Secret recognition runs on the complete path first:
+// a limit applied beforehand would cut a credential in half and leave a fragment no pattern or configured value can
+// match. Only then is the display bounded, counting characters so a cut never lands inside one. Bytes that are not
+// valid UTF-8 are left alone, so the quoting caller can still escape them explicitly.
+func reportedPath(name string) string {
+	redacted := redact.Text(name)
+	count := 0
+	for i := range redacted {
+		if count == maxReportedPath {
+			return redacted[:i] + reportedPathCut
+		}
+		count++
+	}
+	return redacted
+}
+
 // refuseGitlinks blocks staged submodule entries that are new or point elsewhere: a nested repository in the work tree
 // would otherwise publish as a gitlink whose content was never reviewed. Removing a submodule stays allowed.
 func refuseGitlinks(ctx context.Context, c config.Config, path string) error {
@@ -164,18 +193,38 @@ func refuseGitlinks(ctx context.Context, c config.Config, path string) error {
 	if err != nil {
 		return err
 	}
+	return refuseGitlinkEntries(out)
+}
+
+// RefuseCommittedGitlinks applies the same refusal to the commits a work tree carries rather than to its staged
+// changes. A runner that commits its own work — Codex and OpenCode both do — leaves nothing staged, so the snapshot
+// never sees the nested repository it committed, and the gitlink would reach review, verification and publication
+// with content that was never reviewed. base is the revision the reviewed change set is measured from, so a submodule
+// the base already has stays allowed while the range leaves it untouched, exactly as a staged entry does.
+func RefuseCommittedGitlinks(ctx context.Context, c config.Config, path, base, revision string) error {
+	if base == "" || revision == "" || base == revision {
+		return nil
+	}
+	out, err := WorkGit(ctx, c, path, []string{
+		"diff", "--raw", "-z", "--no-renames", "--ignore-submodules=none", base, revision,
+	})
+	if err != nil {
+		return err
+	}
+	return refuseGitlinkEntries(out)
+}
+
+// refuseGitlinkEntries refuses the first raw-diff entry that adds or retargets a gitlink. Both diff forms report
+// <old mode> <new mode> per entry, so a removal — whose new mode is 000000 — stays allowed.
+func refuseGitlinkEntries(out string) error {
 	fields := strings.Split(out, "\x00")
 	for i := 0; i+1 < len(fields); i += 2 {
 		modes := strings.Fields(strings.TrimPrefix(fields[i], ":"))
 		if len(modes) < 2 || modes[1] != "160000" {
 			continue
 		}
-		name := fields[i+1]
-		if len(name) > maxReportedPath {
-			name = name[:maxReportedPath]
-		}
 		return blocked(model.BlockedWorkspaceInvalid, fmt.Sprintf(
-			"Nested repository or changed submodule at %s; Octomus publishes only reviewed file content", strconv.Quote(redact.Text(name))))
+			"Nested repository or changed submodule at %s; Octomus publishes only reviewed file content", strconv.Quote(reportedPath(fields[i+1]))))
 	}
 	return nil
 }

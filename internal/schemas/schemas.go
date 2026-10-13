@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 )
@@ -57,7 +58,7 @@ func validate(value any, schema Schema, path string) error {
 		}
 		properties, ok := schema["properties"].(map[string]any)
 		if !ok {
-			return fmt.Errorf("Invalid object schema")
+			return errors.New("Invalid object schema")
 		}
 		var required []any
 		switch keys := schema["required"].(type) {
@@ -95,7 +96,7 @@ func validate(value any, schema Schema, path string) error {
 				}
 			} else if schema["additionalProperties"] == false {
 				if path == "" {
-					return fmt.Errorf("Structured result has an unexpected field")
+					return errors.New("Structured result has an unexpected field")
 				}
 				return fmt.Errorf("Structured result object %s has an unexpected field", path)
 			}
@@ -119,7 +120,7 @@ func validate(value any, schema Schema, path string) error {
 			return mismatch(path, "a boolean")
 		}
 	default:
-		return fmt.Errorf("Unsupported structured result schema")
+		return errors.New("Unsupported structured result schema")
 	}
 	return nil
 }

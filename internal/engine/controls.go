@@ -12,6 +12,7 @@ import (
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
@@ -20,11 +21,39 @@ type NotFound string
 
 func (e NotFound) Error() string { return string(e) }
 
-type actionConflict struct{ msg string }
+// ActionErrorCode is stable machine identity; operator messages remain editable.
+type ActionErrorCode string
+
+const (
+	ActionConflict          ActionErrorCode = "action_conflict"
+	ConfigRevisionConflict  ActionErrorCode = "config_revision_conflict"
+	ActiveWorkConflict      ActionErrorCode = "active_work"
+	UnresolvedWorkConflict  ActionErrorCode = "unresolved_work"
+	RecoveryPendingConflict ActionErrorCode = "recovery_pending"
+)
+
+type actionConflict struct {
+	msg  string
+	code ActionErrorCode
+}
 
 func (e *actionConflict) Error() string { return e.msg }
 
-func conflictError(message string) error { return &actionConflict{message} }
+func conflictError(message string) error { return codedConflict(ActionConflict, message) }
+func codedConflict(code ActionErrorCode, message string) error {
+	return &actionConflict{msg: message, code: code}
+}
+
+func ActionCode(err error) ActionErrorCode {
+	var conflict *actionConflict
+	if errors.As(err, &conflict) {
+		return conflict.code
+	}
+	if model.BlockedReasonFromError(err) != model.BlockedUnknown {
+		return ActionConflict
+	}
+	return ""
+}
 
 func IsActionConflict(err error) bool {
 	var c *actionConflict
@@ -33,8 +62,8 @@ func IsActionConflict(err error) bool {
 
 var (
 	errNotPaused       = conflictError("Octomus must be paused for this operation")
-	errBusy            = conflictError("Octomus has active work")
-	errRecoveryBlocked = conflictError("Wait for saved-state recovery to finish before starting new work.")
+	errBusy            = codedConflict(ActiveWorkConflict, "Octomus has active work")
+	errRecoveryBlocked = codedConflict(RecoveryPendingConflict, "Wait for saved-state recovery to finish before starting new work.")
 )
 
 type capacityError struct {
@@ -44,7 +73,7 @@ type capacityError struct {
 func (e *capacityError) Error() string { return e.capacity.Message() }
 func (e *capacityError) Unwrap() error { return model.BlockedBudgetExhausted }
 
-func (a *App) ControlAction(action string) (map[string]any, error) {
+func (a *App) ControlAction(action model.ControlAction) (*ControlResult, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
 	control, err := a.Control()
@@ -54,8 +83,18 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 	if err := a.controlConflict(action, control); err != nil {
 		return nil, err
 	}
+	// Read ancillary reply data before changing operation mode: a response-query
+	// failure must not report a successfully committed Resume as refused.
+	var planningCapacity *model.PlanningCapacity
+	if action == model.ControlResume {
+		capacity, err := a.store.PlanningCapacity(time.Now())
+		if err != nil {
+			return nil, err
+		}
+		planningCapacity = &capacity
+	}
 	switch action {
-	case "audit":
+	case model.ControlAudit:
 		a.withoutGate(func() { _, err = a.startAudit(a.ctx) })
 		if err != nil {
 			return nil, err
@@ -64,16 +103,16 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return wirejson.GenericMap(control)
-	case "pause":
+		return &ControlResult{Control: control}, nil
+	case model.ControlPause:
 		if err := a.pauseLocked(&control, nil); err != nil {
 			return nil, err
 		}
-	case "resume":
+	case model.ControlResume:
 		if err := a.enterContinuous(&control); err != nil {
 			return nil, err
 		}
-	case "cycle":
+	case model.ControlCycle:
 		cfg, err := a.Config()
 		if err != nil {
 			return nil, err
@@ -89,47 +128,18 @@ func (a *App) ControlAction(action string) (map[string]any, error) {
 		return nil, NotFound("Unknown control")
 	}
 	// Activity is best-effort after the operator change has committed.
-	_ = a.Store.Event("system", "operator", action)
-	body, err := wirejson.GenericMap(control)
-	if err != nil {
-		return nil, err
-	}
-	if action == "resume" {
-		capacity, err := a.Store.PlanningCapacity(time.Now())
-		if err != nil {
-			return nil, err
-		}
-		body["planning_capacity"] = capacity
-	}
+	_ = a.store.Event("system", model.EventOperator, action.String())
+	body := &ControlResult{Control: control, PlanningCapacity: planningCapacity}
 	return body, nil
 }
 
-func (a *App) controlConflict(action string, control model.Control) error {
-	if action == "audit" || action == "cycle" || action == "resume" {
+func (a *App) controlConflict(action model.ControlAction, control model.Control) error {
+	if action == model.ControlAudit || action == model.ControlCycle || action == model.ControlResume {
 		if err := a.recoveryConflict(); err != nil {
 			return err
 		}
 	}
-	a.runtimeMu.Lock()
-	baselineActive := a.runtime.baseline != nil
-	idle := a.runtime.idle()
-	auditActive := a.runtime.auditActive()
-	a.runtimeMu.Unlock()
-	refused := (action == "audit" || action == "cycle") && (!control.Paused || !idle) ||
-		(action == "resume" || action == "cycle") && auditActive ||
-		action == "resume" && baselineActive
-	switch {
-	case !refused:
-		return nil
-	case baselineActive:
-		return conflictError("Wait for the baseline check to finish.")
-	case action == "audit":
-		return conflictError("Audits require paused operation with no active work. Pause the service and wait for active work to finish.")
-	case action == "cycle":
-		return conflictError("Run once requires paused operation with no active work. Pause the service and wait for active work to finish.")
-	default:
-		return conflictError("Wait for the audit to finish before starting continuous operation.")
-	}
+	return controlBlocker(action, control, a.operationActivity())
 }
 
 func (a *App) enterContinuous(control *model.Control) error {
@@ -143,7 +153,7 @@ func (a *App) enterContinuous(control *model.Control) error {
 	control.SetMode(model.OperatingModeContinuous)
 	control.Error = nil
 	control.NextCycleAt = 0
-	if err := a.Store.SaveControl(*control); err != nil {
+	if err := a.store.SaveControl(*control); err != nil {
 		return err
 	}
 	a.notify()
@@ -151,7 +161,7 @@ func (a *App) enterContinuous(control *model.Control) error {
 }
 
 func (a *App) startRunOnceBatch(control *model.Control) error {
-	capacity, started, err := a.Store.StartBatch(control, time.Now())
+	capacity, started, err := a.store.StartBatch(control, time.Now())
 	if err != nil {
 		return err
 	}
@@ -193,7 +203,7 @@ func (a *App) startAudit(ctx context.Context) (string, error) {
 		a.endPreflight()
 		return "", err
 	}
-	_ = a.Store.Event(id, "operator", "Audit started")
+	_ = a.store.Event(id, model.EventOperator, "Audit started")
 	return id, nil
 }
 
@@ -226,7 +236,7 @@ func (a *App) admitAuditPreflight() (config.Config, model.Control, error) {
 	if control.Mode != model.OperatingModePaused {
 		return config.Config{}, model.Control{}, errNotPaused
 	}
-	capacity, err := a.Store.PlanningCapacity(time.Now())
+	capacity, err := a.store.PlanningCapacity(time.Now())
 	if err != nil {
 		return config.Config{}, model.Control{}, err
 	}
@@ -284,7 +294,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 			if live.Batch == nil || live.Batch.Phase != model.BatchPhaseDraining {
 				return "", errors.New("Run once is not ready to plan")
 			}
-			pending, unresolved, countErr := a.Store.BatchCounts(live.Batch.ID)
+			pending, unresolved, countErr := a.store.BatchCounts(live.Batch.ID)
 			if countErr != nil {
 				return "", countErr
 			}
@@ -292,7 +302,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 				return "", errors.New("Run-once work changed during planning preflight")
 			}
 		} else {
-			tasks, listErr := a.Store.SchedulingTasks(nil)
+			tasks, listErr := a.store.SchedulingTasks(nil)
 			if listErr != nil {
 				return "", listErr
 			}
@@ -324,7 +334,7 @@ func (a *App) beginCycle(cfg config.Config, expected model.Control, mode model.C
 		StartedAt: model.Now(), Proposals: []model.Proposal{}, Assessments: []any{}, Sessions: []model.Session{},
 		Repository: cfg.GitHubRepo, DecisionMemory: []model.DecisionRecord{}, RunID: runID,
 	}
-	capacity, started, err := a.Store.BeginCycle(cycle, next, live, fingerprint, time.Now())
+	capacity, started, err := a.store.BeginCycle(cycle, next, live, fingerprint, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -420,7 +430,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	idle := a.runtime.idle()
 	a.runtimeMu.Unlock()
 	if !control.Paused || !idle {
-		return nil, conflictError("Pause and wait for active work to finish before changing configuration.")
+		return nil, codedConflict(ActiveWorkConflict, "Pause and wait for active work to finish before changing configuration.")
 	}
 	old, err := a.Config()
 	if err != nil {
@@ -431,7 +441,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if revision != expectedRevision {
-		return nil, conflictError("The saved configuration changed; reload settings and check the current values.")
+		return nil, codedConflict(ConfigRevisionConflict, "The saved configuration changed; reload settings and check the current values.")
 	}
 	c, err := mergeConfigPatch(old, patch)
 	if err != nil {
@@ -448,19 +458,19 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	if !old.SameRemoteIdentity(c) || old.BranchPrefix != c.BranchPrefix || old.DeliveryMode != c.DeliveryMode {
-		unresolved, err := a.Store.HasUnresolvedTasks()
+		unresolved, err := a.store.HasUnresolvedTasks()
 		if err != nil {
 			return nil, err
 		}
 		if unresolved {
-			return nil, conflictError("Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
+			return nil, codedConflict(UnresolvedWorkConflict, "Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
-	if err := a.Store.Put("settings", "config", c); err != nil {
+	if err := store.Put(a.store, store.ConfigKey, c); err != nil {
 		return nil, err
 	}
 	a.invalidatePRs()
 	// Activity is best-effort after the configuration change has committed.
-	_ = a.Store.Event("system", "configuration", "Operator saved configuration")
+	_ = a.store.Event("system", model.EventConfiguration, "Operator saved configuration")
 	return settingsView(c)
 }

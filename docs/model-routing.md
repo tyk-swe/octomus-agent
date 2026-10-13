@@ -28,13 +28,9 @@ variant fields; OpenCode routes must leave Codex effort empty. Unknown models an
 unsupported efforts/variants block readiness and execution; no fallback is applied.
 
 `codex_binary` defaults to `codex`; `opencode_binary` defaults to `opencode`. These
-are executable paths, not shell commands or argument lists. Only the runners that
-required routes select need to be installed. An audit requires the orchestrator,
-discovery and proposal reviewer routes; normal execution requires every configured
-route.
-
-Task workspace directories are named by Octomus task ID. Every saved route records
-its backend.
+are executable paths, not shell commands or argument lists, and only the runners your
+routes select need to be installed. An audit requires the orchestrator, discovery and
+proposal reviewer routes; normal execution requires every route.
 
 ## OpenCode setup and behavior
 
@@ -52,18 +48,17 @@ Octomus launches its own loopback servers with ephemeral authentication, using
 owned process groups. Unexpected questions and permission requests are rejected
 and block the task. Cancellation aborts the active session; process cleanup also
 stops descendants. Server startup, requests, turns, events, and outputs are bounded.
-At the whole-task deadline, cancellation is signalled first and cleanup may take
-up to eight additional seconds so OpenCode can stop detached shell process groups.
-The expired task remains blocked and cannot begin publication during cleanup.
-Version mismatches are reported in connection diagnostics.
+At the whole-task deadline, cancellation is signalled first and cleanup may take up to
+eight additional seconds; the expired task stays blocked and cannot begin publication
+meanwhile. Version mismatches are reported in connection diagnostics.
 
 Temporary process configuration supplies Octomus worker instructions and disables
 sharing, automatic updates, delegated/helper agents, automatic compaction, native
-snapshots, formatters, and LSP processes. This keeps auxiliary work and model
-selection under the orchestrator's control. Context exhaustion fails visibly;
-automatic compaction does not choose another model. These controls remain
-application policy; isolation comes from the [sandbox](sandbox.md) each runner starts in. Existing full-diff review, immutable
-verification, and orchestrator-owned GitHub publication gates still apply.
+snapshots, formatters, and LSP processes, keeping auxiliary work and model selection
+under the orchestrator's control. Context exhaustion fails visibly; automatic
+compaction does not choose another model. These controls are application policy;
+isolation comes from the [sandbox](sandbox.md) each runner starts in, and full-diff
+review, immutable verification and orchestrator-owned GitHub publication still apply.
 
 ## Dashboard and API
 

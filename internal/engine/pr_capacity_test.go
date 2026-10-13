@@ -117,7 +117,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	putTask(t, f, queued)
 	app := New(f.state, f.dataDir)
 	cleanupApp(t, app)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshLive(app); err != nil {
@@ -147,7 +147,7 @@ func TestRefreshFailureRevokesCapacity(t *testing.T) {
 	if err != nil || control.Mode != model.OperatingModeContinuous || control.Error != nil {
 		t.Fatalf("refresh failure failed Continuous operation: %+v, %v", control, err)
 	}
-	saved, err := store.Get[model.Task](f.state, "task", queued.ID)
+	saved, err := store.Get(f.state, store.Tasks.Key(queued.ID))
 	if err != nil || saved.Status != model.StatusQueued {
 		t.Fatalf("refresh failure changed queued work: %+v, %v", saved, err)
 	}
@@ -177,11 +177,11 @@ func TestSlowRefreshAuthorizesAdmission(t *testing.T) {
 	app.supervise = func(_ context.Context, task model.Task) error {
 		started <- task.ID
 		task.Status = model.StatusPublished
-		return f.state.Put("task", task.ID, task)
+		return store.Put(f.state, store.Tasks.Key(task.ID), task)
 	}
 	cleanupApp(t, app)
 	deferHousekeeping(app)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	expired := time.Now().Add(-(prAdmissionLifetime + time.Second))
@@ -225,11 +225,11 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 	app.supervise = func(_ context.Context, task model.Task) error {
 		started <- task.ID
 		task.Status = model.StatusPublished
-		return f.state.Put("task", task.ID, task)
+		return store.Put(f.state, store.Tasks.Key(task.ID), task)
 	}
 	cleanupApp(t, app)
 	deferHousekeeping(app)
-	if err := control(app, "resume"); err != nil {
+	if err := control(app, model.ControlResume); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.tick(); err != nil {
@@ -271,7 +271,7 @@ func TestInventoryAdmitsOneBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitApp(t, app)
-	third, err := store.Get[model.Task](f.state, "task", "third")
+	third, err := store.Get(f.state, store.Tasks.Key("third"))
 	if err != nil || third == nil || third.Status != model.StatusQueued || len(started) != 2 {
 		t.Fatalf("full inventory admitted a new PR: %+v, %v; started=%d", third, err, len(started))
 	}
@@ -308,7 +308,7 @@ func TestRestartKeepsRetriedTaskBehindCapacity(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "prs.json"), []byte(pr), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.TaskAction(task.ID, "retry"); err != nil {
+	if err := first.TaskAction(task.ID, model.TaskActionRetry); err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {

@@ -47,6 +47,19 @@ func TestMalformedAssessmentAnswers(t *testing.T) {
 	}
 }
 
+func TestFinishTurnRejectsDuplicateFields(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"context":"first","\u0063ontext":"second"}`,
+		`{"context":{"nested":1,"nested":2}}`,
+	} {
+		answer, err := FinishTurn(raw, schemas.GroundingSchema())
+		if answer != "" || err == nil || !strings.HasPrefix(err.Error(), "Runner returned invalid JSON: duplicate field ") {
+			t.Errorf("FinishTurn(%s) = %q, %v; want duplicate fields refused", raw, answer, err)
+		}
+	}
+}
+
 func pyString(s string) string { return strconv.Quote(s) }
 
 // wrapper writes the one Python shim that starts a tests/fixtures runner peer as the named binary.

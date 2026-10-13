@@ -36,13 +36,13 @@ func TestIndexedViews(t *testing.T) {
 	blocked.Status = model.StatusBlocked
 	blocked.OutputCommit = str("out00002")
 	for _, tk := range []model.Task{queued, active, reserved, published, blocked} {
-		must(t, s.Put("task", tk.ID, tk))
+		must(t, store.Put(s, store.Tasks.Key(tk.ID), tk))
 	}
 
 	c := cycleFor(queued)
 	c.ID = "cycle-running"
 	c.Lifecycle.DiscardedAt = str("2020-01-01T00:00:00Z")
-	must(t, s.Put("cycle", c.ID, c))
+	must(t, store.Put(s, store.Cycles.Key(c.ID), c))
 	done := cycleFor(queued)
 	done.ID = "cycle-done"
 	done.Status = model.CycleCompleted
@@ -53,16 +53,16 @@ func TestIndexedViews(t *testing.T) {
 		p.Decision = model.DecisionRejected
 		return p
 	}()}
-	must(t, s.Put("cycle", done.ID, done))
+	must(t, store.Put(s, store.Cycles.Key(done.ID), done))
 
 	baseline := func(id string, status model.BaselineStatus, removed bool) model.BaselineCheck {
 		return model.BaselineCheck{ID: id, Status: status, Config: config.Default(), ConfigFingerprint: "fp",
 			StartedAt: model.Now(), Commands: []model.BaselineCommand{}, WorkspaceRemoved: removed}
 	}
-	must(t, s.Put("baseline", "base-running", baseline("base-running", model.BaselineStatusRunning, false)))
-	must(t, s.Put("baseline", "base-done", baseline("base-done", model.BaselineStatusPassed, false)))
-	must(t, s.Put("baseline", "base-clean", baseline("base-clean", model.BaselineStatusFailed, true)))
-	must(t, s.Put("settings", "baseline_latest", "base-done"))
+	must(t, store.Put(s, store.Baselines.Key("base-running"), baseline("base-running", model.BaselineStatusRunning, false)))
+	must(t, store.Put(s, store.Baselines.Key("base-done"), baseline("base-done", model.BaselineStatusPassed, false)))
+	must(t, store.Put(s, store.Baselines.Key("base-clean"), baseline("base-clean", model.BaselineStatusFailed, true)))
+	must(t, store.Put(s, store.Setting[string]("baseline_latest"), "base-done"))
 
 	scheduling, err := s.SchedulingTasks(nil)
 	must(t, err)
@@ -93,7 +93,7 @@ func TestIndexedViews(t *testing.T) {
 	}
 
 	for _, selected := range []string{"cycle-running", "missing", "all"} {
-		result, err := s.HistoryPage("cycle", store.HistoryQuery{Cycle: &selected})
+		result, err := summaryPage(s, "cycle", store.HistoryQuery{Cycle: &selected})
 		must(t, err)
 		want := map[string]int{"cycle-running": 1, "missing": 0, "all": 2}[selected]
 		if len(result.Items) != want || result.NextCursor != nil {
@@ -149,16 +149,16 @@ func TestIndexedViews(t *testing.T) {
 	}
 	detail, err := s.ProposalDetail("cycle-done", "b")
 	must(t, err)
-	view := decodeMap(t, detail)
+	view := decodeMap(t, marshaled(t, detail))
 	if view["prompt"] != "Implement the documented behavior" || view["content_revision"] != float64(1) {
 		t.Fatalf("proposal detail: %v", view)
 	}
-	page := decodeMap(t, filtered.Items[0])
+	page := decodeMap(t, marshaled(t, filtered.Items[0]))
 	if page["cycle_id"] != "cycle-done" || page["prompt"] != "" || page["decision"] != "rejected" {
 		t.Fatalf("proposal page item: %v", page)
 	}
 	if missing, err := s.ProposalDetail("cycle-done", "missing"); err != nil || missing != nil {
-		t.Fatalf("missing proposal: %s %v", missing, err)
+		t.Fatalf("missing proposal: %v %v", missing, err)
 	}
 
 	candidates, err := s.ReservableTasks()
@@ -192,14 +192,14 @@ func TestIndexedViews(t *testing.T) {
 	if !started {
 		t.Fatal("begin cycle refused an affordable cycle under the saved control")
 	}
-	reloaded, err := store.Get[model.Control](s, "settings", "control")
+	reloaded, err := store.Get(s, store.ControlKey)
 	must(t, err)
 	if reloaded == nil || reloaded.Batch == nil || reloaded.Batch.CycleID == nil || *reloaded.Batch.CycleID != "cycle-next" {
 		t.Fatalf("begin cycle control: %+v", reloaded)
 	}
 
-	must(t, s.Event("queued", "status", "Queued"))
-	must(t, s.Event("active", "status", "Reviewing"))
+	must(t, s.Event("queued", model.EventStatus, "Queued"))
+	must(t, s.Event("active", model.EventStatus, "Reviewing"))
 	scoped, err := s.Events(str("active"))
 	must(t, err)
 	if len(scoped) != 1 || scoped[0].Message != "Reviewing" {

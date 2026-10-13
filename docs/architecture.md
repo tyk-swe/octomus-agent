@@ -23,311 +23,108 @@ The dashboard polls authoritative service state and never schedules work itself.
 
 ## Planning
 
-Each cycle records the remote default-branch revision, owned open PRs, their heads and accumulated scope, maintenance targets, task history, and separate read-only external PR summaries. The complete open inventory is paginated and fails explicitly if machine capture is incomplete. External context is ordered by PR number and limited to 100 entries, 200 title characters, 2,000 body characters, and 512 KiB serialized total; source/head references, omitted counts and truncation flags are recorded. External/fork PRs never become execution or maintenance targets. The orchestrator inspects the repository and PR diffs. Each discovery and proposal-review role has a separate clone and runner session. Planning sessions are instructed to inspect rather than mutate, and their worktree/HEAD must remain unchanged.
+Each cycle records the remote default-branch revision, owned open PRs with their heads and accumulated scope, maintenance targets, task history, and separate read-only external PR summaries. The open inventory is paginated and fails explicitly if capture is incomplete. External context is ordered by PR number and limited to 100 entries, 200 title characters, 2,000 body characters and 512 KiB serialized, scrubbed of secrets first, with omitted counts and truncation flags recorded. External/fork PRs never become execution or maintenance targets. Each discovery and proposal-review role has its own clone and runner session; sessions are told to inspect rather than mutate, and their worktree and HEAD must remain unchanged.
 
-External titles and bodies are secret-scrubbed before the character and serialized
-byte limits are applied. After fetching fork refs, the orchestrator checks that
-each external PR's exact recorded commit exists in the trusted checkout and saves
-`local_head_available` in the grounding supplied to every planning role. Fetching a
-newer head does not prove that an older recorded SHA is available. A false value,
-including the default on historical records without this observation, keeps the
-summary but marks its diff unavailable; it is not evidence of no overlap. Local
-object availability is separate from complete remote PR inventory coverage.
+After fetching fork refs, the orchestrator checks that each external PR's exact recorded commit exists in the trusted checkout and saves `local_head_available` in the grounding. A false value, including the default on historical records, keeps the summary but marks its diff unavailable; it is not evidence of no overlap.
 
-Owned PRs also carry GitHub's aggregate `review_decision`, `check_status` and
-`mergeability`, with `status_source` (the source PR URL) and `status_observed_at`.
-One fixed-size GraphQL selection per owned PR reads the review decision and the
-head commit's status-check rollup, which includes both check runs and commit
-statuses, without copying comments, review bodies or check logs into prompts.
-The GraphQL PR identity and commit must match the REST detail's head; a partial,
-unknown enum or racing response fails the refresh rather than supplying false
-success. Status fields are backward-compatible defaults on v0.1.0 records;
-empty means not observed, `none` means no decision/checks, and `unknown`
-mergeability is not a clean verdict. The recorded context reaches grounding and
-discovery. Status changes reset idle backoff; source/timestamp-only refreshes do
-not. External PRs receive no status query and remain read-only. None of these
-observations replaces task review/verification or authorizes merging or rebasing.
+Owned PRs also carry GitHub's aggregate `review_decision`, `check_status` and `mergeability`, with `status_source` and `status_observed_at`, read by one fixed-size GraphQL selection per PR that never copies comments, review bodies or check logs into prompts. The GraphQL identity and commit must match the REST head; a partial, unknown or racing response fails the refresh rather than supplying false success. Empty means not observed, `none` means no decision or checks, and `unknown` mergeability is not a clean verdict. Status changes reset idle backoff; timestamp-only refreshes do not. External PRs get no status query, and none of these observations replaces review and verification or authorizes merging or rebasing.
 
-After an orchestrator grounding turn, the standard cycle runs nine discovery agents (configurable from eight to ten), followed by two adversarial reviewers and orchestrator consolidation. The final result must account for every original proposal ID, with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, an enabled category, and an eligible target. Unknown dependencies, dependency cycles, unordered/forked same-PR plans, accepted proposals that repeat each other's work on one target (the same title or problem identity), accepted work that repeats a recorded task on the same repository and target that is neither cancelled nor archived, and unowned targets are rejected by the core; a rejected plan fails the cycle and dispatches nothing. Same-PR proposals require a unique dependency order; unrelated branches remain parallelizable.
+After an orchestrator grounding turn, a standard cycle runs nine discovery agents (configurable from eight to ten), two adversarial reviewers and orchestrator consolidation. The result must account for every original proposal ID with a decision and reason. Accepted work needs project evidence, benefit, scope, a self-contained prompt, a supported tier, an enabled category and an eligible target. The core rejects unknown dependencies, dependency cycles, unordered or forked same-PR plans, accepted proposals that repeat each other (same title or problem identity) or a recorded task on the same repository and target that is neither cancelled nor archived, and unowned targets; a rejected plan fails the cycle and dispatches nothing. Same-PR proposals need a unique dependency order, while unrelated branches stay parallel. Semantic value and conflicting assessments are judged by the reviewers and orchestrator and recorded; the core cannot prove an idea's product value. An empty task set is a successful idle cycle. Maintenance follows the same gates at the configured cadence, targeting the main project and PRs above the size/age thresholds.
 
-Semantic value, overlapping ideas, and conflicting assessments are judged by the proposal reviewers and orchestrator; their results are recorded. The core cannot independently prove an idea's product value. Returning an empty task set is a successful idle cycle.
+Execution cycles commit the complete accepted queue and successful cycle in one SQLite transaction, so incomplete discovery cannot become executable work after a restart. Audits reuse planning and validation but persist decisions without dispatching tasks: they require paused operation without active work, leave queued tasks untouched, conflict with resume and cycle requests while active, and need only the three planning-role routes, repository and authentication. Cycles record an `audit` or `execution` mode and share one numbering and cadence. A shutdown or crash during planning records the cycle as interrupted, and interrupted audits are never replayed. Audit clones follow the same admission, sandboxing and retention rules.
 
-Maintenance is prioritized at the configured cadence for the main project and PRs above the size/age thresholds. It follows the same proposal and delivery gates as feature work.
-
-Execution cycles commit the complete accepted queue and successful cycle in one
-SQLite transaction. Incomplete discovery cannot become executable work after a restart.
-Audits reuse planning and validation but persist decisions without dispatching tasks.
-They require paused operation without active work and leave existing queued tasks
-untouched. Resume/cycle requests conflict while an audit is active. Audit readiness
-requires only the three planning-role routes, repository and authentication; normal
-execution still requires all routes and meaningful verification. Cycles record an
-`audit` or `execution` mode. Both modes use the same cycle numbering and maintenance
-cadence. A graceful shutdown or a crash during planning records the cycle as
-interrupted; interrupted audits are never automatically replayed. Audit clones remain
-subject to admission limits, the deployment's sandboxing and the normal cycle retention
-policy.
-
-Before creating a cycle, the scheduler compares live remaining daily admissions with
-`discovery_agents + 4` (one grounding turn, two proposal reviewers and one
-consolidation turn besides discovery). Unaffordable manual starts change no
-cycle or batch state; continuous operation waits without failed-cycle churn. Run once
-rechecks after its queue drain and pauses instead of silently deferring planning.
-This preflight does not replace or pre-reserve the individual atomic role admissions.
+Before creating a cycle, the scheduler compares live remaining daily admissions with `discovery_agents + 4` (grounding, two reviewers and consolidation besides discovery). Unaffordable manual starts change no cycle or batch state, continuous operation waits without failed-cycle churn, and run once pauses after its queue drain rather than silently deferring planning. The preflight does not pre-reserve the individual atomic role admissions.
 
 ## Tasks and dependencies
 
-A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies. Global admission limits come from current saved policy inside the reservation transaction. Separate attempt policy controls all timeouts, repair/no-progress limits and retry ceiling; explicit retry adopts current attempt limits and starts a fresh repair-round budget, while automatic recovery retains both. Task configuration, routes and verification commands remain immutable. Dependency-authorized source advancement retains the original grounding in the cycle. Workspaces use `.octomus/tasks/<task-id>/workspace`, with the clone's git metadata beside them in `repo.git`, where sandboxes can read but not write it; they are cloned before a runner session is created. Native runner session IDs are recorded separately and never used to name directories. Each task uses an independent Git clone. Review and repair threads work in that same task clone.
+A task snapshots its configuration, route, source revision, default-branch context, refined prompt and dependencies, and these stay immutable. Global admission limits come from current saved policy inside the reservation transaction. Separate attempt policy controls all timeouts, repair/no-progress limits and the retry ceiling: explicit retry adopts the current limits and a fresh repair-round budget, while automatic recovery keeps both. Dependency-authorized source advancement retains the original grounding.
 
-Completed repairs keep a durable progress checkpoint. Recovery cannot reset the consecutive no-progress limit or charge the same completed repair twice. An explicit retry clears this checkpoint along with its repair-round budget. Existing version-7 records without a checkpoint start tracking progress at their next completed repair.
+Each task uses an independent Git clone at `.octomus/tasks/<task-id>/workspace`, with git metadata beside it in `repo.git`, where sandboxes can read but not write it. The clone exists before a runner session is created, native session IDs never name directories, and review and repair threads work in the same clone.
 
-The repair-round budget counts completed repair turns separately from review rounds.
-The completed repair session, its counter, and its progress are saved together.
-If that save fails, the supervisor retains this accounting in its subsequent
-failure or interruption checkpoint when storage accepts the write.
-Recovery resumes unfinished review or verification with a fresh full-diff review
-and, if clean, verification, including after the final allowed repair; interrupted
-verification does not spend a repair round.
-Older version-7 tasks without the repair counter initialize it from their
-conservative review-based budget estimate, then count completed repairs directly.
-An explicit retry starts the counter at zero for the fresh attempt.
+The repair-round budget counts completed repair turns apart from review rounds. The completed repair session, its counter and a progress checkpoint are saved together, so recovery can neither reset the consecutive no-progress limit nor charge the same repair twice; if the save fails, the supervisor retains the accounting in its next failure or interruption checkpoint. Recovery resumes unfinished review or verification with a fresh full-diff review and, if clean, verification, including after the final allowed repair; interrupted verification spends no repair round. An explicit retry clears the checkpoint and counter. Records saved before these fields existed are initialized conservatively.
 
-Independent tasks can run concurrently. Existing PR branch writers are serialized. Dependent tasks on the same existing PR wait for their prerequisites to publish; the source revision is advanced only to a recorded prerequisite output and its ancestry is checked. External branch movement blocks stale work.
+Lifecycle transitions and publication settlement replace the caller's state only after the store accepts them, and ordinary status activity is ancillary: refusing it does not fail an accepted checkpoint. Retry commits its task, cancellation clearing and adopted policy together; archive commits its task and merge-authority revocation together. A committed cancellation marker outranks a worker's own late terminal decision: settlement of an exited worker records the task as cancelled, keeping the worker's cause in an error event, while a task that already reached an output checkpoint stays publication_uncertain for explicit reconciliation.
 
-Code-dependent default-branch proposals must be consolidated into a cohesive task or deferred until the prerequisite PR has merged. Merely publishing a separate PR does not make its code available on the default branch. Octomus does not auto-merge or implicitly create stacked PRs.
+Independent tasks run concurrently, but writers to one existing PR branch are serialized. The trusted checkout those tasks, planning, baseline checks and merging all fetch and clone from is serialized for the same reason: a fetch or the fork-head replacement excludes the other and every clone copying the checkout's objects, while clones of it still run together, and a cancelled worker stops waiting instead of holding its worker open. Dependent tasks on the same PR wait for their prerequisites to publish, the source revision advances only to a recorded prerequisite output with its ancestry checked, and external branch movement blocks stale work. Code-dependent default-branch proposals must be consolidated into one task or deferred until the prerequisite PR has merged, since publishing a separate PR does not make its code available on the default branch. Octomus creates no implicit stacked PRs and merges only in the opt-in maintenance delivery mode.
 
-New-PR dispatch also observes live `max_open_prs` (default five). Capacity counts complete observed owned-open PR identities plus
-unrepresented durable task reservations, not dashboard/history windows. Fresh
-asynchronous inventories authorize one admission batch; failures, obsolete responses
-and unknown state do not authorize new work. Existing-PR and reserved queued work
-remain selectable behind a large new-PR queue. Checkpoint publication replay retains
-its strict Git/publication checks without requiring another new-PR slot. Observed
-closure/merge releases capacity; a terminal task's admitted branch is also settled by
-remote re-observation, so a cancelled task whose branch carries no matching PR
-releases its reservation instead of stranding the slot. Lowering the ceiling neither
-closes PRs nor cancels in-flight work. External actors can still change remote
-backlog after observation.
+New-PR dispatch also observes live `max_open_prs` (default five). Capacity counts complete observed owned-open PR identities plus unrepresented durable task reservations, not dashboard windows. A fresh asynchronous inventory authorizes one admission batch; failures, obsolete responses and unknown state authorize nothing. Existing-PR work stays selectable behind a large new-PR queue, and checkpoint publication replay needs no new slot. Observed closure or merge releases capacity, and remote re-observation settles a terminal task's admitted branch, so a cancelled task whose branch has no matching PR releases its reservation. Lowering the ceiling neither closes PRs nor cancels in-flight work, and external actors can still change the backlog after observation.
 
 ## Review, verification and delivery
 
-The executor's changes are committed locally. Review uses a fixed comparison base: the original default revision for new work, or the merge base with the default branch for existing PR work. Every review round examines the entire accumulated diff against that base.
+The executor's changes are committed locally, and the reviewed change set is refused when it adds or retargets a gitlink: the snapshot refuses the one it is about to commit, and the comparison base settles the commits a runner made itself, so a nested repository committed by a runner cannot reach review or publication as content nobody reviewed. Review uses a fixed comparison base (the original default revision for new work, or the merge base with the default branch for existing PR work), and every round examines the entire accumulated diff against it. A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task's saved repair route (shipped with `medium` effort and no model, so it must be configured before a run is ready) and resumes for later repair turns. Interrupted, failed, missing, malformed or explicitly incomplete results never count as clean reviews, and rounds and their revisions are recorded.
 
-A reviewer is always a fresh session on its configured runner. A repair thread starts separately with the task’s saved configurable repair route (shipped with `medium` effort and no model, so it must be configured before a run is ready) and is resumed for subsequent repair turns. Interrupted, failed, missing, malformed, or explicitly incomplete results never count as clean reviews. Rounds and their revisions are recorded.
+Configured shell verification runs after a clean review, in a fresh clone of exactly the reviewed revision (removed afterwards), each command in a fresh sandbox from the assigned workspace with Bash `pipefail`. Ignored files, caches and build output from earlier sessions never reach it, so commands install their own dependencies, and every command must pass on that revision. Worktree cleanliness and HEAD are checked before the first command and after each one; a command that leaves modified, staged or non-ignored untracked files or moves HEAD is recorded as failed evidence, stops the remaining commands and blocks the task, so verification artifacts such as coverage reports and caches must be git-ignored. Each command's evidence holds stdout, then any stderr in a `[stderr]` section, then the exit status on failure, secret-scrubbed and bounded to 16 KiB: each stream keeps its end, stderr may use half the bound, and `[output truncated]` marks any cut. A failed workspace check adds a note of up to 4 KiB, and repair turns receive the same text. Net-empty changes are not publishable, even if an executor made commits.
 
-Configured shell verification runs after a completed clean review, in a fresh clone of exactly the reviewed revision (removed afterwards), each command in a fresh sandbox. Ignored files, caches and build output a session left in the task work tree never reach verification, so commands install their own dependencies. Every command must pass on exactly the reviewed revision. Worktree cleanliness and HEAD are checked before the first command and after each command; a command that leaves the worktree unclean (modified or staged files, or new untracked files that are not git-ignored) or moves HEAD is recorded as failed evidence, stops the remaining commands and blocks the task, so no success is attributed to a revision the command did not actually run against. Verification artifacts such as coverage reports and caches must therefore be git-ignored by the repository. Each command's evidence holds its stdout, then any stderr in a `[stderr]` section, then the exit status on failure, secret-scrubbed and bounded to 16 KiB: each stream keeps its end, even past the diagnostic capture limit, stderr may use half of the bound however long stdout is, and `[output truncated]` marks any cut. A failed workspace state check adds its note, itself capped at 4 KiB, after the output; the bound leaves room for it. Repair turns receive the same text for failed commands. Commands run from the assigned workspace with Bash `pipefail`. Net-empty changes are not publishable, even if an executor made commits.
+Publication requires recorded clean review and successful verification for the output commit. Before writing, the core verifies repository identity, PR ownership and open state, source/default revisions, worktree cleanliness and commit ancestry. It pushes only the assigned prefixed branch from the validated configured checkout, never an agent-editable remote, using an exact Git lease against the check/push race; no default-branch push is generated.
 
-Publication requires recorded clean review and successful verification evidence for the output commit. Before writing, the core verifies repository identity, PR ownership/open state, source/default revisions, worktree cleanliness and commit ancestry. It pushes only the assigned prefixed branch, using an exact Git lease to guard the check/push race. The push destination comes from the validated configured checkout, not an agent-editable task remote. No default-branch push is generated.
+GitHub is the MVP provider. Existing PRs need the configured prefix, a matching head repository and an Octomus task marker in their body; prefixed PRs without it contribute planning context but are not writable. New branch suffixes use unique task IDs. PR bodies record objective, scope, benefit, verification, implementation summary and the marker. Follow-ups are posted as a comment, never rewriting the description, so earlier notes and maintainer edits survive, and the marker makes the append idempotent.
 
-GitHub is the MVP provider. Existing PRs require the configured prefix, matching head repository, and an Octomus task marker in their body. Prefixed PRs without that marker contribute planning context but are not writable targets. New branch suffixes use unique task IDs. PR bodies record the objective, scope, benefit, verification, implementation summary and publication marker. Follow-ups post their record as a comment on the existing PR rather than rewriting its description, so earlier delivery notes and maintainer edits are never replaced; the task marker attached there makes the append idempotent.
+Titles, descriptions, follow-up comments and the generated commit message are scrubbed (non-truncating) and validated before the first outbound write: the task marker and reviewed commit must be intact and the text within the remote's limits. Metadata that cannot satisfy both is refused without writing, nothing is silently truncated, and canonical task records keep their private values.
 
-Titles, descriptions and follow-up comments are prepared for public delivery before the first new outbound write: proposal text, command descriptions and session summaries pass through the non-truncating secret scrubber, and the prepared text is validated — exact task marker and reviewed commit intact, within the remote's title and body limits. Metadata that cannot satisfy both is refused without writing; nothing is silently truncated, and canonical task records keep their private values. The commit message Octomus generates for the executor's changes passes through the same scrubber, because it is published with the branch.
-
-Creation resolves the exact returned PR number, then creation and updates share a final repository/ownership/branch/base/head/task-marker validator. A mismatched result remains blocked with its publication checkpoint. Before retrying a publication, the service searches all matching PR states, including closed and merged PRs; ambiguous branch associations fail closed. A matching task marker — in the description or a follow-up comment — and output head confirm previously completed delivery without another push or duplicate PR. Changed remote state is surfaced for reconciliation.
+Creation resolves the exact returned PR number, and creation and updates share a final repository/ownership/branch/base/head/marker validator; a mismatch stays blocked with its checkpoint. Before retrying publication, the service searches all matching PR states, including closed and merged, and ambiguous branch associations fail closed. A matching marker (in the description or a follow-up) and output head confirm completed delivery without another push or duplicate PR, and changed remote state is surfaced for reconciliation.
 
 ## Explicit baseline verification
 
-The authenticated baseline action runs only by operator request while paused and idle.
-Admission pins the canonical configuration revision the operator loaded; a stale or
-display-transformed value conflicts before any clone is made. The record keeps the
-canonical snapshot, its fingerprint and the remote default SHA, then runs saved
-commands in a disposable clone with the ordinary process,
-timeout, output and worktree-integrity primitives. It creates no task, cycle, PR or model
-admission. Results are separate baseline records, never task publication evidence.
-Output is capped at 16 KiB per command and 1 MiB per check with explicit truncation;
-configuration and observed revision freshness remain distinct from a recorded pass.
-A successful remote read that finds the default branch missing clears revision
-freshness; an older read cannot restore it, and the recorded pass is preserved.
-Cancellation, deadlines and restart interruption are terminal, never automatically
-replayed. Owned clones are cleaned up safely. A failed cleanup is retried on later
-housekeeping passes; the service records a new or changed failure at once and an
-unchanged one at most once a day per service process.
-The cleanup result is preserved both on the baseline record and in activity
-events, so starting a newer baseline does not erase the older failure's reporting.
-Successful removal clears the cleanup error without changing verification results.
+The authenticated baseline action runs only by operator request while paused and idle. Admission pins the canonical configuration revision the operator loaded, so a stale or display-transformed value conflicts before any clone. The record keeps that snapshot, its fingerprint and the remote default SHA, then runs the saved commands in a disposable clone with the ordinary process, timeout, output and worktree-integrity primitives. It creates no task, cycle, PR or model admission, and its results are never task publication evidence. Output is capped at 16 KiB per command and 1 MiB per check. Configuration and revision freshness stay distinct from a recorded pass; a successful read that finds the default branch missing clears revision freshness, and an older read cannot restore it.
+
+Cancellation, deadlines and restart interruption are terminal and never replayed. A failed clone cleanup is retried on later housekeeping passes and recorded on the baseline record and in activity events (a new or changed failure at once, an unchanged one at most daily per service process); a newer baseline does not erase it, and successful removal clears it without changing results.
 
 ## Runtime and trust
 
-[Codex app-server documentation](https://developers.openai.com/codex/app-server) and the bindings generated by installed CLI 0.153.4 informed the integration. The client uses `initialize`, `model/list`, `account/read`, `thread/start`, `thread/resume`, `turn/start` and `turn/interrupt`, correlating completion events with thread and turn IDs. Structured schemas constrain proposal/review responses. A role uses `approvalPolicy: never` and `danger-full-access`; returned model, effort and sandbox settings must match.
+The Codex integration follows the [app-server protocol](https://developers.openai.com/codex/app-server) and bindings of the installed CLI 0.153.4, using `initialize`, `model/list`, `account/read`, `thread/start`, `thread/resume`, `turn/start` and `turn/interrupt` and correlating completion events by thread and turn ID. Structured schemas constrain proposal and review responses, and a role uses `approvalPolicy: never` and `danger-full-access`; returned model, effort and sandbox settings must match.
 
-OpenCode 1.18.30 is the HTTP/SSE protocol baseline. Each task owns lazily started
-servers for its selected backends; planning invocations own separate clients.
-OpenCode binds to loopback with per-process Basic authentication and uses existing
-service-user provider configuration. The adapter supplies temporary worker policy,
-disables project configuration overrides, automatic sharing, updates, helper
-agents, automatic compaction, formatters and LSP processes. It checks session
-workspace/model/variant/permissions on creation and resumption, correlates message
-identities, and validates native structured results before accepting evidence.
-See [model routing](model-routing.md) for setup and API details.
+OpenCode 1.18.30 is the HTTP/SSE baseline. Each task lazily starts its own servers for its selected backends, and planning invocations use separate clients. Servers bind to loopback with per-process Basic authentication and use the service user's provider configuration. The adapter supplies temporary worker policy that disables project configuration overrides, sharing, updates, helper agents, automatic compaction, formatters and LSP, checks session workspace/model/variant/permissions on creation and resumption, correlates message identities and validates native structured results before accepting evidence. See [model routing](model-routing.md).
 
-Unexpected interactive requests fail visibly. RPCs, turns, whole tasks, command output and admission counts are bounded. No model turns are started by the automated test fixtures or dashboard's model-catalog check.
+Unexpected interactive requests fail visibly. RPCs, turns, whole tasks, command output and admission counts are bounded. A runner child that has not ended when its cleanup budget does is reported as the sandbox's own failure, never as a clean turn: its owner starts no replacement child, blocks the task as a runner failure, and keeps the broker's record of a sandbox that ran even when no session record exists yet to carry it. The automated test fixtures and the dashboard's model-catalog check start no model turns.
 
-Repository content and agent outputs are never deserialized into operating configuration. API access requires the operator token, which is excluded from child-process environment variables. JSON is redacted before being returned to the dashboard, and rendered as text rather than trusted HTML.
+Repository content and agent outputs are never deserialized into operating configuration. API access requires the operator token, which child processes never receive. JSON is redacted before reaching the dashboard and rendered as text, not trusted HTML. Indexed summaries keep complete source titles and errors and are scrubbed with the current environment on every read, so a saved prefix cannot defeat redaction after credentials change; already truncated external PR context drops its cut trailing line or word before redaction.
 
-Private indexed summaries retain complete source titles and errors. Read paths
-scrub those fields using the current process's environment before bounding their
-presentation, so a saved prefix cannot defeat redaction after credentials change.
-Already truncated external PR context cannot recover missing source text: outward
-JSON conservatively drops its cut trailing line or word before redaction, retaining
-the truncation flags and leaving the original saved evidence unchanged.
+Codex's own sandbox stays off because the container is the boundary: in the Docker deployment each runner starts in a fresh [sandbox](sandbox.md) bound to one owned root, stopped after each turn, with no GitHub credential and egress only through the allowlisting gateway. Prompts and application policy are **not a security boundary** on their own. With `--sandbox off` a process with the service user's permissions can exercise those permissions; use the dedicated-host model described in [deployment](deployment.md#dedicated-vm-without-a-sandbox). See the [threat model](threat-model.md) for trust boundaries, authentication backoff and redaction limitations.
 
-Codex's own sandbox stays off because the container is the boundary: in the Docker deployment each runner starts in a fresh [sandbox](sandbox.md) bound to one owned root, stopped after each turn, with no GitHub credential and egress only through the allowlisting gateway. Prompts and application policy are **not a security boundary** on their own. With `--sandbox off` a process with the service user's permissions can exercise those permissions; use the dedicated-host model described in [deployment](deployment.md#dedicated-vm-without-a-sandbox).
-
-SQLite uses full synchronous writes and WAL. Only one service may hold the state-directory lock. Restart recovery preserves workspace/session identities and retries initialized interrupted tasks within the retry limit. A graceful stop cancels running work but leaves initialized in-flight tasks to the same recovery as a crash. A deployment supervisor must terminate old processes before recovery: in the Docker deployment the broker kills and removes every sandbox whose stream closes and sweeps leftovers when it starts; the supplied systemd unit uses control-group termination.
+SQLite uses full synchronous writes and WAL, and only one service may hold the state-directory lock. Restart recovery preserves workspace and session identities and retries initialized interrupted tasks within the retry limit; a graceful stop cancels running work but leaves initialized in-flight tasks to the same recovery as a crash. A supervisor must terminate old processes before recovery: the Docker broker kills every sandbox whose stream closes and sweeps leftovers at startup, and the supplied systemd unit uses control-group termination.
 
 ## Usage records and state
 
-Every budget reservation commits its UTC day counter and admission metadata in one
-transaction. Failed starts still consume reservations; reused repair threads consume
-another admission for each turn. A definitively missing Codex thread is replaced
-only when no accepted first turn is recorded for a tracked session. Its failed
-evidence is retained and the replacement consumes a new admission. Legacy sessions
-with unknown lifecycle and established threads remain intact on resume failures.
+Every budget reservation commits its UTC day counter and admission metadata in one transaction. Failed starts still consume reservations; reused repair threads consume another admission for each turn. A definitively missing Codex thread is replaced only when no accepted first turn is recorded for a tracked session; its failed evidence is retained and the replacement consumes a new admission. Sessions with unknown lifecycle and established threads remain intact on resume failures.
 
-State starts at schema version 7 (v0.1.0); version 8 adds notification triggers,
-version 9 indexes exact decision identities, and version 10 restores complete
-summary text from raw records and replaces the summary projection triggers.
-Version 10 leaves raw records intact and does not replay notification transitions.
-Releases upgrade it at startup through
-ordered forward-only migrations after a verified backup. The version check runs
-before any schema or journal change, and pre-release or newer databases are refused
-untouched. Route snapshots record the selected backend, model, effort or variant.
+State is a Go-owned SQLite schema that releases upgrade at startup through ordered forward-only migrations after a verified backup. The version check runs before any schema or journal change, and pre-release or newer databases are refused untouched. Route snapshots record the selected backend, model, effort or variant. See [backup and upgrade](deployment.md#backup-and-upgrade) and [releasing](https://github.com/tyk-swe/octomus-agent/blob/main/docs/releasing.md).
 
-Opt-in webhook events are inserted by SQLite triggers in the same transaction as
-the record transition: blocked/failed or published tasks, failed planning cycles,
-successful audits (completed or idle), and error-paused service episodes.
-Version 8 replaces the task triggers and adds cycle triggers without rewriting
-records or replaying historical events. Fresh DDL and migrated DDL must match.
-The existing durable outbox supplies destination rotation, a 1,000-pending-event
-bound, five attempts and 24-hour expiry. Payloads contain only identifiers,
-repository, category and action: no errors, prompts or PR/review/check text.
+Opt-in webhook events are inserted by SQLite triggers in the same transaction as the record transition, so a delivered event always corresponds to saved state and never replays historical records. The durable outbox supplies destination rotation, bounded pending events, retries and expiry; payloads carry only identifiers, repository, category and action. See [the attention webhook](deployment.md#optional-attention-webhook) for events, payloads and limits.
 
-`--usage-report` opens the database read-only at this release's schema version and reads one transaction snapshot without taking the service lock or initializing state. It exports metadata rather than raw prompts/transcripts or credentials. Admissions are not provider charges; see [cost methodology](cost.md). Keep a full state backup before replacing a binary.
-
-`GET /api/cycles/{id}/evidence` and `--export-run` assemble `RunEvidenceV1`, a read-only account of what one cycle and its tasks saved: positional reviewer verdicts, the latest review round and the latest result per required command, joined by cycle and proposal identity, with explicit gaps and limitations and without prompts, transcripts or command output. See [run evidence](run-evidence.md).
-
-For deployment trust boundaries, authentication backoff and redaction limitations,
-see the [threat model](threat-model.md).
+`--usage-report` opens the database read-only at this release's schema version, reads one transaction snapshot without taking the service lock, and exports metadata only; admissions are not provider charges (see [cost methodology](cost.md)). `GET /api/cycles/{id}/evidence` and `--export-run` assemble `RunEvidenceV1`, a read-only account of what one cycle and its tasks saved (see [run evidence](run-evidence.md)). Keep a full state backup before replacing a binary.
 
 ## Operating modes and recovery
 
-`paused`, `run_once` and `continuous` are durable modes. One-shot membership is
-recorded separately from mutable task retry state: a later retry cannot erase a
-batch failure or silently join the batch. The successful cycle, complete queue,
-decision memory, lineage and one-shot phase change commit together. Interrupted
-planning is never replayed automatically. Typed blocked reasons determine valid
-operator actions; stale context requires supersession and fresh discovery.
-The scheduler marks a running cycle interrupted once its planning worker has
-exited, including after storage recovers from refused terminal writes, so its
-retained evidence can be inspected and archived without restarting the service.
-Continuous operation keeps its saved schedule and starts a fresh cycle when due,
-with new grounding and sessions rather than resuming the interrupted plan.
-While a background recovery write is refused, the scheduler records a recovery
-error and starts no work in that pass. It keeps the saved mode and schedule for
-the next recovery attempt. During an unresolved episode, each of the first eight
-successfully recorded redacted causes appears once, followed by at most one
-notice that further causes are suppressed. This bounds recovery activity even
-when causes alternate or keep changing. Refused activity writes remain retryable;
-the current redacted cause remains visible until all maintenance recovery succeeds,
-even if its activity entry cannot be saved or further entries are suppressed.
-Likewise, a saved publication checkpoint whose worker has exited becomes blocked
-as `publication_uncertain` once storage accepts the update. This preserves its
-evidence and PR reservation for explicit reconciliation without replaying delivery.
+`paused`, `run_once` and `continuous` are durable modes. One-shot membership is recorded apart from mutable task retry state, so a later retry can neither erase a batch failure nor join the batch, and the successful cycle, complete queue, decision memory, lineage and one-shot phase change commit together. Typed blocked reasons determine valid operator actions; stale context requires supersession and fresh discovery.
+
+Interrupted planning is never replayed. The scheduler marks a running cycle interrupted once its planning worker has exited, even after storage recovers from refused terminal writes, so its evidence can be inspected and archived without a restart; continuous operation keeps its schedule and starts a fresh cycle with new grounding when due.
+
+While a background recovery write is refused, the scheduler records a recovery error, starts no work in that pass and keeps the saved mode and schedule for the next attempt. During an unresolved episode the first eight recorded redacted causes appear once each, then at most one notice that further causes are suppressed, and the current cause stays visible until recovery succeeds. A publication checkpoint whose worker has exited becomes blocked as `publication_uncertain` once storage accepts the update, keeping its evidence and PR reservation for explicit reconciliation without replaying delivery.
+
+Recovery also settles workerless active tasks and baseline checks, finishing all bounded pages before allowing admission. Execution and reconciliation share one settlement owner whose task and branch claims survive cancellation until all children join, and a refused settlement establishes the recovery barrier before the claim is released. The scheduler reads broker readiness outside the admission gate, then rechecks operator intent, configuration and runtime ownership before starting work; maintenance merging holds the gate across its bounded external mutation, so pause and merge authorization stay serialized.
 
 ## Bounded observation and storage
 
-SQLite JSON records remain canonical. Transactional projection triggers maintain
-indexed task/cycle/PR summaries and proposal listings. Dashboard queries limit rows
-before JSON decoding, read counts and summaries in one transaction, and
-fetch full evidence only on demand. Attention queries use a dedicated partial
-index, including when no unresolved rows match. Scheduler/recovery queries select
-operational states and resolve dependencies by identity.
+SQLite JSON records remain canonical, and transactional triggers maintain indexed task, cycle and PR summaries and proposal listings. Dashboard queries limit rows before JSON decoding, read counts and summaries in one transaction, and fetch full evidence only on demand. The store exposes named read models and typed pages and keeps SQL inside itself, and `store.Snapshot` gives live and read-only exports the same canonical evidence and usage queries in one transaction. Historical proposal assessments stay raw so malformed recorded evidence can still be exported and identified.
 
-Housekeeping runs independently of operation mode. Completed planning-role clones
-are disposable after evidence and source checks; unresolved work remains retained
-until explicit resolution. Archive/discard changes workspace lifecycle without
-deleting database evidence; each happens once per task or cycle, and repeating it
-conflicts. Application storage is measured separately from runner
-transcripts. Storage admission remains a pre-turn check, not a filesystem quota.
-Measurement walks relative to each directory's descriptor, so nesting depth
-never lengthens a path it resolves, and it never follows a symlink. A directory
-below the measured root that denies access (or is swapped for a symlink or file
-during the walk), or that sits 2,112 or more levels below the data directory
-(beyond git's default `core.maxTreeDepth` of 2,048, so only a chain a sandbox built
-reaches it),
-holds unknown bytes: admission refuses its owning task, planning cycle or
-baseline with the storage limit until that work is resolved, while other owners'
-admissions count only what was measured. Such a directory outside those owned
-roots refuses every admission until it is made readable or moved out of the data
-directory; a data directory at a filesystem's root has a `lost+found` the service
-usually cannot read, so use a subdirectory. Any other filesystem error except a
-vanished path, and failing to read the measured root itself, still fails the
-measurement, and measurement never changes permissions. Directory entries are read in
-batches of 256, with at most 1,048,576 entries per owner and 4,194,304 per scan attempt.
-An owner that exceeds its budget remains unknown; exhausting the whole scan budget
-refuses all admissions because the remaining owners are unknown. Empty entries count
-against these budgets too. Cancellation and a shared 30-second measurement deadline
-are checked between filesystem operations, including across the at most three retries.
-This bounds traversal work without pretending to interrupt a stalled kernel filesystem
-operation. The existing descriptor, depth and repeated-ancestor limits still apply.
+`model.Task.VerificationFor` selects the latest saved command result by append order; publication, maintenance eligibility and exported evidence share it, and a newer failed or wrong-revision result always supersedes an older success.
 
-Diagnostic subprocess output retains the first 256 KiB of each stream and
-truncation flags, and for a longer stream its last 64 KiB, kept in a rolling
-window allocated only once the stream passes 256 KiB. `internal/redact` owns
-cut-fragment normalization and `internal/process` exposes captured streams only
-as safe diagnostic text. Before secrets are scrubbed, a truncated capture's
-head is cut back to its last newline (or,
-without one, its last whitespace or nothing), dropping the partial line the
-limit cut, together with the first words or lines of a redacted environment
-value the limit fell inside. Its kept end likewise drops the partial first line
-the window began inside (or, without a newline, the partial first word), then
-any token redaction recognises only after context that was dropped (a bearer
-token after its prefix, an API key after a terminal escape sequence), and the
-last words or lines of a redacted environment value the window began inside,
-with the rest of the word they end in. Failure texts and verification evidence
-render from that text, with a truncation marker where output was dropped.
-Machine stdout is complete up to 16 MiB or fails as `outputTooLarge` (a failed
-command's error still keeps the real end past that, from the same 64 KiB
-window); invalid UTF-8 also fails explicitly. Git/GitHub machine consumers
-never parse a diagnostic truncation marker. All captures retain timeout,
-draining and process-group ownership.
+Housekeeping runs regardless of operation mode. Completed planning-role clones are disposable once evidence and source checks pass, while unresolved work stays retained until explicit resolution. Archive and discard change workspace lifecycle without deleting database evidence, and each happens once per task or cycle (repeating it conflicts); see [retention](deployment.md#limits-and-retention).
 
-State-snapshot cost was measured on 2026-10-05 against `fa98f37` with Go 1.27.1
-on Linux x86_64 using
-`OCTOMUS_SCALE_TEST=1 go test ./internal/store -run '^TestBoundedHistoryScale$' -count=1 -v`. The
-fixture stores 4 KiB prompts in 1,000, 10,000 and 100,000 historical task records;
-each measurement includes 20 dashboard snapshots.
+Application storage is measured separately from runner transcripts, and storage admission is a pre-turn check, not a filesystem quota. Measurement is bounded in descriptors, depth, entries and time, and never follows a symlink or changes permissions. A directory under an owned root that cannot be read (or is swapped during the walk, or nests deeper than git's default tree depth allows) holds unknown bytes, so admission refuses its owning task, planning cycle or baseline with the storage limit until that work is resolved, while other owners count only what was measured. An unreadable directory outside the owned roots refuses every admission until it is made readable or moved out of the data directory; a data directory at a filesystem's root has an unreadable `lost+found`, so use a subdirectory. An owner over its entry budget stays unknown, and exhausting the whole scan budget refuses all admissions.
 
-| Historical tasks | State JSON bytes | Median query time | p95 query time | Peak Go heap allocated per snapshot |
-| --- | ---: | ---: | ---: | ---: |
-| 1,000 | 95,227 | 1.51 ms | 2.53 ms | 782,480 bytes |
-| 10,000 | 95,528 | 1.42 ms | 2.52 ms | 783,928 bytes |
-| 100,000 | 95,829 | 1.64 ms | 4.50 ms | 778,240 bytes |
+Diagnostic subprocess output keeps the first 256 KiB of each stream and, for a longer stream, its last 64 KiB, with explicit truncation flags. Truncated head and tail are trimmed back to a whole line or word and scrubbed so a cut cannot expose part of a secret, and failure texts and evidence carry a truncation marker where output was dropped. Machine stdout is complete up to 16 MiB or fails as `outputTooLarge`, and invalid UTF-8 fails explicitly; Git and GitHub machine consumers never parse a truncation marker.
 
-These timings are environment-dependent. Allocation measurements count Go heap
-bytes allocated during each snapshot, not SQLite's page cache or total process RSS.
-The weekly GitHub Actions workflow repeats this check each Monday at 06:17 UTC; it
-also accepts manual dispatch.
-Every push and pull request packages and smoke-tests the x86_64 and arm64 archives
-on native Ubuntu 24.04 runners. Both package jobs gate the aggregate `verify` job.
+State response size and per-snapshot allocation stay independent of history size: queries limit rows before decoding. The bound is checked by `OCTOMUS_SCALE_TEST=1 go test ./internal/store -run '^TestBoundedHistoryScale$' -count=1 -v`, which the weekly workflow (`.github/workflows/weekly.yml`) also runs.
 
 ## Decision memory and outcomes
 
-Planning prompts include at most 100 decisions for the default branch and eligible
-open PR targets. Admission checks the complete stored history for each exact
-repository, target and problem identity independently of that prompt limit.
-Decisions record relevant paths, rationale, source context and reconsideration
-time. Matching problem identities are reused across wording changes. Relevant blob changes or
-30 elapsed days permit reconsideration; unresolved tasks continue to suppress
-duplication. Audit acceptance remains a recommendation and does not suppress
-subsequent execution. Explicit supersession requests receive their own fresh
-accepted/rejected/deferred decision.
+Planning prompts include at most 100 decisions for the default branch and eligible open PR targets. Admission checks the complete stored history for each exact repository, target and problem identity independently of that prompt limit. Decisions record relevant paths, rationale, source context and reconsideration time. Matching problem identities are reused across wording changes. Relevant blob changes or 30 elapsed days permit reconsideration; unresolved tasks continue to suppress duplication. Audit acceptance remains a recommendation and does not suppress subsequent execution. Explicit supersession requests receive their own fresh accepted/rejected/deferred decision.
 
-After the first idle cycle, successive idle outcomes double the interval, capped
-at 24 hours without shortening a longer configured interval. Lightweight repository
-and PR-head observation every five minutes shortens extended idle backoff on changed context while preserving the ordinary configured cadence.
-Manual one-shot runs bypass backoff. PR outcomes are observations distinct from
-task delivery; known follow-up outputs are recognized when checking external head
-movement. The service never infers provider charges. It never merges a PR outside the
-opt-in maintenance delivery mode, whose trusted orchestrator may squash-merge a small,
-clean-reviewed, verified maintenance delivery only after fresh remote checks, review
-state, identity and protections confirm the recorded head; every other delivery stays
-manual.
+After the first idle cycle, successive idle outcomes double the interval, capped at 24 hours without shortening a longer configured interval. Lightweight repository and PR-head observation every five minutes shortens extended idle backoff on changed context while preserving the ordinary configured cadence. Manual one-shot runs bypass backoff. PR outcomes are observations distinct from task delivery; known follow-up outputs are recognized when checking external head movement. The service never infers provider charges. It never merges a PR outside the opt-in maintenance delivery mode, whose trusted orchestrator may squash-merge a small, clean-reviewed, verified maintenance delivery only after fresh remote checks, review state, identity and protections confirm the recorded head; every other delivery stays manual.
+
+## API and dashboard contract
+
+The application owns named API response envelopes in `internal/engine/api_views.go`, the store owns bounded indexed summaries and HTTP owns transport envelopes. `web/api_contract_test.go` derives the dashboard's checked-in TypeScript types from these types, and normal Go tests reject drift. State responses carry operation capabilities, blocker messages and per-cycle `allowed_actions`; these are current display hints, and action handlers still revalidate admission, cleanup ownership and durable state before acting. Pause remains available when configuration is incomplete or saved-state recovery is pending.
+
+The dashboard reads state through one coalescing session whose confirming reads follow every accepted mutation, and through independent resources for task detail, activity, evidence, baseline and settings that keep stale content visible while a read is in flight and let only the newest requested revision become confirmed fresh state: a request for the revision already loading drops older queued intent instead of letting it run afterwards. Settings drafts keep display snapshots and patch rules apart from canonical values.

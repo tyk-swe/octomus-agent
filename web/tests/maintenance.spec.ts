@@ -21,6 +21,11 @@ test('paused merge work disables planning and settings until the next idle snaps
       snapshot.audit_configured = true;
       snapshot.baseline_active = false;
       snapshot.auto_merge.active = merging;
+      snapshot.capabilities.pause = { allowed: true, reason: '' };
+      snapshot.capabilities.resume = { allowed: true, reason: '' };
+      snapshot.capabilities.cycle.allowed = !merging;
+      snapshot.capabilities.audit.allowed = !merging;
+      snapshot.capabilities.configure.allowed = !merging;
     }
   });
   await page.clock.install();

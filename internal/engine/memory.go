@@ -55,7 +55,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 			targets = append(targets, pr.Branch)
 		}
 	}
-	records, err := a.Store.DecisionMemory(cfg.GitHubRepo, targets)
+	records, err := a.store.DecisionMemory(cfg.GitHubRepo, targets)
 	if err != nil {
 		return decisionMemory{}, err
 	}
@@ -64,7 +64,7 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 		return decisionMemory{}, err
 	}
 	memory := decisionMemory{decisions: decisions, requests: []rediscoveryRequest{}}
-	requests, err := a.Store.RediscoveryRequests(cfg.GitHubRepo)
+	requests, err := a.store.RediscoveryRequests(cfg.GitHubRepo)
 	if err != nil {
 		return decisionMemory{}, err
 	}
@@ -90,7 +90,7 @@ func (a *App) enforceDecisionMemory(ctx context.Context, cfg config.Config, grou
 		if proposal.Decision != model.DecisionAccepted {
 			continue
 		}
-		records, err := a.Store.DecisionsForProblem(cfg.GitHubRepo, proposal.Target, proposal.ProblemIdentity())
+		records, err := a.store.DecisionsForProblem(cfg.GitHubRepo, proposal.Target, proposal.ProblemIdentity())
 		if err != nil {
 			return err
 		}
@@ -153,15 +153,15 @@ func currentDecisions(ctx context.Context, cfg config.Config, grounding model.Gr
 // names no paths, otherwise a digest of those paths' tree entries at that revision.
 func decisionFingerprint(ctx context.Context, cfg config.Config, revision string, paths []string) (string, error) {
 	if len(paths) > 40 {
-		return "", fmt.Errorf("Decision has too many relevant paths")
+		return "", errors.New("Decision has too many relevant paths")
 	}
 	for _, path := range paths {
 		if path == "" || strings.HasPrefix(path, "/") {
-			return "", fmt.Errorf("Decision paths must be repository-relative files")
+			return "", errors.New("Decision paths must be repository-relative files")
 		}
 		for i, part := range strings.Split(path, "/") {
 			if part == ".." || (part == "." && i == 0) {
-				return "", fmt.Errorf("Decision paths must be repository-relative files")
+				return "", errors.New("Decision paths must be repository-relative files")
 			}
 		}
 	}

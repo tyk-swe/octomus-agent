@@ -28,6 +28,15 @@ func splitClone(ctx context.Context, c config.Config, cwd, source, path, revisio
 	if err := os.MkdirAll(root, 0o777); err != nil {
 		return "", err
 	}
+	if config.SamePath(source, c.Repository) {
+		// The clone copies the shared trusted checkout's objects and refs, so it is a shared-checkout
+		// reader: a fetch running alongside it fails the copy instead (see checkoutGate).
+		release, err := gateFor(c.Repository).acquire(ctx, false)
+		if err != nil {
+			return "", err
+		}
+		defer release()
+	}
 	clone, checkout := []string{"clone"}, []string{"checkout"}
 	if quiet {
 		clone, checkout = append(clone, "--quiet"), append(checkout, "--quiet")

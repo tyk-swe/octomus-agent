@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -15,10 +14,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/workspace"
 )
 
-func (a *App) CycleAction(id, action string) error {
-	if action != "archive" && action != "discard" {
-		return NotFound("Unknown cycle action")
-	}
+func (a *App) CycleAction(id string, action model.CycleAction) error {
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
 		a.gate.Unlock()
@@ -27,46 +23,46 @@ func (a *App) CycleAction(id, action string) error {
 	a.wg.Add(1)
 	defer a.wg.Done()
 	defer a.gate.Unlock()
-	cycle, err := store.Get[model.Cycle](a.Store, "cycle", id)
+	cycle, err := store.Get(a.store, store.Cycles.Key(id))
 	if err != nil {
 		return err
 	}
 	if cycle == nil {
 		return NotFound("Cycle not found")
 	}
-	if cycle.Status == model.CycleRunning {
-		return conflictError("Wait for planning to finish")
+	if !slices.Contains(model.CycleActions(cycle.Status, cycle.Lifecycle), action) {
+		switch {
+		case cycle.Status == model.CycleRunning:
+			return conflictError("Wait for planning to finish")
+		case action == model.CycleActionArchive:
+			return conflictError("The cycle is already archived")
+		case cycle.Lifecycle.DiscardedAt != nil:
+			return conflictError("The cycle workspaces were already discarded")
+		default:
+			return conflictError("Archive the cycle before discarding its workspace")
+		}
 	}
 	if a.cleanupClaimed(cleanupCycle, id) {
 		return conflictError("Workspace cleanup is in progress for this cycle; wait for it to finish")
 	}
 	switch action {
-	case "archive":
-		if cycle.Lifecycle.ArchivedAt != nil {
-			return conflictError("The cycle is already archived")
-		}
+	case model.CycleActionArchive:
 		cycle.Lifecycle.ArchivedAt = new(model.Now())
-		if err := a.Store.Put("cycle", id, *cycle); err != nil {
+		if err := store.Put(a.store, store.Cycles.Key(id), *cycle); err != nil {
 			return err
 		}
-	case "discard":
-		if cycle.Lifecycle.ArchivedAt == nil {
-			return conflictError("Archive the cycle before discarding its workspace")
-		}
+	case model.CycleActionDiscard:
 		if err := a.discardCycle(cycle); err != nil {
 			return err
 		}
+	default:
+		return NotFound("Unknown cycle action")
 	}
-	_ = a.Store.Event(id, "operator", action)
+	_ = a.store.Event(id, model.EventOperator, action.String())
 	return nil
 }
 
-func (a *App) TaskAction(id, action string) error {
-	switch action {
-	case "cancel", "retry", "supersede", "archive", "discard", "reconcile":
-	default:
-		return NotFound("Unknown task action")
-	}
+func (a *App) TaskAction(id string, action model.TaskAction) error {
 	a.gate.Lock()
 	if err := a.ctx.Err(); err != nil {
 		a.gate.Unlock()
@@ -79,41 +75,48 @@ func (a *App) TaskAction(id, action string) error {
 	if err != nil {
 		return err
 	}
-	if action == "reconcile" {
+	if action == model.TaskActionReconcile {
 		return a.reconcileLocked(id, task)
 	}
 	var actionErr error
 	switch action {
-	case "cancel":
+	case model.TaskActionCancel:
 		actionErr = a.cancelTask(id)
-	case "retry":
+	case model.TaskActionRetry:
 		actionErr = a.retryTask(task)
-	case "supersede":
-		task.Status = model.StatusCancelled
-		task.RediscoveryRequested = true
-		task.RediscoveryResult = nil
-		if actionErr = a.Store.ClearCancel(id); actionErr == nil {
-			actionErr = a.saveTask(task)
-		}
-	case "archive":
-		if task.Status.Retryable() {
-			task.Status = model.StatusCancelled
-		}
-		task.Lifecycle.ArchivedAt = new(model.Now())
-		actionErr = a.saveTask(task)
+	case model.TaskActionSupersede:
+		next := task.Clone()
+		next.Status = model.StatusCancelled
+		next.RediscoveryRequested = true
+		next.RediscoveryResult = nil
+		next.UpdatedAt = model.Now()
+		actionErr = a.store.ResetTaskCancellation(next)
 		if actionErr == nil {
-			actionErr = a.Store.RevokeTaskMerges(id, "The authorizing task was archived")
+			*task = next
 		}
-	case "discard":
+	case model.TaskActionArchive:
+		next := task.Clone()
+		if next.Status.Retryable() {
+			next.Status = model.StatusCancelled
+		}
+		next.Lifecycle.ArchivedAt = new(model.Now())
+		next.UpdatedAt = model.Now()
+		actionErr = a.store.ArchiveTask(next)
+		if actionErr == nil {
+			*task = next
+		}
+	case model.TaskActionDiscard:
 		actionErr = a.discardTask(task)
+	default:
+		return NotFound("Unknown task action")
 	}
 	if actionErr == nil {
-		if action == "cancel" || task.Status == model.StatusCancelled {
+		if action == model.TaskActionCancel || task.Status == model.StatusCancelled {
 			a.runtimeMu.Lock()
 			a.runtime.cancelScanDone = false
 			a.runtimeMu.Unlock()
 		}
-		_ = a.Store.Event(id, "operator", action)
+		_ = a.store.Event(id, model.EventOperator, action.String())
 	}
 	a.notify()
 	return actionErr
@@ -126,10 +129,10 @@ func (a *App) cancelTask(id string) error {
 	if running {
 		job.cancel()
 	}
-	if err := a.Store.MarkCancel(id); err != nil {
+	if err := a.store.MarkCancel(id); err != nil {
 		return err
 	}
-	cancelled, err := a.Store.CancelTask(id)
+	cancelled, err := a.store.CancelTask(id)
 	if err != nil {
 		return err
 	}
@@ -151,12 +154,13 @@ func (a *App) retryTask(task *model.Task) error {
 		return conflictError("Retry limit reached. Adjust the operating limit after inspecting the failure.")
 	}
 	original := task.Clone()
+	next := task.Clone()
 	policy := model.PolicyOf(cfg)
-	task.AttemptPolicy = &policy
+	next.AttemptPolicy = &policy
 	if task.OutputCommit == nil {
 		var preflightErr error
-		a.withoutGate(func() { preflightErr = a.retryPreflight(a.ctx, task) })
-		if err := a.revalidateTaskAction(&original, "retry"); err != nil {
+		a.withoutGate(func() { preflightErr = a.retryPreflight(a.ctx, &next) })
+		if err := a.revalidateTaskAction(&original, model.TaskActionRetry); err != nil {
 			return err
 		}
 		live, err := a.Config()
@@ -164,38 +168,35 @@ func (a *App) retryTask(task *model.Task) error {
 			return err
 		}
 		livePolicy := model.PolicyOf(live)
-		if task.AttemptPolicy == nil || *task.AttemptPolicy != livePolicy {
+		if next.AttemptPolicy == nil || *next.AttemptPolicy != livePolicy {
 			return conflictError("Retry policy changed during remote checks; try again with the current limits")
 		}
 		if preflightErr != nil {
-			recordTaskError(task, preflightErr)
-			_ = a.saveTask(task)
+			recordTaskError(&next, preflightErr)
+			if err := a.checkpointTask(&next); err == nil {
+				*task = next
+			}
 			return preflightErr
 		}
 	}
-	task.Attempts++
-	task.ReviewBaseline = uint64(len(task.Reviews))
-	task.RepairRounds = new(uint64(0))
-	task.RepairProgress = nil
-	task.Error = nil
-	task.BlockedReason = nil
-	task.Status = model.StatusQueued
-	task.RunID = nil
-	policyJSON, err := wirejson.Marshal(task.AttemptPolicy)
-	if err != nil {
+	next.Attempts++
+	next.ReviewBaseline = uint64(len(next.Reviews))
+	next.RepairRounds = new(uint64(0))
+	next.RepairProgress = nil
+	next.Error = nil
+	next.BlockedReason = nil
+	next.Status = model.StatusQueued
+	next.RunID = nil
+	next.UpdatedAt = model.Now()
+	if err := a.store.RetryTask(next); err != nil {
 		return err
 	}
-	if err := a.Store.Event(task.ID, "attempt_policy", string(policyJSON)); err != nil {
-		return err
-	}
-	if err := a.Store.ClearCancel(task.ID); err != nil {
-		return err
-	}
-	return a.saveTask(task)
+	*task = next
+	return nil
 }
 
-func (a *App) eligibleTask(id, action string) (*model.Task, error) {
-	task, err := store.Get[model.Task](a.Store, "task", id)
+func (a *App) eligibleTask(id string, action model.TaskAction) (*model.Task, error) {
+	task, err := store.Get(a.store, store.Tasks.Key(id))
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +206,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	if !slices.Contains(task.AllowedActions(), action) {
 		return nil, conflictError("This action is not eligible for the task's recorded failure and workspace state")
 	}
-	if action != "cancel" {
+	if action != model.TaskActionCancel {
 		a.runtimeMu.Lock()
 		_, merging := a.runtime.merges[task.Branch]
 		a.runtimeMu.Unlock()
@@ -216,7 +217,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	if a.cleanupClaimed(cleanupTask, id) {
 		return nil, conflictError("Workspace cleanup is in progress for this task; wait for it to finish")
 	}
-	if action != "cancel" {
+	if action != model.TaskActionCancel {
 		a.runtimeMu.Lock()
 		_, running := a.runtime.tasks[id]
 		a.runtimeMu.Unlock()
@@ -227,7 +228,7 @@ func (a *App) eligibleTask(id, action string) (*model.Task, error) {
 	return task, nil
 }
 
-func (a *App) revalidateTaskAction(original *model.Task, action string) error {
+func (a *App) revalidateTaskAction(original *model.Task, action model.TaskAction) error {
 	current, err := a.eligibleTask(original.ID, action)
 	if err != nil {
 		return err
@@ -252,27 +253,24 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 	if task.OutputCommit == nil {
 		var preflightErr error
 		a.withoutGate(func() { preflightErr = a.retryPreflight(a.ctx, task) })
-		if err := a.revalidateTaskAction(task, "reconcile"); err != nil {
+		if err := a.revalidateTaskAction(task, model.TaskActionReconcile); err != nil {
 			return err
 		}
+		next := task.Clone()
 		if preflightErr == nil {
-			task.BlockedReason = new(model.BlockedUnknown)
-			task.Error = new("Remote prerequisites are restored; task can be retried")
+			next.BlockedReason = new(model.BlockedUnknown)
+			next.Error = new("Remote prerequisites are restored; task can be retried")
 		} else {
-			recordTaskError(task, preflightErr)
+			recordTaskError(&next, preflightErr)
 		}
-		if err := a.Store.ClearCancel(id); err != nil {
+		next.UpdatedAt = model.Now()
+		if err := a.store.ResetTaskCancellation(next); err != nil {
 			return err
 		}
-		if err := a.saveTask(task); err != nil {
-			return err
-		}
-		_ = a.Store.Event(id, "operator", "reconcile")
+		*task = next
+		_ = a.store.Event(id, model.EventOperator, model.TaskActionReconcile.String())
 		a.notify()
 		return nil
-	}
-	if err := a.Store.ClearCancel(id); err != nil {
-		return err
 	}
 	live, err := a.Config()
 	if err != nil {
@@ -283,25 +281,19 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		return invalidPlan(fmt.Sprintf("Task %s was planned under an incompatible delivery mode or category", id))
 	}
 	previousStatus := task.Status
-	if err := a.transition(task, model.StatusPublishing); err != nil {
+	next := task.Clone()
+	next.Status = model.StatusPublishing
+	next.UpdatedAt = model.Now()
+	if err := a.store.ResetTaskCancellation(next); err != nil {
 		return err
 	}
-	workCtx, cancel := context.WithCancel(a.ctx)
+	*task = next
+	_ = a.store.Event(id, model.EventStatus, statusLabel(model.StatusPublishing))
+	workCtx, cancel := a.registerTaskWorker(*task, reconciliationWorker)
 	defer cancel()
-	a.runtimeMu.Lock()
-	a.runtime.tasks[id] = taskJob{branch: task.Branch, cancel: cancel}
-	a.runtime.reconciling = true
-	a.runtimeMu.Unlock()
-	defer func() {
-		a.runtimeMu.Lock()
-		delete(a.runtime.tasks, id)
-		a.runtime.reconciling = false
-		a.runtimeMu.Unlock()
-		a.notify()
-	}()
-
 	var published model.PullRequest
-	var publishErr error
+	var publishErr, actionErr error
+	defer func() { a.finishTaskWorker(id, errors.Join(publishErr, actionErr)) }()
 	a.withoutGate(func() {
 		limit := task.ExecutionConfig().TaskTimeout()
 		result, err := runJoined(workCtx, cancel, limit, "Publication reconciliation panicked", func() error {
@@ -321,20 +313,13 @@ func (a *App) reconcileLocked(id string, task *model.Task) error {
 		}
 	})
 
-	var actionErr error
 	if publishErr == nil {
 		actionErr = a.published(task, published)
 	} else {
 		recordTaskError(task, publishErr)
 		actionErr = a.transition(task, previousStatus)
 	}
-	_ = a.Store.Event(id, "operator", "reconcile")
-	current, loadErr := store.Get[model.Task](a.Store, "task", id)
-	if loadErr == nil && current != nil && current.Status.Active() {
-		a.settleExitedTask(current, errors.New("Task worker exited unexpectedly; inspect the preserved workspace"))
-	} else if loadErr != nil {
-		a.setRecoveryError(loadErr)
-	}
+	_ = a.store.Event(id, model.EventOperator, model.TaskActionReconcile.String())
 	return actionErr
 }
 
@@ -368,7 +353,7 @@ func (a *App) discardTask(task *model.Task) error {
 			return err
 		}
 	}
-	current, err := store.Get[model.Task](a.Store, "task", task.ID)
+	current, err := store.Get(a.store, store.Tasks.Key(task.ID))
 	if err != nil {
 		return err
 	}
@@ -379,7 +364,7 @@ func (a *App) discardTask(task *model.Task) error {
 		return conflictError("Task resumed work during workspace cleanup; inspect it before discarding")
 	}
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.Store.Put("task", current.ID, *current); err != nil {
+	if err := a.store.SaveTask(*current); err != nil {
 		return err
 	}
 	task.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt
@@ -401,7 +386,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 	if err := a.removeOwnedRoot(cleanupCycle, cycle.ID, root, filepath.Join(root, cycle.ID)); err != nil {
 		return err
 	}
-	current, err := store.Get[model.Cycle](a.Store, "cycle", cycle.ID)
+	current, err := store.Get(a.store, store.Cycles.Key(cycle.ID))
 	if err != nil {
 		return err
 	}
@@ -412,7 +397,7 @@ func (a *App) discardCycle(cycle *model.Cycle) error {
 		return conflictError("Planning work restarted during workspace cleanup; inspect it before discarding")
 	}
 	current.Lifecycle.DiscardedAt = new(model.Now())
-	if err := a.Store.Put("cycle", current.ID, *current); err != nil {
+	if err := store.Put(a.store, store.Cycles.Key(current.ID), *current); err != nil {
 		return err
 	}
 	cycle.Lifecycle.DiscardedAt = current.Lifecycle.DiscardedAt

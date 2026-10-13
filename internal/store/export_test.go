@@ -26,3 +26,11 @@ func SchemaDDL() string { return schemaSQL }
 const BaseVersion = baseVersion
 
 func ReleaseVersion() int64 { return release.version() }
+
+// Raw connection hooks support storage failure injection and connection checks
+// without making SQL or mutable connections part of the production read API.
+func (s *Store) RawSnapshot(fn func(*sql.Conn) error) error    { return s.snapshot(fn) }
+func (r *ReadOnly) RawSnapshot(fn func(*sql.Conn) error) error { return r.snapshot(fn) }
+func (r *ReadOnly) RawConn() *sql.Conn                         { return r.conn }
+
+func AnyKey[T any](kind, id string) Key[T] { return Key[T]{kind, id} }

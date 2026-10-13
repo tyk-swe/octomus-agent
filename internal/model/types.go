@@ -589,11 +589,11 @@ func (c Control) MarshalJSON() ([]byte, error) {
 func (c Control) Clone() Control { return wirejson.Clone(c) }
 
 type Event struct {
-	ID       int64  `json:"id"`
-	At       string `json:"at"`
-	EntityID string `json:"entity_id"`
-	Kind     string `json:"kind"`
-	Message  string `json:"message"`
+	ID       int64     `json:"id"`
+	At       string    `json:"at"`
+	EntityID string    `json:"entity_id"`
+	Kind     EventKind `json:"kind"`
+	Message  string    `json:"message"`
 }
 
 func (v *Event) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }

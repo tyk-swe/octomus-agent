@@ -2,11 +2,12 @@
   import Badge from './Badge.svelte';
   import DecisionCounts from './DecisionCounts.svelte';
   import { modeLabel, planningVerdict, taskOutcomeCounts } from './evidence';
-  import { bytesLabel, gb, relative, shortHash } from './format';
+  import { bytesLabel, gb, shortHash } from './format';
   import Icon, { type IconName } from './Icon.svelte';
+  import RelativeTime from './RelativeTime.svelte';
   import { sandboxVerdict } from './sandbox';
   import TaskList from './TaskList.svelte';
-  import { ACTIVE_STATUSES } from './types';
+  import { ACTIVE_STATUSES, ERROR_EVENT_KINDS } from './types';
   import type { CycleSummary, Snapshot } from './types';
 
   let {
@@ -167,9 +168,11 @@
             : 'The improvement loop'}
         </h2>
         <p>
-          {latestCycle
-            ? `Started ${relative(latestCycle.started_at)}${latestCycle.completed_at ? ` · planning finished ${relative(latestCycle.completed_at)}` : ''}`
-            : 'A thoughtful path from opportunity to pull request.'}
+          {#if latestCycle}Started <RelativeTime
+              value={latestCycle.started_at}
+            />{#if latestCycle.completed_at}{' · planning finished '}<RelativeTime
+                value={latestCycle.completed_at}
+              />{/if}{:else}A thoughtful path from opportunity to pull request.{/if}
         </p>
       </div>
     </div>
@@ -293,7 +296,7 @@
   {#if sandbox.mode === 'docker' && sandbox.self_test}
     {@const test = sandbox.self_test}
     <div class="sandbox-proof">
-      <span class="eyebrow">LAST SELF-TEST · {relative(test.at).toUpperCase()}</span>
+      <span class="eyebrow">LAST SELF-TEST · <RelativeTime value={test.at} /></span>
       {#if test.error !== null}<div class="notice error">
           <Icon name="alert" size={18} /><span
             >{test.error || 'The containment self-test did not complete.'}</span
@@ -372,10 +375,17 @@
     </div>
     <div class="activity-list">
       {#each data.events.slice(0, 6) as event}<div class="activity-item">
-          <span class={'activity-point ' + (event.kind === 'error' ? 'error-point' : '')}></span>
+          <span
+            class={'activity-point ' +
+              (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
+          ></span>
           <div>
             <p>{event.message}</p>
-            <small>{event.kind === 'error' ? 'Error · ' : ''}{relative(event.at)}</small>
+            <small
+              >{ERROR_EVENT_KINDS.includes(event.kind) ? 'Error · ' : ''}<RelativeTime
+                value={event.at}
+              /></small
+            >
           </div>
         </div>{:else}<div class="activity-item">
           <span class="activity-point"></span>
@@ -403,9 +413,9 @@
         {data.planning_capacity.remaining} remain · open-PR capacity {data.pr_capacity.owned_open ??
           '?'}/{data.pr_capacity.limit}{data.pr_capacity.reserved > 0
           ? ` + ${data.pr_capacity.reserved} reserved`
-          : ''}{data.pr_capacity.observed_at
-          ? ` · observed ${relative(data.pr_capacity.observed_at)}`
-          : ''}</small
+          : ''}{#if data.pr_capacity.observed_at}{' · observed '}<RelativeTime
+            value={data.pr_capacity.observed_at}
+          />{/if}</small
       >
     </div>
   </section>
@@ -416,16 +426,18 @@
       <span class="section-icon"><Icon name="activity" /></span>
       <h2>Operating limits and storage</h2>
       <span class="operating-gist"
-        >{data.storage
-          ? `Application storage ${gb(data.storage.application_bytes)} GB of ${gb(data.storage_limit)} GB admission limit · measured ${relative(data.storage.measured_at)}`
-          : 'Storage measurement pending.'}</span
+        >{#if data.storage}Application storage {gb(data.storage.application_bytes)} GB of {gb(
+            data.storage_limit
+          )} GB admission limit{' · measured '}<RelativeTime
+            value={data.storage.measured_at}
+          />{:else}Storage measurement pending.{/if}</span
       >
       <Icon name="chevron" size={15} />
     </summary>
     <div class="operating-summary muted">
       {#if data.storage}<p>
           Application storage: {gb(data.storage.application_bytes)} GB / {gb(data.storage_limit)} GB admission
-          limit. Measured {relative(data.storage.measured_at)}.
+          limit. Measured <RelativeTime value={data.storage.measured_at} />.
         </p>
         <p>
           Task workspaces: {gb(data.storage.task_bytes)} GB · Planning clones: {gb(

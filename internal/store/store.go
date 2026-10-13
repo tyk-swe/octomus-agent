@@ -125,7 +125,7 @@ func (s *Store) Close() error {
 }
 
 type ReadOnly struct {
-	Conn *sql.Conn
+	conn *sql.Conn
 	db   *sql.DB
 }
 
@@ -159,19 +159,19 @@ func openReadOnly(path, what string, plan schemaPlan) (*ReadOnly, error) {
 		db.Close()
 		return nil, err
 	}
-	return &ReadOnly{Conn: conn, db: db}, nil
+	return &ReadOnly{conn: conn, db: db}, nil
 }
 
 func (r *ReadOnly) Close() error {
-	err := r.Conn.Close()
+	err := r.conn.Close()
 	if closeErr := r.db.Close(); err == nil {
 		err = closeErr
 	}
 	return err
 }
 
-func (r *ReadOnly) Snapshot(fn func(c *sql.Conn) error) error {
-	return runTx(r.Conn, "BEGIN", fn)
+func (r *ReadOnly) snapshot(fn func(c *sql.Conn) error) error {
+	return runTx(r.conn, "BEGIN", fn)
 }
 
 func (s *Store) transaction(immediate bool, fn func(c *sql.Conn) error) error {
@@ -203,26 +203,38 @@ func runTx(c *sql.Conn, begin string, fn func(c *sql.Conn) error) error {
 	return nil
 }
 
-func (s *Store) Put(kind, id string, value any) error {
+func Put[T any](s *Store, key Key[T], value T) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return txPut(s.conn, kind, id, value)
+	return txPut(s.conn, key, value)
 }
 
 func (s *Store) SaveControl(control model.Control) error {
-	return s.Put("settings", "control", control)
+	return Put(s, ControlKey, control)
 }
 
-func (s *Store) ClearCancel(id string) error { return s.Put("cancel", id, nil) }
+func (s *Store) ClearCancel(id string) error { return Put(s, cancelMarkers.Key(id), nil) }
 
-func (s *Store) MarkCancel(id string) error { return s.Put("cancel", id, model.Now()) }
+func (s *Store) MarkCancel(id string) error {
+	return Put(s, cancelMarkers.Key(id), new(model.Now()))
+}
 
-// Marked reports whether a marker record exists and is not JSON null.
-func (s *Store) Marked(kind, id string) (bool, error) {
+func (s *Store) CancelMarked(id string) (bool, error) { return s.marked(cancelMarkers.Key(id)) }
+
+func (s *Store) MarkBaselineCancel(id string) error {
+	return Put(s, baselineCancelMarkers.Key(id), new(model.Now()))
+}
+
+func (s *Store) BaselineCancelMarked(id string) (bool, error) {
+	return s.marked(baselineCancelMarkers.Key(id))
+}
+
+// marked reports whether a marker record exists and is not JSON null.
+func (s *Store) marked(key Key[*string]) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var marked bool
-	err := s.conn.QueryRowContext(background, "SELECT data != 'null' FROM records WHERE kind=?1 AND id=?2", kind, id).Scan(&marked)
+	err := s.conn.QueryRowContext(background, "SELECT data != 'null' FROM records WHERE kind=?1 AND id=?2", key.kind, key.id).Scan(&marked)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -239,16 +251,16 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 		return err
 	}
 	return s.transaction(false, func(c *sql.Conn) error {
-		if err := txPut(c, "cycle", cycle.ID, cycle); err != nil {
+		if err := txPut(c, Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
 		for _, task := range tasks {
-			if err := txPut(c, "task", task.ID, task); err != nil {
+			if err := txPut(c, Tasks.Key(task.ID), task); err != nil {
 				return err
 			}
 		}
 		var control model.Control
-		hasControl, err := txGet(c, "settings", "control", &control)
+		hasControl, err := txGet(c, ControlKey, &control)
 		if err != nil {
 			return err
 		}
@@ -275,7 +287,7 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 			if decision.ID == "" {
 				return errors.New("Missing decision identity")
 			}
-			if err := txPut(c, "decision", decision.ID, decision); err != nil {
+			if err := txPut(c, Decisions.Key(decision.ID), decision); err != nil {
 				return err
 			}
 		}
@@ -307,7 +319,7 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 			}
 		}
 		if controlChanged {
-			return txPut(c, "settings", "control", control)
+			return txPut(c, ControlKey, control)
 		}
 		return nil
 	})
@@ -317,7 +329,7 @@ func (s *Store) AppendCycleSession(cycleID string, session model.Session) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var cycle model.Cycle
-	found, err := txGet(s.conn, "cycle", cycleID, &cycle)
+	found, err := txGet(s.conn, Cycles.Key(cycleID), &cycle)
 	if err != nil {
 		return err
 	}
@@ -330,30 +342,30 @@ func (s *Store) AppendCycleSession(cycleID string, session model.Session) error 
 		}
 	}
 	cycle.Sessions = append(cycle.Sessions, session.Clone())
-	return txPut(s.conn, "cycle", cycleID, cycle)
+	return txPut(s.conn, Cycles.Key(cycleID), cycle)
 }
 
 // Get returns the saved record, or nil when none exists.
-func Get[T any](s *Store, kind, id string) (*T, error) {
+func Get[T any](s *Store, key Key[T]) (*T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return RecordAt[T](s.conn, kind, id)
+	return recordAt(s.conn, key)
 }
 
-func List[T any](s *Store, kind string) ([]T, error) {
-	return listRecords[T](s, "SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC", kind)
+func List[T any](s *Store, kind Kind[T]) ([]T, error) {
+	return listRecords[T](s, "SELECT data FROM records WHERE kind=?1 ORDER BY rowid DESC", kind.name)
 }
 
-func RecordAt[T any](c *sql.Conn, kind, id string) (*T, error) {
+func recordAt[T any](c *sql.Conn, key Key[T]) (*T, error) {
 	var value T
-	found, err := txGet(c, kind, id, &value)
+	found, err := txGet(c, key, &value)
 	if err != nil || !found {
 		return nil, err
 	}
 	return &value, nil
 }
 
-func QueryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
+func queryRecords[T any](c *sql.Conn, query string, args ...any) ([]T, error) {
 	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
@@ -395,17 +407,17 @@ func scanAll[T any](rows *sql.Rows, fields func(*T) []any) ([]T, error) {
 func listRecords[T any](s *Store, query string, args ...any) ([]T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return QueryRecords[T](s.conn, query, args...)
+	return queryRecords[T](s.conn, query, args...)
 }
 
-func (s *Store) Event(entity, kind, message string) error {
+func (s *Store) Event(entity string, kind model.EventKind, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return txEvent(s.conn, entity, kind, message)
 }
 
-func txEvent(c *sql.Conn, entity, kind, message string) error {
-	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind, redact.Text(message))
+func txEvent(c *sql.Conn, entity string, kind model.EventKind, message string) error {
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind.String(), redact.Text(message))
 	return err
 }
 
@@ -420,7 +432,20 @@ func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) 
 	if err != nil {
 		return nil, err
 	}
-	return scanAll(rows, func(e *model.Event) []any { return []any{&e.ID, &e.At, &e.EntityID, &e.Kind, &e.Message} })
+	defer rows.Close()
+	events := []model.Event{}
+	for rows.Next() {
+		var e model.Event
+		var kind string
+		if err := rows.Scan(&e.ID, &e.At, &e.EntityID, &kind, &e.Message); err != nil {
+			return nil, err
+		}
+		if err := e.Kind.UnmarshalText([]byte(kind)); err != nil {
+			return nil, fmt.Errorf("Saved event %d has an unreadable kind: %w", e.ID, err)
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
 }
 
 func (s *Store) PruneEvents(retain int64) error {
@@ -472,24 +497,10 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 	})
 }
 
-// Admissions is the whole admission ledger in order, for the usage report.
-func Admissions(c *sql.Conn) ([]Admission, error) {
-	return QueryRecords[Admission](c, "SELECT data FROM admissions ORDER BY at,id")
-}
-
 // DaySessions is one day's durable session counter.
 type DaySessions struct {
 	Day      string
 	Sessions uint64
-}
-
-// DailySessions is every day's session counter in day order, for the usage report.
-func DailySessions(c *sql.Conn) ([]DaySessions, error) {
-	rows, err := c.QueryContext(background, "SELECT day,sessions FROM usage ORDER BY day")
-	if err != nil {
-		return nil, err
-	}
-	return scanAll(rows, func(day *DaySessions) []any { return []any{&day.Day, &day.Sessions} })
 }
 
 func sessionsOn(c *sql.Conn, day string) (int64, error) {
@@ -553,15 +564,15 @@ func (s *Store) CancelTask(id string) (bool, error) {
 
 func storedConfig(c *sql.Conn) (config.Config, error) {
 	cfg := config.Default()
-	if _, err := txGet(c, "settings", "config", &cfg); err != nil {
+	if _, err := txGet(c, ConfigKey, &cfg); err != nil {
 		return config.Config{}, err
 	}
 	return cfg, nil
 }
 
-func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
+func txGet[T any](c *sql.Conn, key Key[T], dst *T) (bool, error) {
 	var data string
-	err := c.QueryRowContext(background, "SELECT data FROM records WHERE kind=?1 AND id=?2", kind, id).Scan(&data)
+	err := c.QueryRowContext(background, "SELECT data FROM records WHERE kind=?1 AND id=?2", key.kind, key.id).Scan(&data)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -569,24 +580,24 @@ func txGet(c *sql.Conn, kind, id string, dst any) (bool, error) {
 		return false, err
 	}
 	if err := decodeJSON([]byte(data), dst); err != nil {
-		return true, fmt.Errorf("Saved %s %s is unreadable: %w", kind, id, err)
+		return true, fmt.Errorf("Saved %s %s is unreadable: %w", key.kind, key.id, err)
 	}
 	return true, nil
 }
 
-func txPut(c *sql.Conn, kind, id string, value any) error {
+func txPut[T any](c *sql.Conn, key Key[T], value T) error {
 	data, err := wirejson.Marshal(value)
 	if err != nil {
 		return err
 	}
 	_, err = c.ExecContext(background, `INSERT INTO records VALUES (?1,?2,?3)
-         ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data`, kind, id, string(data))
+         ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data`, key.kind, key.id, string(data))
 	return err
 }
 
 func updateLineageTask(c *sql.Conn, id string, check func(*model.Task) error) error {
 	var task model.Task
-	found, err := txGet(c, "task", id, &task)
+	found, err := txGet(c, Tasks.Key(id), &task)
 	if err != nil {
 		return err
 	}
@@ -599,7 +610,7 @@ func updateLineageTask(c *sql.Conn, id string, check func(*model.Task) error) er
 	if err := check(&task); err != nil {
 		return err
 	}
-	return txPut(c, "task", id, task)
+	return txPut(c, Tasks.Key(id), task)
 }
 
 func queryStrings(c *sql.Conn, query string, args ...any) ([]string, error) {
