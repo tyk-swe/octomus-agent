@@ -223,8 +223,8 @@
         <table>
           <thead>
             <tr
-              ><th>Tier</th><th>Tasks</th><th>Published</th><th>Admissions</th><th
-                >Admissions per task</th
+              ><th>Tier</th><th>Tasks created</th><th>Published</th><th>Admissions</th><th
+                >Admissions per created task</th
               ></tr
             >
           </thead>
@@ -233,7 +233,7 @@
               <tr
                 ><td>{tier.tier}</td><td>{tier.tasks}</td><td>{tier.published}</td><td
                   >{tier.admissions}</td
-                ><td>{per(tier.admissions, tier.tasks)}</td></tr
+                ><td>{per(tier.created_task_admissions, tier.tasks)}</td></tr
               >
             {/each}
           </tbody>

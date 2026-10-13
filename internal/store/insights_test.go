@@ -201,3 +201,33 @@ func TestInsightsUTCWindowAcrossDST(t *testing.T) {
 		t.Fatalf("cycle totals disagree with the UTC window: %+v", insights)
 	}
 }
+
+func TestInsightsTierAdmissionsUseCreatedTaskCohort(t *testing.T) {
+	t.Parallel()
+	path := statePath(t)
+	s := open(t, path)
+	saveConfig(t, s, func(c *config.Config) { c.MaxSessionsPerDay = 100 })
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	for _, task := range []model.Task{
+		insightTask("old-S", "cycle", "2026-09-01T10:00:00Z", model.StatusExecuting, "features", "S", nil),
+		insightTask("old-M", "cycle", "2026-09-01T10:00:00Z", model.StatusExecuting, "features", "M", nil),
+		insightTask("new-S", "cycle", "2026-10-12T10:00:00Z", model.StatusQueued, "features", "S", nil),
+	} {
+		must(t, store.Put(s, store.Tasks.Key(task.ID), task))
+	}
+	for _, taskID := range []string{"old-S", "old-S", "old-S", "old-S", "old-S", "old-M", "new-S"} {
+		must(t, s.ReserveSession(0, insightAdmission("2026-10-13T10:00:00Z", taskID)))
+	}
+	must(t, s.ReserveSession(0, insightAdmission("2026-09-01T10:00:00Z", "old-S")))
+	for _, days := range []int{7, 30} {
+		insights, err := s.Insights(now, days)
+		must(t, err)
+		small, medium := insights.Tiers[1], insights.Tiers[2]
+		if small.Tasks != 1 || small.Admissions != 6 || small.CreatedTaskAdmissions != 1 {
+			t.Fatalf("%d-day S cohort: %+v", days, small)
+		}
+		if medium.Tasks != 0 || medium.Admissions != 1 || medium.CreatedTaskAdmissions != 0 {
+			t.Fatalf("%d-day M cohort: %+v", days, medium)
+		}
+	}
+}

@@ -32,10 +32,11 @@ type CategoryInsight struct {
 }
 
 type TierInsight struct {
-	Tier       string `json:"tier"`
-	Tasks      uint64 `json:"tasks"`
-	Published  uint64 `json:"published"`
-	Admissions uint64 `json:"admissions"`
+	Tier                  string `json:"tier"`
+	Tasks                 uint64 `json:"tasks"`
+	Published             uint64 `json:"published"`
+	Admissions            uint64 `json:"admissions"`
+	CreatedTaskAdmissions uint64 `json:"created_task_admissions"`
 }
 
 type Insights struct {
@@ -52,7 +53,7 @@ type Insights struct {
 	Measurement string            `json:"measurement"`
 }
 
-const insightMeasurement = "Admissions reserve budget before work starts; they include failed starts and retries and are not completed turns or billed usage. Task outcomes are the current status of tasks created in the window. Proposal decisions count execution cycles started in the window. Pull-request states are the latest observation, not live GitHub state."
+const insightMeasurement = "Admissions reserve budget before work starts; they include failed starts and retries and are not completed turns or billed usage. Task outcomes are the current status of tasks created in the window. Admissions per created task count only window admissions for those tasks; total admissions also include older tasks. Proposal decisions count execution cycles started in the window. Pull-request states are the latest observation, not live GitHub state."
 
 // Insights reads existing projections into one read-only window summary; every query runs in a single read transaction.
 func (s *Store) Insights(now time.Time, days int) (Insights, error) {
@@ -235,14 +236,15 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 		}); err != nil {
 			return err
 		}
-		if err := each("SELECT json_extract(m.summary,'$.tier'), count(*) FROM admissions a JOIN record_meta m ON m.kind='task' AND m.id=json_extract(a.data,'$.task_id') WHERE a.day >= ?1 GROUP BY 1", func(rows *sql.Rows) error {
+		if err := each("SELECT json_extract(m.summary,'$.tier'), count(*), sum(CASE WHEN json_extract(m.summary,'$.created_at') >= ?1 THEN 1 ELSE 0 END) FROM admissions a JOIN record_meta m ON m.kind='task' AND m.id=json_extract(a.data,'$.task_id') WHERE a.day >= ?1 GROUP BY 1", func(rows *sql.Rows) error {
 			var tier string
-			var count uint64
-			if err := rows.Scan(&tier, &count); err != nil {
+			var count, createdTaskCount uint64
+			if err := rows.Scan(&tier, &count, &createdTaskCount); err != nil {
 				return err
 			}
 			if bucket, ok := tiers[tier]; ok {
 				bucket.Admissions += count
+				bucket.CreatedTaskAdmissions += createdTaskCount
 			}
 			return nil
 		}); err != nil {

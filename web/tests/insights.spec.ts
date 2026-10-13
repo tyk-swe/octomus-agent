@@ -10,6 +10,20 @@ test('insights reads seeded usage and stays readable when refresh fails @respons
 }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  await page.route('**/api/insights**', async (route) => {
+    const response = await route.fetch();
+    const insights = await response.json();
+    // Older tasks add admissions without joining the created-task cohort.
+    Object.assign(
+      insights.tiers.find((tier: { tier: string }) => tier.tier === 'S'),
+      {
+        tasks: 1,
+        admissions: 6,
+        created_task_admissions: 1
+      }
+    );
+    await route.fulfill({ json: insights });
+  });
   await login(page);
   await openNavigation(page, 'Insights', isMobile);
   await expect(page.getByRole('heading', { name: 'What the work adds up to.' })).toBeVisible();
@@ -27,6 +41,10 @@ test('insights reads seeded usage and stays readable when refresh fails @respons
     .locator('tr')
     .filter({ has: page.getByText('documentation', { exact: true }) });
   await expect(documentationRow.locator('td').nth(6)).toHaveText('1');
+  const smallTier = page.locator('tr').filter({ has: page.getByText('S', { exact: true }) });
+  await expect(smallTier.locator('td').nth(1)).toHaveText('1');
+  await expect(smallTier.locator('td').nth(3)).toHaveText('6');
+  await expect(smallTier.locator('td').nth(4)).toHaveText('1.0');
   await expect(page.locator('[aria-label="History pagination"]')).toBeHidden();
 
   const week = page.waitForRequest('**/api/insights?days=7');

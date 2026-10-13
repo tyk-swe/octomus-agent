@@ -903,6 +903,7 @@ export type TierInsight = {
   tasks: number;
   published: number;
   admissions: number;
+  created_task_admissions: number;
 };
 export type TransformedField = {
   field: string;

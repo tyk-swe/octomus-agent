@@ -36,3 +36,6 @@ include failed starts and retries and are not completed turns or billed usage; t
 outcomes are the current status of tasks created in the window; proposal decisions count
 execution cycles started in the window; and pull-request states are the latest
 observation, not live GitHub state.
+
+Admissions per created task uses only window admissions for tasks created in that
+window. Total tier admissions also include work and retries on older tasks.
