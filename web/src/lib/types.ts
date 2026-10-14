@@ -630,6 +630,7 @@ export type RepairProgress = {
 export type RequestAction = 'withdraw';
 export type RequestAssessment = {
   cycle_id: string;
+  proposal_id: string | null;
   mode: CycleMode;
   decision: string;
   reason: string;

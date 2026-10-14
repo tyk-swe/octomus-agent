@@ -234,8 +234,40 @@ func TestOperatorRequestIneligibleTarget(t *testing.T) {
 	saved := savedRequest(t, f, r.ID)
 	if saved.Status != model.RequestRejected || saved.Assessment == nil ||
 		saved.Assessment.Decision != model.DecisionRejected ||
+		saved.Assessment.ProposalID != nil ||
 		!strings.Contains(saved.Assessment.Reason, "no longer an owned open pull request or the default branch") {
 		t.Fatalf("ineligible %+v", saved)
+	}
+}
+
+func TestRequestSettlementProposalFocus(t *testing.T) {
+	for _, mode := range []model.CycleMode{model.CycleModeExecution, model.CycleModeAudit} {
+		t.Run(string(mode), func(t *testing.T) {
+			seeded := model.OperatorRequest{ID: "seeded", Status: model.RequestPending}
+			dismissed := model.OperatorRequest{ID: "dismissed", Status: model.RequestPending, Target: "octomus/closed"}
+			cycle := model.Cycle{ID: "cycle", Mode: mode, Proposals: []model.Proposal{
+				{ID: seeded.ProposalID(), Decision: model.DecisionDeferred, Reason: "Needs evidence"},
+			}}
+			updates := requestSettlements(cycle, []model.OperatorRequest{seeded}, []model.OperatorRequest{dismissed}, nil, model.Now())
+			if len(updates) != 2 {
+				t.Fatalf("settlements: %+v", updates)
+			}
+			assessment := updates[0].Next.Assessment
+			if assessment == nil || assessment.ProposalID == nil || *assessment.ProposalID != seeded.ProposalID() {
+				t.Fatalf("seeded request lost proposal focus: %+v", assessment)
+			}
+			assessment = updates[1].Next.Assessment
+			if assessment == nil || assessment.ProposalID != nil || assessment.Decision != model.DecisionRejected {
+				t.Fatalf("dismissed request has invalid proposal focus: %+v", assessment)
+			}
+			wantStatus := model.RequestRejected
+			if mode == model.CycleModeAudit {
+				wantStatus = model.RequestPending
+			}
+			if updates[1].Next.Status != wantStatus {
+				t.Fatalf("dismissed status = %s, want %s", updates[1].Next.Status, wantStatus)
+			}
+		})
 	}
 }
 

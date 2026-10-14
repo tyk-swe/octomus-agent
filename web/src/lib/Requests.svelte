@@ -218,7 +218,8 @@
               <p>{request.assessment.reason}</p>
               <button
                 class="text-button"
-                onclick={() => oninspectrun(request.assessment!.cycle_id, `request-${request.id}`)}
+                onclick={() =>
+                  oninspectrun(request.assessment!.cycle_id, request.assessment!.proposal_id)}
                 >Inspect run<Icon name="arrow" size={15} /></button
               >
             </div>
@@ -259,7 +260,8 @@
               <p>{request.assessment.reason}</p>
               <button
                 class="text-button"
-                onclick={() => oninspectrun(request.assessment!.cycle_id, `request-${request.id}`)}
+                onclick={() =>
+                  oninspectrun(request.assessment!.cycle_id, request.assessment!.proposal_id)}
                 >Inspect run<Icon name="arrow" size={15} /></button
               >
             </div>

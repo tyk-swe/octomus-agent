@@ -22,11 +22,13 @@ func (s *RequestStatus) UnmarshalText(text []byte) error {
 // RequestAssessment is the latest planning outcome recorded for a request. Audit
 // cycles record an assessment without changing the request's status.
 type RequestAssessment struct {
-	CycleID  string    `json:"cycle_id"`
-	Mode     CycleMode `json:"mode"`
-	Decision string    `json:"decision"`
-	Reason   string    `json:"reason"`
-	At       string    `json:"at"`
+	CycleID string `json:"cycle_id"`
+	// ProposalID is absent when planning dismisses the request before seeding it.
+	ProposalID *string   `json:"proposal_id" wire:"default"`
+	Mode       CycleMode `json:"mode"`
+	Decision   string    `json:"decision"`
+	Reason     string    `json:"reason"`
+	At         string    `json:"at"`
 }
 
 func (v *RequestAssessment) UnmarshalJSON(data []byte) error {

@@ -1,5 +1,13 @@
 import { expect } from '@playwright/test';
-import { login, nextPoll, openNavigation, patchState, test } from './synthetic';
+import {
+  login,
+  nextPoll,
+  openNavigation,
+  patchState,
+  proposalEvidence,
+  runEvidence,
+  test
+} from './synthetic';
 
 type RequestRecord = {
   id: string;
@@ -12,6 +20,7 @@ type RequestRecord = {
   updated_at: string;
   assessment: {
     cycle_id: string;
+    proposal_id: string | null;
     mode: string;
     decision: string;
     reason: string;
@@ -51,6 +60,7 @@ test('operator requests collect, guard and settle work @responsive', async ({ pa
         task_id: 'task-1',
         assessment: {
           cycle_id: 'cycle-1',
+          proposal_id: 'request-request-0',
           mode: 'execution',
           decision: 'accepted',
           reason: 'Repository evidence supports the operator request.',
@@ -172,13 +182,15 @@ test('operator requests collect, guard and settle work @responsive', async ({ pa
   await page.locator('#request-title').fill('New fixture feature');
   await page.locator('#request-description').fill('Create the next fixture output.');
   await page.getByRole('button', { name: 'Request work' }).click();
-  expect(createBodies).toEqual([
-    {
-      title: 'New fixture feature',
-      description: 'Create the next fixture output.',
-      target: 'main'
-    }
-  ]);
+  await expect
+    .poll(() => createBodies)
+    .toEqual([
+      {
+        title: 'New fixture feature',
+        description: 'Create the next fixture output.',
+        target: 'main'
+      }
+    ]);
   await expect(
     page.getByText('Request saved. The next planning cycle will assess it.')
   ).toBeVisible();
@@ -194,7 +206,7 @@ test('operator requests collect, guard and settle work @responsive', async ({ pa
   await nextPoll(page);
   await expect(withdraw).toBeEnabled();
   await withdraw.click();
-  expect(actions).toEqual(['request-1/withdraw']);
+  await expect.poll(() => actions).toEqual(['request-1/withdraw']);
 
   const taskCall = page.waitForRequest('**/api/tasks/task-1');
   await page.getByRole('button', { name: 'Open task' }).click();
@@ -210,4 +222,75 @@ test('operator requests collect, guard and settle work @responsive', async ({ pa
   await openNavigation(page, 'Proposals', isMobile);
   await expect(page.getByText('Operator request', { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('request assessments inspect seeded proposals and dismissed cycles @responsive', async ({
+  page,
+  isMobile
+}) => {
+  const assessment = (mode: string, proposal: string | null) => ({
+    cycle_id: `${mode}-cycle`,
+    proposal_id: proposal,
+    mode,
+    decision: 'rejected',
+    reason: 'The target pull request is closed.',
+    at: now
+  });
+  await page.route('**/api/requests', async (route) => {
+    await route.fulfill({
+      json: {
+        repository: 'fixture/project',
+        default_branch: 'main',
+        pending: [
+          record({
+            id: 'audit-dismissed',
+            title: 'Audit dismissal',
+            assessment: assessment('audit', null)
+          }),
+          record({
+            id: 'seeded',
+            title: 'Seeded assessment',
+            assessment: assessment('audit', 'request-seeded')
+          })
+        ],
+        recent: [
+          record({
+            id: 'execution-dismissed',
+            title: 'Execution dismissal',
+            status: 'rejected',
+            assessment: assessment('execution', null)
+          })
+        ],
+        pending_limit: 20,
+        seed_limit: 10,
+        targets: []
+      }
+    });
+  });
+  await page.route('**/api/cycles/*/evidence', async (route) => {
+    const mode = route.request().url().includes('audit-cycle') ? 'audit' : 'execution';
+    await route.fulfill({
+      json: runEvidence(
+        { proposals: [proposalEvidence('unrelated'), proposalEvidence('request-seeded')] },
+        { id: `${mode}-cycle`, mode }
+      )
+    });
+  });
+  await login(page);
+  await openNavigation(page, 'Requests', isMobile);
+  for (const [title, proposal] of [
+    ['Audit dismissal', 'unrelated'],
+    ['Execution dismissal', 'unrelated'],
+    ['Seeded assessment', 'request-seeded']
+  ]) {
+    await page
+      .locator('article')
+      .filter({ has: page.getByRole('heading', { name: title, exact: true }) })
+      .getByRole('button', { name: 'Inspect run' })
+      .click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByLabel('Proposal', { exact: true })).toHaveValue(proposal);
+    await expect(dialog.getByText(/The selected proposal .* is not recorded/)).toHaveCount(0);
+    await page.getByRole('button', { name: 'Close run evidence' }).click();
+  }
 });

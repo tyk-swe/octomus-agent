@@ -630,6 +630,9 @@ func requestSettlements(cycle model.Cycle, seeded, dismissed []model.OperatorReq
 		next := r.Clone()
 		next.UpdatedAt = now
 		next.Assessment = &model.RequestAssessment{CycleID: cycle.ID, Mode: cycle.Mode, Decision: decision, Reason: redact.Text(reason), At: now}
+		if p, ok := decisions[r.ProposalID()]; ok {
+			next.Assessment.ProposalID = &p.ID
+		}
 		if cycle.Mode == model.CycleModeExecution {
 			switch decision {
 			case model.DecisionAccepted:

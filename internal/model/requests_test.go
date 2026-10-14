@@ -24,6 +24,15 @@ func TestOperatorRequestStrictDecode(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"cycle_id":"c","mode":"audit","decision":"deferred","reason":"r","at":"t","extra":1}`), &assessment); err != nil {
 		t.Fatalf("forward-compatible assessment decode: %v", err)
 	}
+	if assessment.ProposalID != nil {
+		t.Fatalf("legacy assessment has proposal focus: %+v", assessment)
+	}
+	proposalID := request.ProposalID()
+	assessment.ProposalID = &proposalID
+	cloned := assessment.Clone()
+	if cloned.ProposalID == nil || *cloned.ProposalID != proposalID {
+		t.Fatalf("assessment lost proposal focus: %+v", cloned)
+	}
 	var status RequestStatus
 	if err := json.Unmarshal([]byte(`"bogus"`), &status); err == nil || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("unknown status: %v", err)
