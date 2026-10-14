@@ -209,7 +209,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan.RunID = str("run-1")
 	plan.Proposals[0].Reconsiders = []string{"missing-task-id"}
 	plan.DecisionMemory = []model.DecisionRecord{{ID: "decision-1", Repository: "Fixture/Project"}}
-	if err := s.CommitPlan(t.Context(), plan, []model.Task{queued}); err == nil {
+	if err := s.CommitPlan(t.Context(), plan, []model.Task{queued}, nil); err == nil {
 		t.Fatal("plan with a missing rediscovery target committed")
 	}
 	assertEmpty := func(taskID string) {
@@ -236,7 +236,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan = cycleFor(superseding)
 	plan.ID = "cycle-1"
 	plan.RunID = str("run-1")
-	if err := s.CommitPlan(t.Context(), plan, []model.Task{superseding}); err == nil {
+	if err := s.CommitPlan(t.Context(), plan, []model.Task{superseding}, nil); err == nil {
 		t.Fatal("plan with a missing superseded task committed")
 	}
 	assertEmpty(superseding.ID)
@@ -246,7 +246,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	plan.ID = "cycle-1"
 	plan.RunID = str("run-1")
 	plan.DecisionMemory = []model.DecisionRecord{{ID: "decision-1", Repository: "Fixture/Project"}}
-	must(t, s.CommitPlan(t.Context(), plan, []model.Task{valid}))
+	must(t, s.CommitPlan(t.Context(), plan, []model.Task{valid}, nil))
 	saved, err := store.Get(s, store.ControlKey)
 	must(t, err)
 	if saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting || saved.IdleStreak != 0 {
@@ -257,7 +257,7 @@ func TestCommitPlanAtomicity(t *testing.T) {
 	}
 	empty := cycleFor(valid)
 	empty.ID = "cycle-2"
-	must(t, s.CommitPlan(t.Context(), empty, nil))
+	must(t, s.CommitPlan(t.Context(), empty, nil, nil))
 	saved, err = store.Get(s, store.ControlKey)
 	must(t, err)
 	if saved.IdleStreak != 1 || saved.Batch == nil || saved.Batch.Phase != model.BatchPhaseExecuting {

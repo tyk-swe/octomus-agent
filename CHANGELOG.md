@@ -7,6 +7,19 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Insights view: `GET /api/insights?days=7|30|90` and a dashboard page summarising daily
+  admissions (planning, task and unattributed), cycle and task outcomes, per-category
+  decisions, per-tier admissions and delivered-PR states over a rolling window.
+- Operator work requests: the dashboard's Requests view files title/description/target
+  notes (at most 20 pending per repository). Up to 10 seed the next execution or audit
+  cycle as `request-<id>` candidates and pass both adversarial reviewers and consolidation
+  under unchanged rules; the plan transaction settles them (accepted links the new task,
+  rejected is final, deferred stays pending, audits only record an assessment). Withdraw
+  is refused while planning runs.
+- `planning_guidance` setting: an optional free-text operator preference (up to 4,096 bytes)
+  shown to grounding, discovery, proposal reviewers and consolidation as a quoted note that
+  never authorizes skipping review, verification, eligibility or limits, and never reaches
+  execution, code-review or repair prompts.
 - Dashboard conveniences: the current view lives in the URL hash (`#queue`, `#proposals`,
   `#prs`, `#settings`), so Back/Forward switch views and reconnecting after a reload or an
   expired session returns to it; the browser tab title names the view and the count of

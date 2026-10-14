@@ -130,6 +130,17 @@ export type Capability = {
   reason: string;
 };
 export type CapacityStatus = 'ready' | 'daily_exhausted' | 'limit_too_low';
+export type CategoryInsight = {
+  category: string;
+  accepted: number;
+  rejected: number;
+  deferred: number;
+  tasks: number;
+  published: number;
+  in_progress: number;
+  unresolved: number;
+  cancelled: number;
+};
 export type ChecksState = 'not_configured' | 'recorded';
 export type CommandEvidence = {
   state: ChecksState;
@@ -157,6 +168,7 @@ export type Config = {
   tiers: Record<string, Route>;
   repair_route: Route;
   categories: string[];
+  planning_guidance: string;
   delivery_mode: DeliveryMode;
   auto_merge_max_lines: number;
   auto_merge_max_files: number;
@@ -315,7 +327,7 @@ export type Event = {
   kind: EventKind;
   message: string;
 };
-export type EventKind = 'attempt_policy' | 'automerge' | 'baseline' | 'baseline_error' | 'cleanup_error' | 'configuration' | 'error' | 'grounding' | 'housekeeping_error' | 'interrupted' | 'maintenance' | 'operator' | 'planning_capacity' | 'planning_error' | 'recovery' | 'recovery_error' | 'run_complete' | 'sandbox_evidence' | 'session_progress' | 'session_started' | 'status' | 'upgrade' | 'worker_error';
+export type EventKind = 'attempt_policy' | 'automerge' | 'baseline' | 'baseline_error' | 'cleanup_error' | 'configuration' | 'error' | 'grounding' | 'housekeeping_error' | 'interrupted' | 'maintenance' | 'operator' | 'planning_capacity' | 'planning_error' | 'recovery' | 'recovery_error' | 'run_complete' | 'sandbox_evidence' | 'session_progress' | 'session_started' | 'status' | 'upgrade' | 'worker_error' | 'request';
 export type EvidenceRevisions = {
   source: string;
   comparison_base: string | null;
@@ -365,6 +377,28 @@ export type HealthResponse = {
   ok: boolean;
   version: string;
 };
+export type InsightDay = {
+  day: string;
+  admissions: number;
+  planning_admissions: number;
+  task_admissions: number;
+  unattributed_admissions: number;
+  cycles_started: number;
+  tasks_created: number;
+};
+export type Insights = {
+  days: number;
+  since: string;
+  until: string;
+  generated_at: string;
+  daily: InsightDay[];
+  cycles: Record<string, number>;
+  tasks: Record<string, number>;
+  categories: CategoryInsight[];
+  tiers: TierInsight[];
+  prs: Record<string, number>;
+  measurement: string;
+};
 export type MaintenanceAssessment = {
   qualifies: boolean;
   manual_merge_required: boolean;
@@ -403,6 +437,18 @@ export type OperatingMode = 'paused' | 'run_once' | 'continuous';
 export type OperatingPolicy = {
   max_sessions_per_day: number;
   max_workspace_bytes: number;
+};
+export type OperatorRequest = {
+  id: string;
+  repository: string;
+  title: string;
+  description: string;
+  target: string;
+  status: RequestStatus;
+  created_at: string;
+  updated_at: string;
+  assessment: RequestAssessment | null;
+  task_id: string | null;
 };
 export type PR = {
   number: number;
@@ -581,6 +627,30 @@ export type RepairProgress = {
   no_progress_rounds: number;
   awaiting_review: boolean;
 };
+export type RequestAction = 'withdraw';
+export type RequestAssessment = {
+  cycle_id: string;
+  proposal_id: string | null;
+  mode: CycleMode;
+  decision: string;
+  reason: string;
+  at: string;
+};
+export type RequestStatus = 'pending' | 'accepted' | 'rejected' | 'withdrawn';
+export type RequestTarget = {
+  branch: string;
+  number: number;
+  title: string;
+};
+export type RequestsView = {
+  repository: string;
+  default_branch: string;
+  pending: OperatorRequest[];
+  recent: OperatorRequest[];
+  pending_limit: number;
+  seed_limit: number;
+  targets: RequestTarget[];
+};
 export type Review = {
   completed: boolean;
   summary: string;
@@ -737,6 +807,7 @@ export type Snapshot = {
   storage: StorageUsage | null;
   planning_capacity: PlanningCapacity;
   pr_capacity: PRCapacity;
+  pending_requests: number;
   sandbox: SandboxPosture;
 };
 export type StorageUsage = {
@@ -828,6 +899,13 @@ export type TaskRow = {
   superseded_by: string[];
 };
 export type TaskStatus = 'queued' | 'executing' | 'reviewing' | 'repairing' | 'verifying' | 'publishing' | 'published' | 'blocked' | 'failed' | 'cancelled';
+export type TierInsight = {
+  tier: string;
+  tasks: number;
+  published: number;
+  admissions: number;
+  created_task_admissions: number;
+};
 export type TransformedField = {
   field: string;
   kinds: ('redacted' | 'shortened')[];

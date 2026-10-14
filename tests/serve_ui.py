@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from harness import wait_service_ready
 
@@ -74,6 +74,20 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     broker_info = {'instance_id': 'synthetic-browser-broker', 'version': '0.1.0', 'docker_version': '29.0.0', 'api_version': '1.51', 'image': 'octomus-sandbox:local', 'image_id': 'sha256:' + 'f' * 64, 'image_digests': [], 'runtime': '', 'runners': {'codex': 'codex-cli 0.153.4', 'opencode': '1.18.30'}, 'limits': {'nano_cpus': 2000000000, 'memory_bytes': 4294967296, 'pids': 1024, 'tmpfs_bytes': 1073741824, 'max_sandboxes': 12, 'max_seconds': 21600}, 'networks': {'runner': 'octomus-sandbox-runner', 'verify': 'octomus-sandbox-verify'}, 'egress': True, 'gateway': {'instance_id': 'synthetic-egress-gateway', 'policy_fingerprint': 'a' * 64}, 'live': 0}
     egress_hosts = {'model': ['chatgpt.com', 'auth.openai.com', 'api.openai.com'], 'build': ['proxy.golang.org', 'registry.npmjs.org']}
     put('settings', 'sandbox_self_test', {'at': now, 'passed': True, 'checks': [{'id': i, 'label': label, 'passed': True, 'detail': detail} for i, label, detail in checks], 'kernel': 'synthetic', 'image_id': broker_info['image_id'], 'runtime': broker_info['runtime'], 'posture_fingerprint': posture_fingerprint(broker_info, egress_hosts), 'error': None})
+    # Insights seed on past days only: today's session budget must stay untouched.
+    def admission(identity, at, task_id=None, role='discovery', cycle='cycle-1'):
+        record = {'id': identity, 'at': at, 'cycle_id': cycle, 'task_id': task_id, 'role': role, 'route': {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}}
+        db.execute('INSERT INTO admissions(id,at,day,data) VALUES (?,?,?,?)', (identity, at, at[:10], json.dumps(record)))
+        db.execute('INSERT INTO usage(day,sessions) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1', (at[:10],))
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    three_days = (datetime.now(timezone.utc) - timedelta(days=3)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    for index in range(4):
+        admission(f'admission-planning-{index}', yesterday, role='discovery' if index % 2 else 'orchestrator')
+    for index in range(2):
+        admission(f'admission-task-{index}', yesterday, task_id='task-reviewed', role='executor')
+    admission('admission-early-planning', three_days)
+    admission('admission-early-task', three_days, task_id='task-blocked', role='repair')
+    db.execute("INSERT INTO usage(day,sessions) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1", (three_days[:10],))
     db.commit()
     db.close()
 

@@ -210,6 +210,36 @@ def audit():
         assert json.loads(diagnostic.stdout)['mode'] == 'audit'
 
 
+def request():
+    """An operator work request is seeded into planning, accepted with a linked task, while a withdrawn request never enters the cycle."""
+    with fixture_service('octomus-request-') as (root, service):
+        service.configure(routes(), start=False)
+        first = service.request('/requests', 'POST', {
+            'title': 'Complete the fixture feature',
+            'description': 'Create feature.txt with fixed output and verify its contents.',
+            'target': 'main',
+        })
+        second = service.request('/requests', 'POST', {
+            'title': 'Withdrawn idea',
+            'description': 'Do not do this.',
+            'target': 'main',
+        })
+        code, body = service.expect(f'/requests/{second["id"]}/withdraw', 'POST')
+        assert code == 200, (code, body)
+        service.request('/control/cycle', 'POST')
+        task = service.wait(service.terminal_task, 'requested task delivery')
+        assert task['status'] == 'published', task['error']
+        assert task['proposal']['id'] == 'request-' + first['id'], task['proposal']
+        view = service.request('/requests')
+        recent = {entry['id']: entry for entry in view['recent']}
+        assert view['pending'] == []
+        assert recent[first['id']]['status'] == 'accepted' and recent[first['id']]['task_id'] == task['id']
+        assert recent[first['id']]['assessment']['decision'] == 'accepted' and recent[first['id']]['assessment']['mode'] == 'execution'
+        assert recent[second['id']]['status'] == 'withdrawn' and recent[second['id']]['task_id'] is None
+        cycle = service.request('/cycles/' + task['cycle_id'])
+        assert [p['id'] for p in cycle['proposals'] if p['id'].startswith('request-')] == ['request-' + first['id']]
+
+
 def chain():
     """Three dependent tasks land on one existing PR in order; archival, restarts and a repeat plan change nothing on the remote.
 
@@ -737,6 +767,7 @@ SCENARIOS = [
     ('maintenance-destination', maintenance_destination),
     ('maintenance-without-destination', maintenance_without_destination),
     ('chain', chain),
+    ('request', request),
     ('interrupt-publication', interrupt_publication),
     ('normal-mixed', functools.partial(normal, 'opencode', planning='codex', reviewer='codex')),
     ('normal-opencode', functools.partial(normal, 'opencode')),

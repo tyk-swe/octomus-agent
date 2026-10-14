@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -525,7 +526,7 @@ func TestCommitTasksQueuesAccepted(t *testing.T) {
 		Grounding: &model.Grounding{Revision: "main-head", PRs: []model.PullRequest{pr}},
 		Proposals: []model.Proposal{first, second, rejected, fresh}, Assessments: []any{}, Sessions: []model.Session{},
 	}
-	if err := app.commitTasks(cfg, &cycle); err != nil {
+	if err := app.commitTasks(cfg, &cycle, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if cycle.Status != model.CycleCompleted || cycle.CompletedAt == nil {
@@ -605,7 +606,7 @@ func TestCommitTasksIdleWithoutWork(t *testing.T) {
 		Grounding: &model.Grounding{Revision: "main-head"},
 		Proposals: []model.Proposal{rejected}, Assessments: []any{}, Sessions: []model.Session{},
 	}
-	if err := app.commitTasks(cfg, &cycle); err != nil {
+	if err := app.commitTasks(cfg, &cycle, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if cycle.Status != model.CycleIdle || cycle.CompletedAt == nil {
@@ -648,7 +649,7 @@ func TestDiscoveryAgentBound(t *testing.T) {
 	cfg.DiscoveryAgents = scopes + 1
 	cycle := model.Cycle{ID: model.ID(), Mode: model.CycleModeAudit, Grounding: &model.Grounding{Revision: "revision"}}
 	want := fmt.Sprintf("Discovery supports at most %d agents", scopes)
-	if err := app.discover(context.Background(), cfg, &cycle, "ground", "{}"); err == nil || err.Error() != want {
+	if err := app.discover(context.Background(), cfg, &cycle, "ground", "{}", false); err == nil || err.Error() != want {
 		t.Fatalf("discover with %d agents = %v; want %q", cfg.DiscoveryAgents, err, want)
 	}
 	if len(cycle.Sessions) != 0 || len(cycle.Proposals) != 0 {
@@ -689,6 +690,80 @@ func TestAdmissionBudgetIsAtomic(t *testing.T) {
 	}
 	if capacity, err := state.PlanningCapacity(time.Now()); err != nil || capacity.Used != 5 {
 		t.Fatalf("durable usage = %+v, %v; want 5 used", capacity, err)
+	}
+}
+
+func TestPlanningGuidanceReachesPlanningPrompts(t *testing.T) {
+	t.Parallel()
+	guidance := "Prioritise test coverage in internal/store; avoid changes under web/. marker-guidance-7"
+	f := newFixture(t)
+	f.configure(t, func(c *config.Config) { c.PlanningGuidance = guidance })
+	completePlan(t, f).queue(f)
+	app := f.pausedApp(t)
+	cycleID, err := app.startAudit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle := waitCycle(t, app, cycleID)
+	assertPlanningPass(t, f, cycle)
+	roleOf := map[string]string{}
+	for _, session := range cycle.Sessions {
+		roleOf[session.ID] = session.Role
+	}
+	seen := map[string]bool{}
+	quoted := strconv.Quote(guidance)
+	for _, turn := range f.planningTurns() {
+		if !strings.Contains(turn.Prompt, "Operator planning guidance") || !strings.Contains(turn.Prompt, quoted) {
+			t.Fatalf("planning role %s did not receive the quoted operator guidance: %s", roleOf[turn.Session], turn.Prompt)
+		}
+		seen[roleOf[turn.Session]] = true
+	}
+	want := append([]string{"grounding", "consolidation"}, model.ReviewerSlots()...)
+	for i := uint64(0); i < f.cfg.DiscoveryAgents; i++ {
+		want = append(want, fmt.Sprintf("discovery-%d", i))
+	}
+	for _, role := range want {
+		if !seen[role] {
+			t.Fatalf("no planning turn observed for %s", role)
+		}
+	}
+}
+
+func TestBlankPlanningGuidanceAddsNoOperatorNote(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	completePlan(t, f).queue(f)
+	app := f.pausedApp(t)
+	cycleID, err := app.startAudit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPlanningPass(t, f, waitCycle(t, app, cycleID))
+	for _, turn := range f.planningTurns() {
+		if strings.Contains(turn.Prompt, "Operator planning guidance") {
+			t.Fatalf("blank planning guidance reached planning session %s", turn.Session)
+		}
+	}
+}
+
+func TestPlanningGuidanceStaysOutOfTaskPrompts(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(t.TempDir())
+	cfg.PlanningGuidance = "marker-guidance-7: prioritise internal/store"
+	task := queuedTask(cfg, "guided-task", cfg.DefaultBranch, cfg.BranchPrefix+"guided-task")
+	prompts := map[string]string{
+		"executor": executorPrompt(&task, cfg),
+		"review":   reviewPrompt(&task, "revision", changeSet{}),
+	}
+	repair, err := repairPrompt(&task, cfg, model.Review{}, []string{"go test failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts["repair"] = repair
+	for name, prompt := range prompts {
+		if strings.Contains(prompt, "Operator planning guidance") || strings.Contains(prompt, cfg.PlanningGuidance) {
+			t.Fatalf("planning guidance reached the %s prompt", name)
+		}
 	}
 }
 

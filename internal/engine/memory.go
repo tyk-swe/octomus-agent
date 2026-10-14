@@ -24,6 +24,7 @@ type rediscoveryRequest struct {
 type decisionMemory struct {
 	decisions []model.DecisionRecord
 	requests  []rediscoveryRequest
+	operator  map[string]struct{}
 }
 
 // promptEntries is what the planning roles are shown: every decision with its kind and reconsideration flag spelled
@@ -81,8 +82,8 @@ func (a *App) planningMemory(ctx context.Context, cfg config.Config, grounding m
 }
 
 // Admission uses exact stored identities independently of the bounded prompt selection.
-func (a *App) enforceDecisionMemory(ctx context.Context, cfg config.Config, grounding model.Grounding, proposals []model.Proposal, requests []rediscoveryRequest) error {
-	memory := decisionMemory{requests: requests}
+func (a *App) enforceDecisionMemory(ctx context.Context, cfg config.Config, grounding model.Grounding, proposals []model.Proposal, requests []rediscoveryRequest, operator map[string]struct{}) error {
+	memory := decisionMemory{requests: requests, operator: operator}
 	if err := validateDecisionMemory(proposals, memory); err != nil {
 		return err
 	}
@@ -248,6 +249,9 @@ func validateDecisionMemory(proposals []model.Proposal, memory decisionMemory) e
 			}
 		}
 		if proposal.Decision != model.DecisionAccepted {
+			continue
+		}
+		if _, requested := memory.operator[proposal.ID]; requested {
 			continue
 		}
 		for _, record := range memory.decisions {

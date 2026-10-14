@@ -20,6 +20,8 @@
   import Notices from '$lib/Notices.svelte';
   import Overview from '$lib/Overview.svelte';
   import Proposals from '$lib/Proposals.svelte';
+  import Insights from '$lib/Insights.svelte';
+  import Requests from '$lib/Requests.svelte';
   import RelativeTime from '$lib/RelativeTime.svelte';
   import SearchBox from '$lib/SearchBox.svelte';
   import Settings from '$lib/Settings.svelte';
@@ -501,6 +503,8 @@
             ><Icon name={item.icon} size={19} /><span>{item.label}</span
             >{#if item.id === 'queue' && (data.counts.queued ?? 0) > 0}<b
                 >{data.counts.queued ?? 0}</b
+              >{/if}{#if item.id === 'requests' && data.pending_requests > 0}<b
+                >{data.pending_requests}</b
               >{/if}</button
           >{/each}
       </nav>
@@ -734,6 +738,16 @@
           onintent={noteNavigationIntent}
           navigationGeneration={() => navigationGeneration}
         />
+        {#if view === 'requests'}
+          <Requests
+            active={view === 'requests'}
+            {data}
+            oninspectrun={inspectRun}
+            onopentask={inspectTask}
+            onnavigate={navigate}
+          />
+        {/if}
+        {#if view === 'insights'}<Insights active={view === 'insights'} />{/if}
         {#if settingsVisited}<div hidden={view !== 'settings'}>
             <Settings
               active={view === 'settings'}

@@ -70,6 +70,19 @@ func invalidQuery(err error) *bodyError {
 	return &bodyError{http.StatusBadRequest, fmt.Sprintf("Invalid query string: %v", err)}
 }
 
+func (a *api) insights(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	days := 30
+	if raw := first(r.URL.Query(), "days"); raw != nil {
+		value, err := strconv.Atoi(*raw)
+		if err != nil || (value != 7 && value != 30 && value != 90) {
+			return 0, nil, &bodyError{http.StatusBadRequest, "Invalid query string: days must be 7, 30 or 90"}
+		}
+		days = value
+	}
+	view, err := a.app.Insights(days)
+	return http.StatusOK, view, err
+}
+
 func first(values map[string][]string, key string) *string {
 	list, ok := values[key]
 	if !ok || len(list) == 0 {
@@ -95,6 +108,39 @@ func (a *api) proposalDetail(_ http.ResponseWriter, r *http.Request) (int, any, 
 		return 0, nil, err
 	}
 	return http.StatusOK, detail, nil
+}
+
+func (a *api) requestsView(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
+	view, err := a.app.Requests()
+	return http.StatusOK, view, err
+}
+
+type requestBody struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Target      string `json:"target"`
+}
+
+func (v *requestBody) UnmarshalJSON(data []byte) error { return wirejson.DecodeStrict(data, v) }
+
+func (a *api) requestCreate(w http.ResponseWriter, r *http.Request) (int, any, error) {
+	var body requestBody
+	if err := decodeBody(w, r, &body); err != nil {
+		return 0, nil, err
+	}
+	record, err := a.app.CreateRequest(engine.RequestInput{Title: body.Title, Description: body.Description, Target: body.Target})
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusCreated, *record, nil
+}
+
+func (a *api) requestAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	action, err := pathEnum[model.RequestAction](r, "action", "Unknown request action")
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(a.app.RequestAction(r.PathValue("id"), action))
 }
 
 func (a *api) cycleDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {

@@ -4,6 +4,8 @@
 package engine
 
 import (
+	"time"
+
 	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -79,4 +81,12 @@ func (a *App) ProposalPage(q store.HistoryQuery) (store.Page[store.ProposalSumma
 
 func (a *App) Events(entity *string) ([]model.Event, error) {
 	return a.store.Events(entity)
+}
+
+func (a *App) Insights(days int) (*store.Insights, error) {
+	view, err := a.store.Insights(time.Now(), days)
+	if err != nil {
+		return nil, err
+	}
+	return &view, nil
 }

@@ -28,9 +28,10 @@ const (
 	EventStatus            EventKind = 20
 	EventUpgrade           EventKind = 21
 	EventWorkerError       EventKind = 22
+	EventRequest           EventKind = 23
 )
 
-var eventKindNames = []string{"attempt_policy", "automerge", "baseline", "baseline_error", "cleanup_error", "configuration", "error", "grounding", "housekeeping_error", "interrupted", "maintenance", "operator", "planning_capacity", "planning_error", "recovery", "recovery_error", "run_complete", "sandbox_evidence", "session_progress", "session_started", "status", "upgrade", "worker_error"}
+var eventKindNames = []string{"attempt_policy", "automerge", "baseline", "baseline_error", "cleanup_error", "configuration", "error", "grounding", "housekeeping_error", "interrupted", "maintenance", "operator", "planning_capacity", "planning_error", "recovery", "recovery_error", "run_complete", "sandbox_evidence", "session_progress", "session_started", "status", "upgrade", "worker_error", "request"}
 
 func (k EventKind) String() string               { return wirejson.EnumName(k, eventKindNames) }
 func (k EventKind) MarshalText() ([]byte, error) { return wirejson.EnumText(k, eventKindNames) }

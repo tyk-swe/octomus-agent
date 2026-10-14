@@ -39,6 +39,8 @@ func apiContract() string {
 		"BaselineSummary": engine.BaselineSummary{}, "BaselineCheck": model.BaselineCheck{},
 		"Event": model.Event{}, "RunEvidenceV1": export.RunEvidenceV1{},
 		"DoctorResponse": httpapi.DoctorResponse{}, "ControlResult": engine.ControlResult{}, "ControlAction": model.ControlAction(0), "ApiFailure": httpapi.ErrorResponse{},
+		"RequestsView": engine.RequestsView{}, "OperatorRequest": model.OperatorRequest{}, "RequestAction": model.RequestAction(0),
+		"Insights":       store.Insights{},
 		"HealthResponse": httpapi.HealthResponse{}, "DoctorFailure": httpapi.DoctorFailure{}, "Acknowledgement": httpapi.Acknowledgement{}, "TransformedField": redact.DisplayTransform{},
 	}
 	names := map[reflect.Type]string{

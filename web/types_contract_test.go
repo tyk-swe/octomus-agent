@@ -82,6 +82,8 @@ func TestVocabulariesMirrorGo(t *testing.T) {
 		"BaselineStatus":  enumNames[model.BaselineStatus](),
 		"DeliveryMode":    enumNames[config.DeliveryMode](),
 		"AutoMergeStatus": enumNames[model.AutoMergeStatus](),
+		"RequestStatus":   enumNames[model.RequestStatus](),
+		"RequestAction":   enumNames[model.RequestAction](),
 	} {
 		got, found := unions[name]
 		if !found {

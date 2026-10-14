@@ -51,6 +51,10 @@ func (a *App) StateView() (*StateView, error) {
 	if err != nil {
 		return nil, err
 	}
+	pendingRequests, err := a.store.CountPendingRequests(cfg.GitHubRepo)
+	if err != nil {
+		return nil, err
+	}
 	a.runtimeMu.Lock()
 	var cycleMode *model.CycleMode
 	if a.runtime.cycle != nil {
@@ -121,7 +125,8 @@ func (a *App) StateView() (*StateView, error) {
 		BaselineActive: baselineActive, Baseline: baseline, Notifications: notifications,
 		SessionLimit: cfg.MaxSessionsPerDay, StorageLimit: cfg.MaxWorkspaceBytes,
 		Storage: storage, PlanningCapacity: planningCapacity, PRCapacity: prCapacity,
-		Sandbox: a.SandboxPosture(),
+		PendingRequests: pendingRequests,
+		Sandbox:         a.SandboxPosture(),
 	}
 	return view, nil
 }

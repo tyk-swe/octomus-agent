@@ -29,3 +29,13 @@ repairs share one record, and interrupted persistence can leave incomplete sessi
 metadata, so do not use thread counts to estimate billing. The report makes no
 provider charge or merged-PR inference and collects no tokens, account allowance, raw
 transcripts or prices.
+
+The dashboard's **Insights** view (`GET /api/insights?days=7|30|90`) shows the same
+measurements over a rolling window: admissions reserve budget before work starts — they
+include failed starts and retries and are not completed turns or billed usage; task
+outcomes are the current status of tasks created in the window; proposal decisions count
+execution cycles started in the window; and pull-request states are the latest
+observation, not live GitHub state.
+
+Admissions per created task uses only window admissions for tasks created in that
+window. Total tier admissions also include work and retries on older tasks.

@@ -89,6 +89,7 @@ orchestrator, discovery and proposal reviewer routes; execution needs every rout
 | Field | Shipped default | Accepted values | What it controls |
 | --- | --- | --- | --- |
 | `categories` | All nine | A non-empty subset of `features`, `correctness`, `performance`, `ux-dx`, `refactoring`, `simplification`, `tests`, `dependencies` and `documentation` | Categories accepted work may use. |
+| `planning_guidance` | empty | UTF-8 text up to 4,096 bytes, no control characters except newlines and tabs | Operator preference shown to grounding, discovery, proposal reviewers and consolidation; never authorization, and not shown to execution, code review or repair. |
 | `discovery_agents` | 9 | 8–10 | Agents exploring complementary repository areas. |
 | `max_tasks_per_cycle` | 5 | 1–20 | Accepted tasks per execution cycle. |
 | `cycle_interval_seconds` | 1,800 | 30–604,800 | Interval between discovery cycles. |
