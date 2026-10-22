@@ -1,5 +1,12 @@
 import { expect } from '@playwright/test';
-import { configurationFixture, deferred, login, openNavigation, test, unsandboxed } from './synthetic';
+import {
+  configurationFixture,
+  deferred,
+  login,
+  openNavigation,
+  test,
+  unsandboxed
+} from './synthetic';
 
 test('route issue links allow incomplete saves @responsive', async ({ page, isMobile }) => {
   const state = await configurationFixture(page);

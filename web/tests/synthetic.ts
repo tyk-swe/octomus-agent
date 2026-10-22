@@ -262,7 +262,9 @@ export async function configurationFixture(
     await route.fulfill(
       state.failCatalog
         ? { status: 503, json: { error: 'Synthetic catalog outage' } }
-        : { json: (options.catalog ?? [ASTRA]).filter((model) => model.backend === request.backend) }
+        : {
+            json: (options.catalog ?? [ASTRA]).filter((model) => model.backend === request.backend)
+          }
     );
   });
   await page.route('**/api/baseline-checks/latest', async (route) => {

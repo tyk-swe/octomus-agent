@@ -296,8 +296,8 @@
     if (!element) return;
     const control = element.matches('input, select, textarea, button')
       ? element
-      : element.querySelector<HTMLElement>('[aria-invalid="true"]') ??
-        element.querySelector<HTMLElement>('input, select, textarea, button');
+      : (element.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+        element.querySelector<HTMLElement>('input, select, textarea, button'));
     (control ?? element).scrollIntoView({ block: 'center' });
     control?.focus({ preventScroll: true });
   }
@@ -532,7 +532,9 @@
           {#if catalogs[backend]?.binary === config[`${backend}_binary`] && catalogs[backend]?.error}
             <p class="catalog-note" role="status">
               {backendLabel(backend)}: {catalogs[backend]?.error}
-              {catalogs[backend]?.loaded ? 'Showing stale, unchecked choices.' : 'Catalog unavailable.'}
+              {catalogs[backend]?.loaded
+                ? 'Showing stale, unchecked choices.'
+                : 'Catalog unavailable.'}
               Use Load {backendLabel(backend)} models to retry. Saved routes are unchanged.
             </p>
           {/if}
