@@ -68,6 +68,10 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Build with Go 1.27.3 and Node 24 LTS, with CI reading the shared `.node-version` pin.
+  Refresh Go and dashboard dependencies, migrate the static dashboard to SvelteKit 3
+  and Vite 8, and remove the obsolete cookie override. Update the tested runner pins to
+  Codex 0.163.0 and OpenCode 1.19.4, plus the CI cache, artifact and Docker actions.
 - New configurations use balanced current Codex defaults: GPT-6 Luna for discovery
   and small tasks, GPT-6.1 Sol for planning, medium/large tasks and repair, and GPT-6
   Astra for code review and XL tasks. Saved routes and task snapshots stay unchanged.
@@ -99,7 +103,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   link the deployment guide's VM section.
 - The release archive no longer ships `AGENTS.md`, `CONTRIBUTING.md` or `docs/releasing.md`;
   shipped documents link to them on GitHub.
-- Release binaries and Docker images build with Go 1.27.2.
 
 ### Fixed
 

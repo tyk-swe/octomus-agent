@@ -94,7 +94,7 @@ def normal(executor='codex', **roles):
         assert diagnostic['checked_revision'] == saved['revision'] and diagnostic['checked_config'] == saved['config']
         assert {d['backend'] for d in diagnostic['backends']} == backends and diagnostic['warnings'] == []
         if 'codex' in backends:
-            assert diagnostic['codex_version'] == 'codex-cli 0.153.4' and diagnostic['tested_codex_version'] == '0.153.4'
+            assert diagnostic['codex_version'] == 'codex-cli 0.163.0' and diagnostic['tested_codex_version'] == '0.163.0'
             (root / 'version').write_text('0.0.0-fixture')
             diagnostic = service.request('/doctor', 'POST')
             assert 'mismatch' in diagnostic['message'] and len(diagnostic['warnings']) == 1

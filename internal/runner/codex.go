@@ -25,7 +25,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-const CodexVersion = "0.153.4"
+const CodexVersion = "0.163.0"
 
 var errCodexDisconnected = errors.New("Codex app-server disconnected")
 

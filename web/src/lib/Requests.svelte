@@ -152,8 +152,7 @@
                 id="request-description"
                 bind:value={description}
                 rows="5"
-                required
-              ></textarea></label
+                required></textarea></label
             >
             <label
               >Target<select id="request-target" bind:value={target}>

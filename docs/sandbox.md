@@ -355,8 +355,8 @@ collector invalidates old proof and requires a new self-test.
 
 ## Extend the sandbox image
 
-The shipped sandbox image contains Codex 0.153.4, OpenCode 1.18.30, Git, Bash, Python 3,
-Node 22 and common build tools. Add your project's toolchain in a derived image:
+The shipped sandbox image contains Codex 0.163.0, OpenCode 1.19.4, Git, Bash, Python 3,
+Node 24 LTS and common build tools. Add your project's toolchain in a derived image:
 
 ```dockerfile
 FROM octomus-sandbox:local

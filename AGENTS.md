@@ -68,7 +68,7 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
 
 ## Build and verify
 
-Requires Go (per `go.mod`), Node 22.12+, npm, Python 3, Git and a C compiler for `-race`.
+Requires Go (per `go.mod`), Node 24 LTS (see `.node-version`), npm, Python 3, Git and a C compiler for `-race`.
 Setup: `npm ci --prefix web` and `npx --prefix web playwright install --with-deps chromium`.
 
 - `make check`: `gofmt`, `go vet`, Svelte/TypeScript and Prettier checks.

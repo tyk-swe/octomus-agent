@@ -471,8 +471,11 @@
               bind:value={draft.commands}
               rows="3"
               readonly={locked('verification_commands')}
-              placeholder={'npm test\nnpm run build'}
-            ></textarea>{@render previewNote('verification_commands', 'command list', true)}<small
+              placeholder={'npm test\nnpm run build'}></textarea>{@render previewNote(
+              'verification_commands',
+              'command list',
+              true
+            )}<small
               >One shell command per line, each run in a fresh sandbox inside the task workspace.
               All must pass before publication.</small
             ></label
@@ -672,8 +675,7 @@
                 bind:value={draft.excluded}
                 rows="3"
                 readonly={locked('auto_merge_excluded_paths')}
-                placeholder={'deploy/\nsecrets.txt'}
-              ></textarea>{@render previewNote(
+                placeholder={'deploy/\nsecrets.txt'}></textarea>{@render previewNote(
                 'auto_merge_excluded_paths',
                 'path list',
                 true

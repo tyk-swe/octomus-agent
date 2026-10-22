@@ -23,6 +23,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
       # Keep setup inline so historical release refs do not need a local action.
+      # Checkouts predating .node-version retain their Node 22 baseline.
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -30,7 +31,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ hashFiles('.node-version') == '' && '22' || '' }}
+          node-version-file: ${{ hashFiles('.node-version') != '' && '.node-version' || '' }}
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
@@ -56,7 +58,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ hashFiles('.node-version') == '' && '22' || '' }}
+          node-version-file: ${{ hashFiles('.node-version') != '' && '.node-version' || '' }}
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
@@ -80,7 +83,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ hashFiles('.node-version') == '' && '22' || '' }}
+          node-version-file: ${{ hashFiles('.node-version') != '' && '.node-version' || '' }}
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
@@ -90,7 +94,7 @@ jobs:
         run: echo "version=$(node -p "require('./web/package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
       - id: playwright-cache
         if: matrix.suite == 'browser'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}-chromium
@@ -99,7 +103,7 @@ jobs:
       - if: matrix.suite == 'browser' && steps.playwright-cache.outputs.cache-hit == 'true'
         run: npx --prefix web playwright install-deps chromium
       - run: make test-${{ matrix.suite }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure() && matrix.suite == 'browser'
         with:
           name: browser-test-evidence
@@ -129,7 +133,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ hashFiles('.node-version') == '' && '22' || '' }}
+          node-version-file: ${{ hashFiles('.node-version') != '' && '.node-version' || '' }}
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web
@@ -138,7 +143,7 @@ jobs:
         run: |
           tar -xzf dist/octomus-agent-*.tar.gz -C "$RUNNER_TEMP"
           OCTOMUS_TEST_BINARY="$RUNNER_TEMP/octomus-agent/octomus-agent" python3 tests/distribution.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: package-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -152,11 +157,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - client: '@openai/codex@0.153.4'
+          - client: '@openai/codex@0.163.0'
             bin: codex
             env: OCTOMUS_CONTRACT_CODEX_BINARY
             test: TestPinnedCodexContract
-          - client: opencode-ai@1.18.30
+          - client: opencode-ai@1.19.4
             bin: opencode
             env: OCTOMUS_CONTRACT_OPENCODE_BINARY
             test: TestPinnedOpenCodeContract
@@ -166,7 +171,8 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ hashFiles('.node-version') == '' && '22' || '' }}
+          node-version-file: ${{ hashFiles('.node-version') != '' && '.node-version' || '' }}
           package-manager-cache: false
       - uses: actions/setup-go@v7
         with:
@@ -193,7 +199,8 @@ jobs:
           cache: true
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ hashFiles('.node-version') == '' && '22' || '' }}
+          node-version-file: ${{ hashFiles('.node-version') != '' && '.node-version' || '' }}
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web

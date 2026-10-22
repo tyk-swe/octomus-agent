@@ -15,7 +15,7 @@ GO_FORMAT_PATHS = version.go cmd internal web/*.go tests/productionimage
 # Directory timestamps also invalidate the build when inputs are added or removed.
 # Vite reads VERSION, and Makefile changes can alter the input list or build command.
 DASHBOARD_INPUTS = $(shell find web/src web/static -type f -o -type d) VERSION Makefile \
-	$(addprefix web/,package.json package-lock.json svelte.config.js vite.config.ts tsconfig.json)
+	$(addprefix web/,package.json package-lock.json vite.config.ts tsconfig.json)
 
 dashboard: web/build/200.html
 
@@ -84,7 +84,7 @@ test-production-images: production-image-driver
 audit:
 	toolchain=$$(go env GOVERSION | cut -d' ' -f1); \
 	case $$toolchain in go1.*) export GOTOOLCHAIN=$$toolchain ;; esac; \
-	go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 	npm audit --prefix web --audit-level=high
 
 package: build

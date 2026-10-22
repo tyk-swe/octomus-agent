@@ -118,18 +118,18 @@ permanent **Unsandboxed** warning.
 ### Install
 
 As the administrator, install Git, gh and the runners your routes select, pinned to the
-tested protocol versions: Codex CLI **0.153.4** (through npm, with Node 22 from
+tested protocol versions: Codex CLI **0.163.0** (through npm, with Node 24 LTS from
 [NodeSource](https://github.com/nodesource/distributions)) and/or the OpenCode
-[1.18.30 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.30) for your
+[1.19.4 release](https://github.com/anomalyco/opencode/releases/tag/v1.19.4) for your
 platform. Skip the Node and Codex lines for an OpenCode-only installation.
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y git gh curl ca-certificates openssl
-curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/octomus-node22.sh
-sudo bash /tmp/octomus-node22.sh
+curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/octomus-node24.sh
+sudo bash /tmp/octomus-node24.sh
 sudo apt-get install -y nodejs
-sudo npm install -g @openai/codex@0.153.4
+sudo npm install -g @openai/codex@0.163.0
 ```
 
 Install the release with the checksum-verifying installer:
@@ -146,7 +146,7 @@ against a compromised release account. Archives for x86_64 and aarch64 are on th
 [releases page](https://github.com/tyk-swe/octomus-agent/releases).
 
 To build from source instead, on the target architecture or another compatible Linux host,
-you need Go (per `go.mod`), Node 22.12+ and npm for the embedded dashboard:
+you need Go (per `go.mod`), Node 24 LTS (see `.node-version`) and npm for the embedded dashboard:
 
 ```bash
 git clone https://github.com/tyk-swe/octomus-agent.git

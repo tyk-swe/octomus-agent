@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { pushState } from '$app/navigation';
-  import { client, setToken, onUnauthorized } from '$lib/api';
-  import { StateSession } from '$lib/stateSession';
+  import { goto } from '$app/navigation';
+  import { client, setToken, onUnauthorized } from '#lib/api.ts';
+  import { StateSession } from '#lib/stateSession.ts';
   import type {
     ControlAction,
     CycleAction,
@@ -11,31 +11,31 @@
     Page,
     ProposalRow,
     PRObservation
-  } from '$lib/types';
-  import Badge from '$lib/Badge.svelte';
-  import FilterTabs from '$lib/FilterTabs.svelte';
-  import { clockTime, safeUrl } from '$lib/format';
-  import Icon from '$lib/Icon.svelte';
-  import LoginScreen from '$lib/LoginScreen.svelte';
-  import Notices from '$lib/Notices.svelte';
-  import Overview from '$lib/Overview.svelte';
-  import Proposals from '$lib/Proposals.svelte';
-  import Insights from '$lib/Insights.svelte';
-  import Requests from '$lib/Requests.svelte';
-  import RelativeTime from '$lib/RelativeTime.svelte';
-  import SearchBox from '$lib/SearchBox.svelte';
-  import Settings from '$lib/Settings.svelte';
-  import { configurationEditable, controlEligibility, type SetupStatus } from '$lib/setup';
-  import TaskDetail from '$lib/TaskDetail.svelte';
-  import TaskList from '$lib/TaskList.svelte';
-  import RunEvidence from '$lib/RunEvidence.svelte';
+  } from '#lib/types.ts';
+  import Badge from '#lib/Badge.svelte';
+  import FilterTabs from '#lib/FilterTabs.svelte';
+  import { clockTime, safeUrl } from '#lib/format.ts';
+  import Icon from '#lib/Icon.svelte';
+  import LoginScreen from '#lib/LoginScreen.svelte';
+  import Notices from '#lib/Notices.svelte';
+  import Overview from '#lib/Overview.svelte';
+  import Proposals from '#lib/Proposals.svelte';
+  import Insights from '#lib/Insights.svelte';
+  import Requests from '#lib/Requests.svelte';
+  import RelativeTime from '#lib/RelativeTime.svelte';
+  import SearchBox from '#lib/SearchBox.svelte';
+  import Settings from '#lib/Settings.svelte';
+  import { configurationEditable, controlEligibility, type SetupStatus } from '#lib/setup.ts';
+  import TaskDetail from '#lib/TaskDetail.svelte';
+  import TaskList from '#lib/TaskList.svelte';
+  import RunEvidence from '#lib/RunEvidence.svelte';
   import {
     NAVIGATION,
     PR_FILTERS,
     QUEUE_FILTERS,
     TOGGLE_PENDING_LABELS,
     viewFromHash
-  } from '$lib/navigation';
+  } from '#lib/navigation.ts';
   const version = __APP_VERSION__;
   const shortVersion = version.split('.').slice(0, 2).join('.');
   let connected = $state(false),
@@ -311,7 +311,8 @@
   async function navigate(id: string, record = true) {
     navigationGeneration++;
     view = id;
-    if (record && viewFromHash(location.hash) !== id) pushState('#' + id, {});
+    if (record && viewFromHash(location.hash) !== id)
+      await goto('#' + id, { shallow: true, state: {}, reset: false });
     if (id === 'settings') settingsVisited = true;
     search = '';
     filter = 'all';

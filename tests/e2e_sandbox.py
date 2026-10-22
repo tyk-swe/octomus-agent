@@ -206,7 +206,7 @@ def delivery_scenario():
         diagnostic = s.request('/doctor', 'POST')
         assert diagnostic['ok'] and diagnostic['sandbox']['mode'] == 'docker', diagnostic
         assert diagnostic['sandbox']['self_test']['passed'], diagnostic['sandbox']
-        assert diagnostic['codex_version'] == 'codex-cli 0.153.4', diagnostic
+        assert diagnostic['codex_version'] == 'codex-cli 0.163.0', diagnostic
         s.request('/control/cycle', 'POST')
 
         def published():

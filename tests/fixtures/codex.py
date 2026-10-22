@@ -12,7 +12,7 @@ root = Path(os.environ['OCTOMUS_FIXTURE'])
 assert 'OCTOMUS_TOKEN' not in os.environ
 assert 'OCTOMUS_NOTIFICATION_WEBHOOK_URL' not in os.environ
 if sys.argv[1:] == ['--version']:
-    print('codex-cli ' + ((root / 'version').read_text().strip() if (root / 'version').exists() else '0.153.4'))
+    print('codex-cli ' + ((root / 'version').read_text().strip() if (root / 'version').exists() else '0.163.0'))
     sys.exit(0)
 threads = root / 'threads'
 threads.mkdir(exist_ok=True)

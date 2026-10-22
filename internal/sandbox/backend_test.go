@@ -55,7 +55,7 @@ func startFakeBroker(t *testing.T, max int) *fakeBroker {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+wire.InfoPath, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(wire.BrokerInfo{Image: "sandbox:test", Limits: wire.BrokerLimits{Max: max},
-			Runners: map[string]string{"codex": "codex-cli 0.153.4"}})
+			Runners: map[string]string{"codex": "codex-cli 0.163.0"}})
 	})
 	mux.HandleFunc("POST "+wire.SandboxesPath, func(w http.ResponseWriter, r *http.Request) {
 		var req wire.Request

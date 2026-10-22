@@ -1,10 +1,10 @@
 # The sandbox image every agent turn and verification command runs in. It carries the pinned runners and common
 # build tools; extend it with your project's toolchain (see docs/sandbox.md) and point OCTOMUS_SANDBOX_IMAGE at the
 # result. It holds no credential: runner logins arrive in a volume, and GitHub credentials never do.
-ARG NODE_VERSION=22
+ARG NODE_VERSION=24.22.1
 FROM node:${NODE_VERSION}-trixie-slim
-ARG CODEX_VERSION=0.153.4
-ARG OPENCODE_VERSION=1.18.30
+ARG CODEX_VERSION=0.163.0
+ARG OPENCODE_VERSION=1.19.4
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bash build-essential ca-certificates curl git jq less procps python3 python3-venv ripgrep unzip xz-utils \

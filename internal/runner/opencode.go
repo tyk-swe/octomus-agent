@@ -27,7 +27,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
 )
 
-const OpenCodeVersion = "1.18.30"
+const OpenCodeVersion = "1.19.4"
 
 type OpenCode struct {
 	child     sandbox.Child

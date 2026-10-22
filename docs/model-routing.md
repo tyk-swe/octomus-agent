@@ -56,7 +56,7 @@ providers; update routes explicitly if your runtime offers different choices.
 
 ## OpenCode setup and behavior
 
-Install [OpenCode 1.18.30](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
+Install [OpenCode 1.19.4](https://github.com/anomalyco/opencode/releases/tag/v1.19.4)
 on the service host and authenticate/configure its providers as the service user.
 The integration uses the [headless server](https://opencode.ai/docs/server/) and
 the release's native HTTP/SSE API. Provider credentials, custom provider options,

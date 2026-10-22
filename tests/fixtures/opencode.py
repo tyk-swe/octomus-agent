@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic OpenCode 1.18.30 HTTP/SSE peer. No credentials or model calls."""
+"""Deterministic OpenCode 1.19.4 HTTP/SSE peer. No credentials or model calls."""
 import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -17,7 +17,7 @@ from worker import mode as worker_mode, respond
 root = Path(os.environ['OCTOMUS_FIXTURE'])
 mode = lambda: worker_mode('opencode')
 if sys.argv[1:] == ['--version']:
-    print('1.18.30')
+    print('1.19.4')
     sys.exit(0)
 assert sys.argv[1] == 'serve'
 assert 'OCTOMUS_TOKEN' not in os.environ
@@ -92,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.setup_request():
             return
         if self.parts == ['global', 'health']:
-            self.send_json({'healthy': True, 'version': '1.18.30'})
+            self.send_json({'healthy': True, 'version': '1.19.4'})
         elif self.parts == ['config']:
             self.send_json(policy)
         elif self.parts == ['provider']:
