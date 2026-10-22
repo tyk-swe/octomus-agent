@@ -27,7 +27,9 @@ const catalog: ModelCatalog = { binary: '/fixture/codex', models: [model], loade
 const config = {
   codex_binary: catalog.binary,
   opencode_binary: '/fixture/opencode',
-  roles: { orchestrator: route, discovery: route, proposal_reviewer: route, code_reviewer: route },
+  roles: Object.fromEntries(
+    ['orchestrator', 'discovery', 'proposal_reviewer', 'code_reviewer'].map((role) => [role, route])
+  ),
   tiers: Object.fromEntries(['XS', 'S', 'M', 'L', 'XL'].map((tier) => [tier, route])),
   repair_route: route
 } as Config;

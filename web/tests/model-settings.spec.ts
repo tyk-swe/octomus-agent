@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { configurationFixture, deferred, login, openNavigation, test } from './synthetic';
+import { configurationFixture, deferred, login, openNavigation, test, unsandboxed } from './synthetic';
 
 test('route issue links allow incomplete saves @responsive', async ({ page, isMobile }) => {
   const state = await configurationFixture(page);
@@ -32,7 +32,7 @@ test('route issue links allow incomplete saves @responsive', async ({ page, isMo
 });
 
 test('catalog refreshes retain stale choices and recover on retry', async ({ page }) => {
-  const state = await configurationFixture(page);
+  const state = await configurationFixture(page, { snapshot: unsandboxed });
   await login(page);
   await openNavigation(page, 'Configuration', false);
   const load = page.getByRole('button', { name: 'Load Codex models', exact: true });
