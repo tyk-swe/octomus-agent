@@ -8,7 +8,8 @@ export default defineConfig({
     '**/control-eligibility.spec.ts',
     '**/cycle-history.spec.ts',
     '**/resource.spec.ts',
-    '**/configuration-draft.spec.ts'
+    '**/configuration-draft.spec.ts',
+    '**/model-routes.spec.ts'
   ],
   fullyParallel: true,
   workers: 4

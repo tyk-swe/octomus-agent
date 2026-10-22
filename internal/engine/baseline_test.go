@@ -33,6 +33,13 @@ func baselineApp(t *testing.T) (*App, config.Config) {
 	git(t, repo, "add", ".")
 	git(t, repo, "commit", "-m", "initial")
 	cfg := config.Default()
+	for role := range cfg.Roles {
+		cfg.Roles[role] = config.NewRoute("", "")
+	}
+	for tier := range cfg.Tiers {
+		cfg.Tiers[tier] = config.NewRoute("", "")
+	}
+	cfg.RepairRoute = config.NewRoute("", "")
 	cfg.Repository = repo
 	cfg.GitHubRepo = "fixture/project"
 	cfg.VerificationCommands = []string{"true"}

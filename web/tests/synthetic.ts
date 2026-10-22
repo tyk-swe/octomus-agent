@@ -4,6 +4,7 @@ import type {
   CommandResult,
   CommandState,
   Config,
+  DoctorResponse,
   Model,
   ProposalEvidence,
   ProposalRow,
@@ -149,6 +150,7 @@ export async function configurationFixture(
     snapshot?: (snapshot: Snapshot) => void;
     saved?: Partial<Config>;
     catalog?: Model[];
+    doctorWarnings?: string[];
   } = {}
 ) {
   const state = {
@@ -161,7 +163,10 @@ export async function configurationFixture(
     failLoad: false,
     failSave: false,
     failCheck: false,
+    failCatalog: false,
     loadGate: null as ReturnType<typeof deferred> | null,
+    catalogGate: null as ReturnType<typeof deferred> | null,
+    checkGate: null as ReturnType<typeof deferred> | null,
     baselineView: {
       check: null,
       eligible: true,
@@ -253,9 +258,14 @@ export async function configurationFixture(
   await page.route('**/api/model-catalog', async (route) => {
     const request = route.request().postDataJSON() as { backend: string; binary: string };
     state.catalogs.push(request);
-    await route.fulfill({
-      json: (options.catalog ?? [ASTRA]).filter((model) => model.backend === request.backend)
-    });
+    await state.catalogGate?.promise;
+    await route.fulfill(
+      state.failCatalog
+        ? { status: 503, json: { error: 'Synthetic catalog outage' } }
+        : {
+            json: (options.catalog ?? [ASTRA]).filter((model) => model.backend === request.backend)
+          }
+    );
   });
   await page.route('**/api/baseline-checks/latest', async (route) => {
     await route.fulfill({ json: state.baselineView });
@@ -301,9 +311,34 @@ export async function configurationFixture(
     await route.fulfill({ status: 202, json: state.baselineView.check });
   });
   await page.route('**/api/doctor?*', async (route) => {
-    state.checks.push(new URL(route.request().url()).searchParams.get('mode')!);
-    const checked_config = structuredClone(state.saved);
+    const mode =
+      new URL(route.request().url()).searchParams.get('mode') === 'audit' ? 'audit' : 'execution';
+    state.checks.push(mode);
+    const checked_config = structuredClone(state.saved!);
     const checked_revision = state.revision;
+    const routes = Object.entries(checked_config.roles)
+      .filter(([role]) => mode !== 'audit' || role !== 'code_reviewer')
+      .map(([, route]) => route);
+    if (mode === 'execution')
+      routes.push(...Object.values(checked_config.tiers), checked_config.repair_route);
+    const backends = [...new Set(routes.map((route) => route.backend))];
+    const result: DoctorResponse = {
+      ok: true,
+      mode,
+      models: (options.catalog ?? [ASTRA]).filter((model) => backends.includes(model.backend)),
+      backends: backends.map((backend) => ({
+        backend,
+        version: 'synthetic-runner',
+        protocol_version: 'synthetic-protocol',
+        warning: options.doctorWarnings?.[0] ?? null
+      })),
+      warnings: options.doctorWarnings ?? [],
+      sandbox: { mode: 'off' },
+      message: 'Synthetic saved configuration checked',
+      checked_config,
+      checked_revision
+    };
+    await state.checkGate?.promise;
     await route.fulfill(
       state.failCheck
         ? {
@@ -311,11 +346,7 @@ export async function configurationFixture(
             json: { error: 'Synthetic connection check failed', checked_config, checked_revision }
           }
         : {
-            json: {
-              message: 'Synthetic saved configuration checked',
-              checked_config,
-              checked_revision
-            }
+            json: result
           }
     );
   });

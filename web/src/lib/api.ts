@@ -154,7 +154,8 @@ export const client = {
     request<Acknowledgement>(`/baseline-checks/${id(check)}/cancel`, 'POST'),
   control: (action: ControlAction) => request<ControlResult>(`/control/${action}`, 'POST'),
   selfTest: () => request<SandboxSelfTest>('/sandbox/self-test', 'POST'),
-  catalog: (backend: Backend, binary: string) =>
-    request<Model[]>('/model-catalog', 'POST', { backend, binary }),
-  doctor: (mode: CycleMode) => request<DoctorResponse>(`/doctor?mode=${mode}`, 'POST')
+  catalog: (backend: Backend, binary: string, signal?: AbortSignal) =>
+    request<Model[]>('/model-catalog', 'POST', { backend, binary }, signal),
+  doctor: (mode: CycleMode, signal?: AbortSignal) =>
+    request<DoctorResponse>(`/doctor?mode=${mode}`, 'POST', undefined, signal)
 };

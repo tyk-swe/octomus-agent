@@ -32,6 +32,28 @@ are executable paths, not shell commands or argument lists, and only the runners
 routes select need to be installed. An audit requires the orchestrator, discovery and
 proposal reviewer routes; normal execution requires every route.
 
+## Defaults for new configurations
+
+New configurations use the current [OpenAI model family](https://developers.openai.com/api/docs/guides/latest-model)
+with balanced task-size routing:
+
+| Role or tier | Codex model | Reasoning effort |
+| --- | --- | --- |
+| Orchestrator, proposal reviewer | `gpt-6.1-sol` | `high` |
+| Discovery | `gpt-6-luna` | `high` |
+| Code reviewer, XL execution | `gpt-6-astra` | `high` |
+| XS execution | `gpt-6-luna` | `xhigh` |
+| S execution | `gpt-6-luna` | `max` |
+| M execution | `gpt-6.1-sol` | `low` |
+| L execution, repair | `gpt-6.1-sol` | `medium` |
+
+Saved configurations, including blank routes, and accepted task snapshots are not
+rewritten. Review the defaults and run a connection check before starting work:
+the installed runner's catalog and your account determine availability, not this
+table. Unavailable models or unsupported efforts fail visibly without substitution.
+There is no static catalog overriding Codex `model/list` or OpenCode's configured
+providers; update routes explicitly if your runtime offers different choices.
+
 ## OpenCode setup and behavior
 
 Install [OpenCode 1.18.30](https://github.com/anomalyco/opencode/releases/tag/v1.18.30)
@@ -69,6 +91,10 @@ Changing a runner/provider clears dependent selections; a model change clears
 unsupported settings. Refreshing a catalog preserves saved values, including
 unavailable choices, and displays validation messages. Saving incomplete drafts
 is allowed; connection checks still require valid routes.
+The route-issue summary focuses the affected controls. If a refresh fails, the last
+successful choices for that executable remain visible but are labelled stale and
+do not count as validated; use the load button to retry. Changing the executable
+never reuses another executable's choices.
 
 Authenticated `POST /api/model-catalog` accepts:
 
@@ -87,3 +113,8 @@ warnings. Codex version fields remain present when Codex is required. Errors
 identify the failing runner or route. Catalogs and diagnostics consume no session
 admissions and make no model calls; they do not prove paid inference access. See
 [the HTTP API](deployment.md#http-api) for request rules and error forms.
+Successful checks also populate the dashboard pickers for checked backends and show
+runner/protocol versions and warnings. **Cancel diagnostic** aborts a pending catalog
+load or connection check without changing drafts, previous catalogs or prior check
+results. Leaving the dashboard session cancels outstanding diagnostics; switching
+dashboard views preserves the configuration draft and its catalogs.

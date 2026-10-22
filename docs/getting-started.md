@@ -42,7 +42,8 @@ For a dedicated host without Docker, follow [Dedicated VM without a sandbox](dep
 Open **Configuration** and provide:
 
 - the repository and GitHub identity (already pinned in Docker);
-- explicit Codex or OpenCode routes for planning, review, execution and repair; and
+- reviewed Codex or OpenCode routes for planning, review, execution and repair (new
+  configurations start with [balanced defaults](model-routing.md#defaults-for-new-configurations)); and
 - at least one meaningful verification command for execution.
 
 Save, then run **Check connection**. In Docker this includes the sandbox self-test and

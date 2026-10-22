@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Backend, ModelCatalog, Route } from './types';
-  import { backendLabel } from './modelRoutes';
+  import { backendLabel, checkRoute } from './modelRoutes';
 
   let {
     name,
@@ -18,7 +18,9 @@
   const id = $props.id();
   const backend = $derived(route.backend ?? 'codex');
   const models = $derived(
-    (catalog?.models ?? []).filter((model) => model.provider === (route.provider ?? null))
+    (catalog?.models ?? []).filter(
+      (model) => model.backend === backend && model.provider === (route.provider ?? null)
+    )
   );
   const selected = $derived(models.find((model) => model.model === route.model));
   const providers = $derived([
@@ -30,19 +32,8 @@
   ]);
   const efforts = $derived(selected?.efforts ?? []);
   const variants = $derived(selected?.variants ?? []);
-  const problem = $derived(
-    catalog?.loaded && route.model
-      ? !selected
-        ? 'This model is not in the loaded catalog.'
-        : !selected.available
-          ? selected.unavailable_reason
-          : backend === 'codex' && route.effort && !efforts.includes(route.effort)
-            ? 'The saved effort is not supported by this model.'
-            : backend === 'opencode' && route.variant && !variants.includes(route.variant)
-              ? 'The saved variant is not supported by this model.'
-              : ''
-      : ''
-  );
+  const check = $derived(disabled ? null : checkRoute(route, catalog));
+  const problem = $derived(check?.problem ?? '');
 
   function changeBackend(value: Backend) {
     route = {
@@ -60,13 +51,19 @@
   }
   function pruneChoices(value: string) {
     const model = models.find((model) => model.model === value);
-    if (!model) return;
+    if (!model || catalog?.error) return;
     if (route.effort && !model.efforts.includes(route.effort)) route.effort = '';
     if (route.variant && !model.variants.includes(route.variant)) route.variant = undefined;
   }
 </script>
 
-<div class="model-route" id={anchor} role="group" aria-label={name + ' route'}>
+<div
+  class="model-route"
+  id={anchor}
+  role="group"
+  aria-label={name + ' route'}
+  aria-describedby={problem ? id + '-problem' : undefined}
+>
   <h3>{name}</h3>
   <div class="route-fields" class:opencode={backend === 'opencode'}>
     <label
@@ -86,6 +83,8 @@
         >Provider
         <select
           aria-label={name + ' provider'}
+          aria-invalid={check?.field === 'provider' ? 'true' : undefined}
+          aria-describedby={check?.field === 'provider' ? id + '-problem' : undefined}
           {disabled}
           value={route.provider ?? ''}
           onchange={(event) => {
@@ -117,6 +116,7 @@
         onchange={(event) => pruneChoices(event.currentTarget.value)}
         placeholder="Search or enter model ID"
         aria-describedby={problem ? id + '-problem' : undefined}
+        aria-invalid={check?.field === 'model' ? 'true' : undefined}
       />
       <datalist id={id + '-models'}>
         {#each models as model}<option value={model.model}
@@ -127,7 +127,13 @@
     {#if backend === 'codex'}
       <label
         >Reasoning effort
-        <select aria-label={name + ' reasoning effort'} {disabled} bind:value={route.effort}>
+        <select
+          aria-label={name + ' reasoning effort'}
+          aria-invalid={check?.field === 'effort' ? 'true' : undefined}
+          aria-describedby={check?.field === 'effort' ? id + '-problem' : undefined}
+          {disabled}
+          bind:value={route.effort}
+        >
           <option value="">Select effort</option>
           {#if route.effort && !efforts.includes(route.effort)}<option value={route.effort}
               >{route.effort} (current)</option
@@ -140,6 +146,8 @@
         >Variant
         <select
           aria-label={name + ' variant'}
+          aria-invalid={check?.field === 'variant' ? 'true' : undefined}
+          aria-describedby={check?.field === 'variant' ? id + '-problem' : undefined}
           {disabled}
           value={route.variant ?? ''}
           onchange={(event) => {
@@ -158,9 +166,11 @@
   {#if problem}<p id={id + '-problem'} class="route-problem">
       {problem} The saved route will not be substituted.
     </p>{/if}
-  {#if !catalog?.loaded}<p class="route-help">
+  {#if catalog?.error || !catalog?.loaded}<p class="route-help">
       {catalog?.error
-        ? 'Catalog unavailable. Saved values are preserved.'
+        ? catalog.loaded
+          ? 'Catalog refresh failed. Choices are stale and unchecked. Saved values are preserved.'
+          : 'Catalog unavailable. Saved values are preserved.'
         : `Load ${backendLabel(backend)} models to see available choices.`}
     </p>{/if}
 </div>
