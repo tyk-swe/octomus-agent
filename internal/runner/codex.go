@@ -339,6 +339,8 @@ func idMatches(v any, id uint64) bool {
 func (c *Codex) Models(cwd string) ([]Model, error) {
 	out := []Model{}
 	var cursor any
+	seenCursors := map[string]bool{}
+	seenModels := map[string]bool{}
 	for {
 		v, err := c.rpc("model/list", map[string]any{"limit": 100, "cursor": cursor, "includeHidden": true}, time.Time{}, "")
 		if err != nil {
@@ -350,12 +352,22 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 			return nil, errors.New("Invalid model catalog")
 		}
 		for _, item := range data {
+			if len(out) >= 10000 {
+				return nil, errors.New("Codex catalog exceeds 10000 models")
+			}
 			m, _ := asObject(item)
 			name, ok := strAt(m, "model")
-			if !ok {
+			if !ok || name == "" || config.NewRoute(name, "").Validate(false) != nil {
 				return nil, errors.New("Invalid Codex model identity")
 			}
+			if seenModels[name] {
+				return nil, errors.New("Duplicate Codex model identity")
+			}
+			seenModels[name] = true
 			display, _ := strAt(m, "displayName")
+			if display == "" {
+				display = name
+			}
 			effortList, ok := asArray(m["supportedReasoningEfforts"])
 			if !ok {
 				return nil, errors.New("Invalid Codex reasoning catalog")
@@ -364,7 +376,7 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 			for _, e := range effortList {
 				entry, _ := asObject(e)
 				effort, ok := strAt(entry, "reasoningEffort")
-				if !ok {
+				if !ok || effort == "" || config.NewRoute(name, effort).Validate(false) != nil {
 					return nil, errors.New("Invalid reasoning effort")
 				}
 				efforts = append(efforts, effort)
@@ -382,9 +394,11 @@ func (c *Codex) Models(cwd string) ([]Model, error) {
 		if cursor == nil {
 			break
 		}
-		if len(data) == 0 || len(out) >= 10000 {
+		next, ok := cursor.(string)
+		if !ok || strings.TrimSpace(next) == "" || seenCursors[next] || len(data) == 0 || len(out) >= 10000 {
 			return nil, errors.New("Invalid model pagination")
 		}
+		seenCursors[next] = true
 	}
 	return out, nil
 }

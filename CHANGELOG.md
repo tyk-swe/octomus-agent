@@ -7,6 +7,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Model setup improvements: actionable route-issue links, stale catalog retention with
+  retry, connection-check catalogs and runner diagnostics in the dashboard, cancellable
+  diagnostics, and strict bounded Codex catalog parsing with duplicate/cursor-cycle checks.
 - Insights view: `GET /api/insights?days=7|30|90` and a dashboard page summarising daily
   admissions (planning, task and unattributed), cycle and task outcomes, per-category
   decisions, per-tier admissions and delivered-PR states over a rolling window.
@@ -65,6 +68,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- New configurations use balanced current Codex defaults: GPT-6 Luna for discovery
+  and small tasks, GPT-6.1 Sol for planning, medium/large tasks and repair, and GPT-6
+  Astra for code review and XL tasks. Saved routes and task snapshots stay unchanged.
 - Schema version 9 indexes exact decision identities and version 10 restores complete
   summary text from raw records. Both upgrade version 8 behind the verified automatic
   backup and leave raw records and notification history untouched.

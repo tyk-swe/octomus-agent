@@ -34,15 +34,20 @@ func Tiers() []string { return []string{"XS", "S", "M", "L", "XL"} }
 func NewRoute(model, effort string) Route {
 	return Route{Backend: BackendCodex, Model: model, Effort: effort}
 }
-func DefaultRepairRoute() Route { return NewRoute("", "medium") }
+func DefaultRepairRoute() Route { return NewRoute("gpt-6.1-sol", "medium") }
 func Default() Config {
-	roles := make(map[string]Route, 4)
-	for _, role := range Roles() {
-		roles[role] = NewRoute("", "")
-	}
 	return Config{
 		DefaultBranch: "main", BranchPrefix: "octomus/", CodexBinary: "codex", OpencodeBinary: "opencode",
-		Roles: roles, Tiers: map[string]Route{"XS": NewRoute("", "xhigh"), "S": NewRoute("", "max"), "M": NewRoute("", "low"), "L": NewRoute("", "medium"), "XL": NewRoute("", "high")},
+		Roles: map[string]Route{
+			"orchestrator":      NewRoute("gpt-6.1-sol", "high"),
+			"discovery":         NewRoute("gpt-6-luna", "high"),
+			"proposal_reviewer": NewRoute("gpt-6.1-sol", "high"),
+			"code_reviewer":     NewRoute("gpt-6-astra", "high"),
+		},
+		Tiers: map[string]Route{
+			"XS": NewRoute("gpt-6-luna", "xhigh"), "S": NewRoute("gpt-6-luna", "max"),
+			"M": NewRoute("gpt-6.1-sol", "low"), "L": NewRoute("gpt-6.1-sol", "medium"), "XL": NewRoute("gpt-6-astra", "high"),
+		},
 		RepairRoute: DefaultRepairRoute(), Categories: Categories(), VerificationCommands: []string{},
 		DeliveryMode: DeliveryModeStandard, AutoMergeMaxLines: 500, AutoMergeMaxFiles: 10, AutoMergeExcludedPaths: []string{},
 		DiscoveryAgents: 9, ExecutionConcurrency: 2, CycleIntervalSeconds: 1800, MaintenanceEveryCycles: 3,

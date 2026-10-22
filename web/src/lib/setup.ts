@@ -1,6 +1,7 @@
 import { baselineStatusLabel } from './evidence';
 import { plural, relative } from './format';
 import { sandboxVerdict } from './sandbox';
+import { catalogForRoute, checkRoute, routeComplete } from './modelRoutes';
 import type {
   Backend,
   Capabilities,
@@ -79,28 +80,12 @@ export function repositoryStep(draft: Config, saved: Config | null): SetupStep {
   };
 }
 
-function routeComplete(route: Route | undefined): boolean {
-  if (!route) return false;
-  return (route.backend ?? 'codex') === 'opencode'
-    ? filled(route.provider) && filled(route.model)
-    : filled(route.model) && filled(route.effort);
-}
-
 function routeValidated(
   route: Route,
   config: Config,
   catalogs: Partial<Record<Backend, ModelCatalog>>
 ): boolean {
-  const backend = route.backend ?? 'codex';
-  const catalog = catalogs[backend];
-  if (!catalog?.loaded || catalog.binary !== config[`${backend}_binary`]) return false;
-  const model = catalog.models.find(
-    (entry) => entry.model === route.model && (entry.provider ?? null) === (route.provider ?? null)
-  );
-  if (!model?.available) return false;
-  return backend === 'codex'
-    ? model.efforts.includes(route.effort)
-    : !route.variant || model.variants.includes(route.variant);
+  return checkRoute(route, catalogForRoute(route, config, catalogs)).state === 'valid';
 }
 
 function requiredRoutes(config: Config, audit: boolean): [string, Route][] {

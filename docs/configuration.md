@@ -77,9 +77,9 @@ when a check or run needs them, so an incomplete draft can still be saved.
 | --- | --- | --- | --- |
 | `codex_binary` | `codex` | Non-blank executable path, at most 4,096 bytes, no control characters | The Codex CLI to run. |
 | `opencode_binary` | `opencode` | As for `codex_binary` | The OpenCode CLI to run. |
-| `roles` | Codex routes without model or effort | Exactly `orchestrator`, `discovery`, `proposal_reviewer` and `code_reviewer` | Planning and code review routes. |
-| `tiers` | Codex routes with an effort and no model | Exactly `XS`, `S`, `M`, `L` and `XL` | Execution routes by task size. |
-| `repair_route` | Codex, `medium` effort, no model | One route | The persistent repair thread's route. |
+| `roles` | Balanced Luna/Sol/Astra Codex routes; see [model routing](model-routing.md#defaults-for-new-configurations) | Exactly `orchestrator`, `discovery`, `proposal_reviewer` and `code_reviewer` | Planning and code review routes. |
+| `tiers` | Luna for XS/S, Sol for M/L, Astra for XL; see [efforts](model-routing.md#defaults-for-new-configurations) | Exactly `XS`, `S`, `M`, `L` and `XL` | Execution routes by task size. |
+| `repair_route` | Codex, `gpt-6.1-sol`, `medium` effort | One route | The persistent repair thread's route. |
 
 [Model routing](model-routing.md) describes the route fields. An audit needs the
 orchestrator, discovery and proposal reviewer routes; execution needs every route.
@@ -148,8 +148,9 @@ separately from `max_workspace_bytes`, which covers only the data directory. Oct
 never deletes runner storage; configure its retention on the host.
 
 [Download the default configuration JSON](configuration.example.json) to inspect the full
-shape. Model IDs and some role settings are deliberately empty until you choose routes
-available to your provider account. The file is a reference, not a ready-to-run setup.
+shape. New model defaults must be checked against your installed runner and provider
+account; saved routes are not changed on upgrade. Repository identity and verification
+commands still need configuration. The file is a reference, not a ready-to-run setup.
 
 For command-line options, environment variables, the optional attention webhook and
 planning context, see [deployment and operations](deployment.md#cli) and

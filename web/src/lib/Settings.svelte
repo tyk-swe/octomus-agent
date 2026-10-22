@@ -7,7 +7,7 @@
     Backend,
     Config,
     CycleMode,
-    Model,
+    DoctorResponse,
     ModelCatalog,
     Route,
     SettingsView,
@@ -15,7 +15,14 @@
   } from './types';
   import RelativeTime from './RelativeTime.svelte';
   import RouteEditor from './RouteEditor.svelte';
-  import { BACKENDS, backendLabel } from './modelRoutes';
+  import {
+    BACKENDS,
+    backendLabel,
+    catalogForRoute,
+    catalogsFromDoctor,
+    checkRoute,
+    failedCatalog
+  } from './modelRoutes';
   import SetupChecklist from './SetupChecklist.svelte';
   import BaselineCheck from './BaselineCheck.svelte';
   import { type Preflight, type SetupStatus } from './setup';
@@ -59,12 +66,14 @@
     message = $state(''),
     pending = $state(''),
     catalogs = $state<Partial<Record<Backend, ModelCatalog>>>({}),
-    preflight = $state<Preflight | null>(null);
+    preflight = $state<Preflight | null>(null),
+    connectionDetails = $state<DoctorResponse | null>(null);
   const busy = $derived(pending !== '');
   const dirty = $derived(draft !== null && draftDirty(draft));
   const draftCommands = $derived(draft ? commandsForDraft(draft) : []);
   const draftExcluded = $derived(draft ? excludedForDraft(draft) : []);
   let disposed = false;
+  let diagnostic: AbortController | null = null;
   let received: SettingsView | null = null;
   const settingsResource = new Resource(
     (_key: string, signal) => client.settings(signal),
@@ -76,6 +85,7 @@
   );
   onDestroy(() => {
     disposed = true;
+    diagnostic?.abort();
     settingsResource.dispose();
   });
   const transformedByField = $derived(new Map(transformed.map((entry) => [entry.field, entry])));
@@ -114,6 +124,42 @@
     ...known.filter((key) => keys.includes(key)),
     ...keys.filter((key) => !known.includes(key))
   ];
+  const routeIssues = $derived.by(() => {
+    if (!config) return [];
+    const routes = [
+      ...ordered(Object.keys(config.roles), ROLES).map((role) => ({
+        name: names[role] ?? role,
+        route: config.roles[role],
+        field: 'roles',
+        anchor: 'route-' + role
+      })),
+      ...ordered(Object.keys(config.tiers), TIERS).map((tier) => ({
+        name: tier + ' execution',
+        route: config.tiers[tier],
+        field: 'tiers',
+        anchor: 'route-tier-' + tier
+      })),
+      { name: 'Repair', route: config.repair_route, field: 'repair_route', anchor: 'route-repair' }
+    ];
+    return routes
+      .filter((entry) => !locked(entry.field))
+      .flatMap((entry) => {
+        const { problem } = checkRoute(entry.route, routeCatalog(entry.route));
+        return problem ? [{ ...entry, problem }] : [];
+      });
+  });
+  const connectionWarnings = $derived(
+    connectionDetails
+      ? [
+          ...new Set([
+            ...connectionDetails.warnings,
+            ...connectionDetails.backends.flatMap((backend) =>
+              backend.warning ? [backend.warning] : []
+            )
+          ])
+        ]
+      : []
+  );
   async function load() {
     if (loading || busy || dirty) return;
     if (await settingsResource.refresh('settings')) {
@@ -128,6 +174,7 @@
       conflict = false;
       message = '';
       preflight = null;
+      connectionDetails = null;
     }
     draft = configurationDraft(view);
     loadError = '';
@@ -173,41 +220,55 @@
     }
   }
   function routeCatalog(route: Route) {
-    const backend = route.backend ?? 'codex';
-    const entry = catalogs[backend];
-    return entry?.binary === config?.[`${backend}_binary`] ? entry : undefined;
+    return config ? catalogForRoute(route, config, catalogs) : undefined;
+  }
+  function cancelDiagnostic() {
+    if (!diagnostic || diagnostic.signal.aborted) return;
+    diagnostic.abort();
+    message = pending.startsWith('catalog-')
+      ? 'Catalog loading cancelled.'
+      : 'Connection check cancelled.';
   }
   async function catalog(backend: Backend) {
     if (!config || !editable || busy || loading || locked(`${backend}_binary`)) return;
     const binary = config[`${backend}_binary`];
+    const request = new AbortController();
+    diagnostic = request;
     pending = `catalog-${backend}`;
     error = '';
     conflict = false;
     message = '';
     try {
-      const models = await client.catalog(backend, binary);
-      if (disposed) return;
+      const models = await client.catalog(backend, binary, request.signal);
+      if (disposed || request.signal.aborted || diagnostic !== request) return;
       catalogs[backend] = { binary, models, loaded: true };
       const available = models.filter((model) => model.available).length;
       message = `${plural(available, `${backendLabel(backend)} model`)} available. Routes are never silently substituted.`;
     } catch (e) {
-      if (disposed) return;
+      if (disposed || request.signal.aborted || diagnostic !== request) return;
       error = (e as Error).message;
-      catalogs[backend] = { binary, models: [], loaded: false, error };
+      catalogs[backend] = failedCatalog(catalogs[backend], binary, error);
     } finally {
-      if (!disposed) pending = '';
+      if (!disposed && diagnostic === request) {
+        diagnostic = null;
+        pending = '';
+      }
     }
   }
   async function doctor(mode: CycleMode) {
     if (!config || dirty || busy || loading) return;
+    const request = new AbortController();
+    diagnostic = request;
     pending = mode;
     error = '';
     conflict = false;
     message = '';
     const at = clockTime();
     try {
-      const result = await client.doctor(mode);
-      if (disposed) return;
+      const result = await client.doctor(mode, request.signal);
+      if (disposed || request.signal.aborted || diagnostic !== request) return;
+      catalogs = catalogsFromDoctor(catalogs, result);
+      connectionDetails = result;
       message = result.message;
       preflight = {
         mode,
@@ -217,14 +278,17 @@
         at
       };
     } catch (e) {
-      if (disposed) return;
+      if (disposed || request.signal.aborted || diagnostic !== request) return;
       error = (e as Error).message;
       preflight =
         e instanceof ApiError && e.checkedRevision
           ? { mode, ok: false, detail: error, checkedRevision: e.checkedRevision, at }
           : null;
     } finally {
-      if (!disposed) pending = '';
+      if (!disposed && diagnostic === request) {
+        diagnostic = null;
+        pending = '';
+      }
     }
   }
   function focusControl(target: string) {
@@ -232,7 +296,8 @@
     if (!element) return;
     const control = element.matches('input, select, textarea, button')
       ? element
-      : element.querySelector<HTMLElement>('input, select, textarea, button');
+      : element.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+        element.querySelector<HTMLElement>('input, select, textarea, button');
     (control ?? element).scrollIntoView({ block: 'center' });
     control?.focus({ preventScroll: true });
   }
@@ -262,8 +327,41 @@
       disabled={!config || busy || loading || dirty}
       >{pending === 'audit' ? 'Checking audit connection…' : 'Check audit connection'}</button
     >
+    {#if pending === 'audit' || pending === 'execution' || pending.startsWith('catalog-')}
+      <button type="button" class="button" onclick={cancelDiagnostic}>Cancel diagnostic</button>
+    {/if}
   </div>
 </div>
+{#if connectionDetails}
+  <section class="panel connection-details" aria-labelledby="connection-details-heading">
+    <div class="section-heading">
+      <div>
+        <h2 id="connection-details-heading">Last successful connection check</h2>
+        <p>
+          {connectionDetails.mode === 'audit' ? 'Audit' : 'Execution'} check of saved configuration
+          <code>{connectionDetails.checked_revision}</code>.
+          {#if dirty || connectionDetails.checked_revision !== revision}
+            These details do not cover the current draft.
+          {/if}
+          No model inference was performed.
+        </p>
+      </div>
+    </div>
+    <dl class="facts">
+      {#each connectionDetails.backends as backend (backend.backend)}
+        <div>
+          <dt>{backendLabel(backend.backend)}</dt>
+          <dd>{backend.version} · Protocol {backend.protocol_version}</dd>
+        </div>
+      {/each}
+    </dl>
+    {#if connectionWarnings.length}
+      <ul class="connection-warnings" aria-label="Connection warnings">
+        {#each connectionWarnings as warning}<li>{warning}</li>{/each}
+      </ul>
+    {/if}
+  </section>
+{/if}
 {#if !editable}<div class="notice">
     <Icon name="clock" />
     {status?.auto_merge_active
@@ -431,6 +529,13 @@
           {/each}
         </div>
         {#each BACKENDS as backend}
+          {#if catalogs[backend]?.binary === config[`${backend}_binary`] && catalogs[backend]?.error}
+            <p class="catalog-note" role="status">
+              {backendLabel(backend)}: {catalogs[backend]?.error}
+              {catalogs[backend]?.loaded ? 'Showing stale, unchecked choices.' : 'Catalog unavailable.'}
+              Use Load {backendLabel(backend)} models to retry. Saved routes are unchanged.
+            </p>
+          {/if}
           {#if locked(`${backend}_binary`)}<p
               class="muted catalog-note"
               id={`catalog-preview-${backend}`}
@@ -438,6 +543,23 @@
               Replace the {backendLabel(backend)} executable preview to load its catalog.
             </p>{/if}
         {/each}
+        {#if routeIssues.length}
+          <section class="route-issues" aria-labelledby="route-issues-heading">
+            <h3 id="route-issues-heading">Model routes needing attention</h3>
+            <p>Incomplete drafts can still be saved. No route is silently substituted.</p>
+            <ul>
+              {#each routeIssues as issue (issue.anchor)}
+                <li>
+                  <button
+                    type="button"
+                    class="text-button"
+                    onclick={() => focusControl(issue.anchor)}>{issue.name}</button
+                  >: {issue.problem}
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
         {@render previewNote('roles', 'role routes', true)}
         {#each ordered(Object.keys(config.roles), ROLES) as role}
           <RouteEditor
@@ -452,6 +574,7 @@
         {#each ordered(Object.keys(config.tiers), TIERS) as tier}
           <RouteEditor
             name={tier + ' execution'}
+            anchor={'route-tier-' + tier}
             bind:route={config.tiers[tier]}
             catalog={routeCatalog(config.tiers[tier])}
             disabled={locked('tiers')}
@@ -460,6 +583,7 @@
         {@render previewNote('repair_route', 'repair route', true)}
         <RouteEditor
           name="Repair"
+          anchor="route-repair"
           bind:route={config.repair_route}
           catalog={routeCatalog(config.repair_route)}
           disabled={locked('repair_route')}
@@ -729,6 +853,24 @@
   }
   .notification-facts {
     margin-bottom: 20px;
+  }
+  .connection-details {
+    margin-bottom: 20px;
+    padding-bottom: 20px;
+  }
+  .connection-details code,
+  .connection-details dd {
+    overflow-wrap: anywhere;
+  }
+  .connection-warnings,
+  .route-issues {
+    margin: 0 24px 20px;
+    font-size: 12px;
+    color: var(--warn-fg);
+  }
+  .route-issues li {
+    margin: 6px 0;
+    overflow-wrap: anywhere;
   }
   .catalog-actions {
     display: flex;

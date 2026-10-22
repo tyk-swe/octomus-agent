@@ -8,55 +8,55 @@
   "roles": {
     "code_reviewer": {
       "backend": "codex",
-      "model": "",
-      "effort": ""
+      "model": "gpt-6-astra",
+      "effort": "high"
     },
     "discovery": {
       "backend": "codex",
-      "model": "",
-      "effort": ""
+      "model": "gpt-6-luna",
+      "effort": "high"
     },
     "orchestrator": {
       "backend": "codex",
-      "model": "",
-      "effort": ""
+      "model": "gpt-6.1-sol",
+      "effort": "high"
     },
     "proposal_reviewer": {
       "backend": "codex",
-      "model": "",
-      "effort": ""
+      "model": "gpt-6.1-sol",
+      "effort": "high"
     }
   },
   "tiers": {
     "L": {
       "backend": "codex",
-      "model": "",
+      "model": "gpt-6.1-sol",
       "effort": "medium"
     },
     "M": {
       "backend": "codex",
-      "model": "",
+      "model": "gpt-6.1-sol",
       "effort": "low"
     },
     "S": {
       "backend": "codex",
-      "model": "",
+      "model": "gpt-6-luna",
       "effort": "max"
     },
     "XL": {
       "backend": "codex",
-      "model": "",
+      "model": "gpt-6-astra",
       "effort": "high"
     },
     "XS": {
       "backend": "codex",
-      "model": "",
+      "model": "gpt-6-luna",
       "effort": "xhigh"
     }
   },
   "repair_route": {
     "backend": "codex",
-    "model": "",
+    "model": "gpt-6.1-sol",
     "effort": "medium"
   },
   "categories": [

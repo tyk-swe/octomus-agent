@@ -4,6 +4,7 @@ package config
 
 import (
 	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -15,11 +16,21 @@ func TestDefaultRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Validate(true) == nil {
-		t.Fatal("unconfigured routes ready")
+		t.Fatal("unconfigured repository ready")
+	}
+	wantRoutes := map[string]Route{
+		"orchestrator": NewRoute("gpt-6.1-sol", "high"), "discovery": NewRoute("gpt-6-luna", "high"),
+		"proposal_reviewer": NewRoute("gpt-6.1-sol", "high"), "code_reviewer": NewRoute("gpt-6-astra", "high"),
+		"XS": NewRoute("gpt-6-luna", "xhigh"), "S": NewRoute("gpt-6-luna", "max"),
+		"M": NewRoute("gpt-6.1-sol", "low"), "L": NewRoute("gpt-6.1-sol", "medium"), "XL": NewRoute("gpt-6-astra", "high"),
+		"repair": NewRoute("gpt-6.1-sol", "medium"),
 	}
 	for _, r := range c.RoutesFor(false) {
-		if r.Route.Model != "" {
-			t.Fatal("default silently named a model")
+		if r.Route != wantRoutes[r.Name] {
+			t.Fatalf("default %s = %+v; want %+v", r.Name, r.Route, wantRoutes[r.Name])
+		}
+		if err := r.Route.Validate(true); err != nil {
+			t.Fatalf("default %s route is incomplete: %v", r.Name, err)
 		}
 	}
 	if c.Tiers["XS"].Effort != "xhigh" || c.Tiers["S"].Effort != "max" || c.Tiers["XL"].Effort != "high" {
@@ -152,6 +163,52 @@ func TestConfigJSONContract(t *testing.T) {
 		if err := json.Unmarshal([]byte(raw), &cfg); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
+	}
+}
+
+func TestSavedRoutesOverrideNewDefaults(t *testing.T) {
+	cfg := Default()
+	cfg.Roles["orchestrator"] = NewRoute("older-model", "low")
+	cfg.Roles["discovery"] = NewRoute("", "")
+	cfg.Tiers["XS"] = Route{Backend: BackendOpencode, Provider: new("custom"), Model: "provider/model", Variant: new("custom")}
+	cfg.Tiers["XL"] = NewRoute("", "high")
+	cfg.RepairRoute = NewRoute("", "medium")
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Config
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(roundTrip) != string(data) {
+		t.Fatalf("saved routes were replaced by defaults:\n%s\n%s", data, roundTrip)
+	}
+}
+
+func TestExampleConfigurationMatchesDefaults(t *testing.T) {
+	data, err := os.ReadFile("../../docs/configuration.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var example Config
+	if err := json.Unmarshal(data, &example); err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(example)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("documented defaults differ:\n%s\n%s", got, want)
 	}
 }
 
