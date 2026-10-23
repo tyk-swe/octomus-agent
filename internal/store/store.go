@@ -449,7 +449,8 @@ func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) 
 func (s *Store) PruneEvents(retain int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.conn.ExecContext(background, "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)", retain)
+	_, err := s.conn.ExecContext(background, `DELETE FROM events WHERE (?1='' OR repository=?1 COLLATE NOCASE)
+        AND id NOT IN (SELECT id FROM events WHERE (?1='' OR repository=?1 COLLATE NOCASE) ORDER BY id DESC LIMIT ?2)`, s.repo, retain)
 	return err
 }
 

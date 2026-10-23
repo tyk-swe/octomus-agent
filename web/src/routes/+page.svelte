@@ -497,6 +497,7 @@
     proposals = [];
     prRows = [];
     proposalCounts = {};
+    proposalCycle = 'all';
     queueTabCounts = {};
     listBefore = null;
     listNext = null;
@@ -505,13 +506,7 @@
     listError = '';
     lastPage = '';
     error = '';
-    try {
-      data = await client.state();
-      connectionError = '';
-      lastUpdated = clockTime();
-    } catch (e) {
-      error = (e as Error).message;
-    }
+    await refresh();
   }
   function disconnect() {
     sessionGeneration++;

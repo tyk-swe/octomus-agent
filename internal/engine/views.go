@@ -110,7 +110,7 @@ func (a *App) StateView() (*StateView, error) {
 		summary := a.baselineSummary(latest, cfg)
 		baseline = &summary
 	}
-	storage, err := store.Get(a.store, storageKey)
+	storage, err := store.Get(a.store, a.storageKey())
 	if err != nil {
 		return nil, err
 	}

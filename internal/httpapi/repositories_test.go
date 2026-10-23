@@ -99,3 +99,33 @@ func TestRepositoriesEndpointsAndScoping(t *testing.T) {
 		t.Fatalf("instance ceiling = %d, want 42", after.InstanceMaxSessionsPerDay)
 	}
 }
+
+func TestRepositorySelectionBeforeRegistration(t *testing.T) {
+	fleet, app, state := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
+	if response := call(t, router, "GET", "/api/state?repository=acme/unknown", ""); response.Code != http.StatusNotFound {
+		t.Fatalf("fresh instance accepted unknown repository: %d", response.Code)
+	}
+	// Saving the first configuration leaves the legacy App in service until
+	// registration. Only that saved identity may select it explicitly.
+	cfg := config.Default()
+	cfg.GitHubRepo = "acme/first"
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
+		t.Fatal(err)
+	}
+	control := model.DefaultControl()
+	control.Paused = false
+	control.Mode = model.OperatingModeContinuous
+	if err := state.SaveControl(control); err != nil {
+		t.Fatal(err)
+	}
+	if response := call(t, router, "GET", "/api/state?repository=ACME/First", ""); response.Code != http.StatusOK {
+		t.Fatalf("saved repository rejected: %d: %s", response.Code, response.Body.String())
+	}
+	if response := call(t, router, "POST", "/api/control/pause?repository=acme/unknown", "{}"); response.Code != http.StatusNotFound {
+		t.Fatalf("unknown repository action accepted: %d", response.Code)
+	}
+	if after, err := app.Control(); err != nil || after.Paused {
+		t.Fatalf("unknown repository paused the primary: %+v, %v", after, err)
+	}
+}

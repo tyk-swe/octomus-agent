@@ -44,7 +44,7 @@ func (a *App) SandboxPosture() SandboxPosture {
 			}
 		}
 	}
-	if selfTest, err := store.Get(a.store, selfTestKey); err == nil && selfTest != nil {
+	if selfTest, err := store.Get(a.store, a.selfTestKey()); err == nil && selfTest != nil {
 		if posture.Broker != nil && selfTest.matchesPosture(*posture.Broker, a.deployment) {
 			posture.SelfTest = selfTest
 		}
@@ -64,7 +64,9 @@ type SandboxSelfTest struct {
 	Error              *string              `json:"error"`
 }
 
-var selfTestKey = store.Setting[SandboxSelfTest]("sandbox_self_test")
+func (a *App) selfTestKey() store.Key[SandboxSelfTest] {
+	return store.ScopedSetting[SandboxSelfTest](a.store, "sandbox_self_test")
+}
 
 // SelfTest runs the containment probe in a real sandbox and records what it observed. It proves the boundary
 // rather than describing it: every check is made from inside.
@@ -135,7 +137,7 @@ func (a *App) SelfTest(ctx context.Context) (SandboxSelfTest, error) {
 	if err := cancellation(); err != nil {
 		return record, err
 	}
-	if err := store.Put(a.store, selfTestKey, record); err != nil {
+	if err := store.Put(a.store, a.selfTestKey(), record); err != nil {
 		return record, err
 	}
 	return record, nil

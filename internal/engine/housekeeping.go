@@ -28,7 +28,9 @@ type storageUsage struct {
 	RunnerTranscripts runnerTranscripts `json:"runner_transcripts"`
 }
 
-var storageKey = store.Setting[storageUsage]("storage")
+func (a *App) storageKey() store.Key[storageUsage] {
+	return store.ScopedSetting[storageUsage](a.store, "storage")
+}
 
 const runnerStorageMessage = "Runner storage reported separately. Application admission measures the data directory."
 
@@ -194,8 +196,8 @@ var errStorageIncomplete = errors.New("Storage measurement is incomplete")
 
 // measuredBytes returns only complete observations. An unknown subtree must not turn a partial byte count into a
 // fresh measured total; application snapshots retain their previous timestamp and runner observations report error.
-func measuredBytes(ctx context.Context, path string) (uint64, error) {
-	usage, err := workspace.Measure(ctx, path, 0)
+func measuredBytes(ctx context.Context, path string, excluded ...string) (uint64, error) {
+	usage, err := workspace.Measure(ctx, path, 0, excluded...)
 	if err != nil {
 		return 0, err
 	}
@@ -206,7 +208,7 @@ func measuredBytes(ctx context.Context, path string) (uint64, error) {
 }
 
 func (a *App) measureStorage(cfg config.Config) error {
-	application, err := measuredBytes(a.ctx, a.dataDir)
+	application, err := measuredBytes(a.ctx, a.dataDir, a.nestedRoots()...)
 	if err != nil {
 		return err
 	}
@@ -248,5 +250,5 @@ func (a *App) measureStorage(cfg config.Config) error {
 		transcripts.Status = "measured"
 	}
 	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
-	return store.Put(a.store, storageKey, usage)
+	return store.Put(a.store, a.storageKey(), usage)
 }

@@ -43,6 +43,10 @@ var releaseMigrations = []migration{
 		_, err := c.ExecContext(ctx, repositoryScopesV11)
 		return err
 	}},
+	{name: "v12-repository-retention", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, repositoryRetentionV12)
+		return err
+	}},
 }
 
 //go:embed migrations/008-notifications.sql
@@ -56,6 +60,9 @@ var completeSummaryTextV10 string
 
 //go:embed migrations/011-repository-scopes.sql
 var repositoryScopesV11 string
+
+//go:embed migrations/012-repository-retention.sql
+var repositoryRetentionV12 string
 
 type schemaPlan struct {
 	ddl        string

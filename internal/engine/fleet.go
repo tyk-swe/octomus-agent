@@ -270,7 +270,11 @@ func (f *Fleet) forLocked(repo string) *App {
 		}
 	}
 	if len(f.entries) == 0 {
-		return f.apps[0]
+		// The first saved configuration can name the legacy App before
+		// registration materializes it in the fleet.
+		if cfg, err := f.apps[0].Config(); err == nil && config.EqualASCII(cfg.GitHubRepo, repo) {
+			return f.apps[0]
+		}
 	}
 	return nil
 }

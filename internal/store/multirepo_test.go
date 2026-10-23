@@ -153,6 +153,62 @@ func TestRepositoryScopedEvents(t *testing.T) {
 	}
 }
 
+func TestRepositoryEventRetention(t *testing.T) {
+	t.Parallel()
+	for _, migrated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fresh", true: "upgraded-v0.1.0"}[migrated], func(t *testing.T) {
+			path := statePath(t)
+			if migrated {
+				path = golden(t)
+			}
+			s := open(t, path)
+			entries, err := s.Repositories()
+			must(t, err)
+			primary := "acme/one"
+			if len(entries) != 0 {
+				primary = entries[0].GitHubRepo
+			}
+			must(t, s.RegisterRepository(store.RepositoryEntry{GitHubRepo: primary, DataDir: "."}))
+			must(t, s.RegisterRepository(store.RepositoryEntry{GitHubRepo: "acme/two", DataDir: "repos/two"}))
+			saveRepoConfig(t, s, primary, func(c *config.Config) { c.RetainEvents = 2 })
+			saveRepoConfig(t, s, "acme/two", func(c *config.Config) { c.RetainEvents = 4 })
+			one, two := s.ForRepository(primary), s.ForRepository("acme/two")
+			for range 4 {
+				must(t, two.Event("system", model.EventConfiguration, "Secondary activity"))
+			}
+			for range 7 {
+				must(t, one.Event("system", model.EventConfiguration, "Primary activity"))
+			}
+			assertCount := func(scoped *store.Store, want int) {
+				t.Helper()
+				events, err := scoped.Events(nil)
+				must(t, err)
+				if len(events) != want {
+					t.Fatalf("%s retained %d events, want %d", scoped.Repository(), len(events), want)
+				}
+			}
+			assertCount(one, 2)
+			assertCount(two, 4)
+			// Unscoped writes must be attributed before the retention trigger
+			// chooses a repository's policy and rows to prune.
+			task := task()
+			task.Config.GitHubRepo = "acme/two"
+			must(t, store.Put(s, store.Tasks.Key(task.ID), task))
+			for range 3 {
+				must(t, s.Event(task.ID, model.EventWorkerError, "Secondary task activity"))
+			}
+			assertCount(one, 2)
+			assertCount(two, 4)
+			must(t, one.PruneEvents(1))
+			assertCount(one, 1)
+			assertCount(two, 4)
+			must(t, two.PruneEvents(2))
+			assertCount(one, 1)
+			assertCount(two, 2)
+		})
+	}
+}
+
 func TestRepositoryScopedTaskLists(t *testing.T) {
 	t.Parallel()
 	s := open(t, statePath(t))

@@ -46,6 +46,8 @@ CREATE TABLE usage (
 
 CREATE INDEX batch_status ON batch_members(run_id,status);
 
+CREATE INDEX events_repository ON events(repository COLLATE NOCASE,id DESC);
+
 CREATE INDEX decision_identity ON records(json_extract(data,'$.repository') COLLATE NOCASE,json_extract(data,'$.target'),json_extract(data,'$.problem_key'),json_extract(data,'$.cycle_id'),json_extract(data,'$.decision')) WHERE kind='decision';
 
 CREATE INDEX memory_repository ON records(kind,json_extract(data,'$.repository') COLLATE NOCASE);
@@ -79,18 +81,23 @@ CREATE TRIGGER batch_member_insert AFTER INSERT ON records WHEN NEW.kind='task' 
 CREATE TRIGGER batch_member_update AFTER UPDATE ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.run_id') IS NOT NULL BEGIN INSERT INTO batch_members VALUES(json_extract(NEW.data,'$.run_id'),NEW.id,json_extract(NEW.data,'$.status')) ON CONFLICT(run_id,task_id) DO UPDATE SET status=excluded.status; END;
 
 CREATE TRIGGER cap_activity AFTER INSERT ON events BEGIN
-                DELETE FROM events WHERE id <= NEW.id - COALESCE(json_extract(
-                    (SELECT data FROM records WHERE kind='settings' AND id='config'),
-                    '$.retain_events'
-                ),10000);
-            END;
-
-CREATE TRIGGER attribute_event_insert AFTER INSERT ON events WHEN NEW.repository='' BEGIN
     UPDATE events SET repository=COALESCE(
         (SELECT NULLIF(repository,'') FROM record_meta WHERE id=NEW.entity_id LIMIT 1),
         (SELECT COALESCE(json_extract(data,'$.repository'),json_extract(data,'$.config.github_repo')) FROM records WHERE id=NEW.entity_id AND kind IN ('request','baseline') LIMIT 1),
         (SELECT json_extract(data,'$.github_repo') FROM records WHERE kind='settings' AND id='config'),'')
-    WHERE id=NEW.id;
+    WHERE id=NEW.id AND repository='';
+    DELETE FROM events
+    WHERE repository=(SELECT repository FROM events WHERE id=NEW.id) COLLATE NOCASE
+        AND id <= (
+            SELECT id FROM events
+            WHERE repository=(SELECT repository FROM events WHERE id=NEW.id) COLLATE NOCASE
+            ORDER BY id DESC LIMIT 1 OFFSET COALESCE((
+                SELECT json_extract(data,'$.retain_events') FROM records
+                WHERE kind='settings' AND (id='config' OR id LIKE 'config:%')
+                    AND json_extract(data,'$.github_repo')=(SELECT repository FROM events WHERE id=NEW.id) COLLATE NOCASE
+                LIMIT 1
+            ),10000)
+        );
 END;
 
 CREATE TRIGGER count_record_insert AFTER INSERT ON record_meta BEGIN INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END;

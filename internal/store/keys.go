@@ -55,6 +55,12 @@ func (s *Store) scopedSetting(id string) string {
 	return id + ":" + s.repo
 }
 
+// ScopedSetting gives engine-owned settings the same repository identity as
+// the built-in settings, preserving the primary repository's legacy keys.
+func ScopedSetting[T any](s *Store, id string) Key[T] {
+	return Setting[T](s.scopedSetting(id))
+}
+
 func (s *Store) ConfigKey() Key[config.Config] {
 	return Setting[config.Config](s.scopedSetting("config"))
 }

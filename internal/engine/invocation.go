@@ -284,38 +284,20 @@ var ownedRoots = []string{"tasks", "cycles", "baselines", scratchDir}
 // ownerDepth is how many leading components of a path below the data directory name its owner: <parent>/<id>.
 const ownerDepth = 2
 
+func (a *App) nestedRoots() []string {
+	a.nestedMu.RLock()
+	defer a.nestedMu.RUnlock()
+	return a.nested
+}
+
 // measure measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
 // the walk could not measure, unreadable or too costly to traverse, holds unknown bytes: it puts its own owner over the
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
 func (a *App) measure(ctx context.Context, owner string) (uint64, error) {
-	a.nestedMu.RLock()
-	nestedRoots := a.nested
-	a.nestedMu.RUnlock()
-	usage, err := workspace.Measure(ctx, a.dataDir, ownerDepth)
+	usage, err := workspace.Measure(ctx, a.dataDir, ownerDepth, a.nestedRoots()...)
 	if err != nil {
 		return 0, err
-	}
-	// Other repositories nested under this data directory are measured (and
-	// refused) by their own Apps; neither their bytes nor their unreadable
-	// retained work count against this admission.
-	for _, nested := range nestedRoots {
-		sub, err := workspace.Measure(ctx, filepath.Join(a.dataDir, nested), ownerDepth)
-		if err != nil {
-			return 0, err
-		}
-		if sub.Bytes >= usage.Bytes {
-			usage.Bytes = 0
-		} else {
-			usage.Bytes -= sub.Bytes
-		}
-		kept := usage.Unmeasured[:0]
-		for _, rel := range usage.Unmeasured {
-			if rel != nested && !strings.HasPrefix(rel, nested+string(filepath.Separator)) {
-				kept = append(kept, rel)
-			}
-		}
-		usage.Unmeasured = kept
 	}
 	for _, rel := range usage.Unmeasured {
 		parent, _, owned := strings.Cut(rel, string(filepath.Separator))

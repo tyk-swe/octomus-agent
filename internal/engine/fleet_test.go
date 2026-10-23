@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox/wire"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -152,6 +154,79 @@ func TestPrimaryMeasurementExcludesNestedRepositories(t *testing.T) {
 	}
 	if other != 900 {
 		t.Fatalf("nested repository measured %d bytes, want its own 900", other)
+	}
+}
+
+type fleetPostureBackend struct {
+	sandbox.Host
+	info wire.BrokerInfo
+}
+
+func (b fleetPostureBackend) Mode() sandbox.Mode { return sandbox.ModeDocker }
+func (b fleetPostureBackend) Info(context.Context) (wire.BrokerInfo, error) {
+	return b.info, nil
+}
+func (b fleetPostureBackend) RefreshInfo(ctx context.Context) (wire.BrokerInfo, error) {
+	return b.Info(ctx)
+}
+
+func TestFleetKeepsStorageAndSandboxProofsPerRepository(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	info, deployment := postureFixture()
+	pins := map[string]Deployment{}
+	for _, repo := range []string{"fixture/one", "fixture/two"} {
+		d := deployment
+		d.GitHubRepo, d.Repository = repo, t.TempDir()
+		pins[repo] = d
+	}
+	fleet, err := NewFleet(state, t.TempDir(), FleetOptions{
+		Backend: fleetPostureBackend{info: info}, Deployments: pins, PrimaryRepository: "fixture/one",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	for i, app := range fleet.Apps() {
+		dir := filepath.Join(app.dataDir, "tasks", "retained")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "data"), make([]byte, (i+1)*100), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, app := range fleet.Apps() {
+		cfg, err := app.Config()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := app.measureStorage(cfg); err != nil {
+			t.Fatal(err)
+		}
+		proof := SandboxSelfTest{At: app.Repository(), ImageID: info.ImageID, Runtime: info.Runtime, Passed: true}
+		if err := proof.bindPosture(info, info, app.deployment); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(app.store, app.selfTestKey(), proof); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, app := range fleet.Apps() {
+		view, err := app.StateView()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := uint64((i + 1) * 100)
+		if view.Storage == nil || view.Storage.TaskBytes != want || view.Storage.ApplicationBytes != want {
+			t.Fatalf("%s storage includes another repository: %+v", app.Repository(), view.Storage)
+		}
+		if proof := app.SandboxPosture().SelfTest; proof == nil || proof.At != app.Repository() {
+			t.Fatalf("%s lost its containment proof: %+v", app.Repository(), proof)
+		}
+	}
+	if fleet.Primary().storageKey() != store.Setting[storageUsage]("storage") || fleet.Primary().selfTestKey() != store.Setting[SandboxSelfTest]("sandbox_self_test") {
+		t.Fatal("primary repository lost its legacy snapshot keys")
 	}
 }
 
