@@ -422,6 +422,9 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	}
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	if a.ctx.Err() != nil {
+		return nil, conflictError("The repository service has stopped; reload before saving configuration")
+	}
 	control, err := a.Control()
 	if err != nil {
 		return nil, err
@@ -451,7 +454,14 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	c = a.deployment.pin(c)
-	if repo := a.Repository(); repo != "" && !config.EqualASCII(c.GitHubRepo, repo) {
+	repo := a.Repository()
+	if repo == "" {
+		repo, err = a.store.RegisteredPrimary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if repo != "" && !config.EqualASCII(c.GitHubRepo, repo) {
 		return nil, fmt.Errorf("GitHub repository must remain %s; register another repository to configure it separately", repo)
 	}
 	if err := c.Validate(false); err != nil {

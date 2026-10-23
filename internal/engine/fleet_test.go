@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -408,6 +409,13 @@ func TestFleetFailedInitializationKeepsPrimaryActive(t *testing.T) {
 	if fleet.Primary() != primary || primary.ctx.Err() != nil {
 		t.Fatal("failed repository initialization retired the live primary")
 	}
+	settings, err := primary.Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.SaveConfig(settings.Revision, map[string]json.RawMessage{"github_repo": json.RawMessage(`"fixture/other"`)}); err == nil {
+		t.Fatal("legacy App changed the identity after registration committed")
+	}
 	if err := os.Remove(blocked); err != nil {
 		t.Fatal(err)
 	}
@@ -477,5 +485,71 @@ func TestFleetCancelsAddedAppsBeforeDrainingPrimary(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("fleet did not finish draining")
+	}
+}
+
+func TestFleetRegistrationWaitsForLegacyConfigGate(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	fleet, err := NewFleet(state, t.TempDir(), FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	primary := fleet.Primary()
+	primary.gate.Lock()
+	release := sync.OnceFunc(primary.gate.Unlock)
+	defer release()
+	started, done := make(chan struct{}), make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := fleet.AddRepository(store.RepositoryEntry{GitHubRepo: "fixture/new", DataDir: "."})
+		done <- err
+	}()
+	<-started
+	select {
+	case err := <-done:
+		t.Fatalf("registration bypassed the configuration gate: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	registered, err := state.Repositories()
+	if err != nil || len(registered) != 0 {
+		t.Fatalf("registry changed while a legacy save owns the gate: %+v, %v", registered, err)
+	}
+	// Complete the in-flight configuration save before admitting registration.
+	cfg := testConfig(t.TempDir())
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-done; err == nil {
+		t.Fatal("registration stole the data-directory root from the saved repository")
+	}
+	if primary.ctx.Err() != nil {
+		t.Fatal("failed concurrent registration retired the primary")
+	}
+}
+
+func TestRetiredAppCannotSaveConfiguration(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	fleet, err := NewFleet(state, t.TempDir(), FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	retired := fleet.Primary()
+	settings, err := retired.Settings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fleet.AddRepository(store.RepositoryEntry{GitHubRepo: "fixture/new", DataDir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retired.SaveConfig(settings.Revision, map[string]json.RawMessage{"github_repo": json.RawMessage(`"fixture/other"`)}); err == nil {
+		t.Fatal("a request resolved before retirement overwrote the replacement's settings")
+	}
+	if cfg, err := store.Get(state, store.ConfigKey); err != nil || cfg != nil {
+		t.Fatalf("retired save changed primary configuration: %+v, %v", cfg, err)
 	}
 }

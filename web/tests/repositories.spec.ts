@@ -125,7 +125,7 @@ test('Enter in configuration saves settings without submitting fleet actions', a
   });
   await login(page);
   await openNavigation(page, 'Configuration', false);
-  await page.getByLabel('Add a repository', { exact: true }).fill('fixture/extra');
+  await page.getByRole('textbox', { name: /^Add a repository/ }).fill('fixture/extra');
   const branch = page.getByLabel('Default branch', { exact: true });
   await branch.fill('updated-default');
   await branch.press('Enter');

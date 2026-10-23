@@ -197,6 +197,20 @@ func (f *Fleet) AddRepository(entry store.RepositoryEntry) (*App, error) {
 	if f.ctx.Err() != nil {
 		return nil, fmt.Errorf("The service is shutting down")
 	}
+	var retired *App
+	legacyLocked := false
+	if len(f.entries) == 0 && len(f.apps) == 1 {
+		retired = f.apps[0]
+		// Registry materialization and a legacy SaveConfig must agree on
+		// which repository owns the unsuffixed settings key.
+		retired.gate.Lock()
+		legacyLocked = true
+		defer func() {
+			if legacyLocked {
+				retired.gate.Unlock()
+			}
+		}()
+	}
 	if len(f.options.Deployments) > 0 {
 		if _, pinned := f.options.Deployments[strings.ToLower(entry.GitHubRepo)]; !pinned {
 			return nil, fmt.Errorf("Repositories are fixed by this deployment (OCTOMUS_GITHUB_REPO and OCTOMUS_GITHUB_REPOS); change them there and restart")
@@ -216,10 +230,6 @@ func (f *Fleet) AddRepository(entry store.RepositoryEntry) (*App, error) {
 	// registered; scoped Apps re-read the same saved policy (legacy
 	// identities for the primary). The retired App shuts down first so its
 	// workers are joined before the replacements recover their state.
-	var retired *App
-	if len(f.entries) == 0 && len(f.apps) == 1 {
-		retired = f.apps[0]
-	}
 	var added []*App
 	var addedEntries []store.RepositoryEntry
 	discard := func() {
@@ -244,6 +254,9 @@ func (f *Fleet) AddRepository(entry store.RepositoryEntry) (*App, error) {
 	// Finish filesystem initialization while the original primary is still
 	// live. Recovery itself must wait until its old workers have joined.
 	if retired != nil {
+		retired.cancel()
+		retired.gate.Unlock()
+		legacyLocked = false
 		retired.Shutdown()
 	}
 	for _, app := range added {

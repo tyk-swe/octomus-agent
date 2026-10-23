@@ -83,6 +83,19 @@ func (s *Store) Repositories() ([]RepositoryEntry, error) {
 	return []RepositoryEntry{{GitHubRepo: cfg.GitHubRepo, DataDir: "."}}, nil
 }
 
+// RegisteredPrimary returns the primary identity only after the explicit
+// registry exists. Before registration, a legacy configuration may still
+// change its repository identity through the normal configuration flow.
+func (s *Store) RegisteredPrimary() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	registry, err := recordAt(s.conn, repositoriesKey)
+	if err != nil || registry == nil || len(registry.Repositories) == 0 {
+		return "", err
+	}
+	return registry.Repositories[0].GitHubRepo, nil
+}
+
 // RegisterRepository adds a repository to the registry. Registering an
 // already-known repository (compared ASCII-case-insensitively, like GitHub
 // identities elsewhere) is a no-op that keeps the original entry.
