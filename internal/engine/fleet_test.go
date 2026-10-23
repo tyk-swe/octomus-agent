@@ -230,6 +230,48 @@ func TestFleetKeepsStorageAndSandboxProofsPerRepository(t *testing.T) {
 	}
 }
 
+func TestFleetAttributesManagedCheckoutsToTheirRepository(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	pins := map[string]Deployment{}
+	for i, repo := range []string{"fixture/one", "fixture/two"} {
+		checkout := filepath.Join(dataDir, "checkout")
+		if i > 0 {
+			checkout = filepath.Join(dataDir, "checkouts", store.RepositorySlug(repo))
+		}
+		if err := os.MkdirAll(checkout, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(checkout, "data"), make([]byte, (i+1)*100), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pins[repo] = Deployment{GitHubRepo: repo, Repository: checkout}
+	}
+	fleet, err := NewFleet(state, dataDir, FleetOptions{Deployments: pins, PrimaryRepository: "fixture/one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	for i, app := range fleet.Apps() {
+		want := uint64((i + 1) * 100)
+		if size, err := app.measure(context.Background(), "tasks/new"); err != nil || size != want {
+			t.Fatalf("%s checkout admission size = %d, %v; want %d", app.Repository(), size, err, want)
+		}
+		cfg, err := app.Config()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := app.measureStorage(cfg); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := store.Get(app.store, app.storageKey())
+		if err != nil || stored == nil || stored.ApplicationBytes != want {
+			t.Fatalf("%s checkout snapshot = %+v, %v", app.Repository(), stored, err)
+		}
+	}
+}
+
 func TestFleetRefusesRemovedDeploymentPin(t *testing.T) {
 	t.Parallel()
 	state := testStore(t)

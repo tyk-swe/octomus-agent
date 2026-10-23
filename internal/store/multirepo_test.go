@@ -276,3 +276,82 @@ func TestPerRepositoryBudgetAndInstanceCeiling(t *testing.T) {
 		t.Fatalf("planning capacity ignores the instance ceiling: %+v", capTwo)
 	}
 }
+
+func TestSharedPlanningReservations(t *testing.T) {
+	t.Parallel()
+	for _, finish := range []string{"completed", "interrupted"} {
+		t.Run(finish, func(t *testing.T) {
+			s := open(t, statePath(t))
+			configs := map[string]config.Config{}
+			for i, repo := range []string{"acme/one", "acme/two"} {
+				dir := "."
+				if i > 0 {
+					dir = "repos/two"
+				}
+				must(t, s.RegisterRepository(store.RepositoryEntry{GitHubRepo: repo, DataDir: dir}))
+				configs[repo] = saveRepoConfig(t, s, repo, func(c *config.Config) { c.DiscoveryAgents = 1 })
+				must(t, s.ForRepository(repo).SaveControl(model.DefaultControl()))
+			}
+			must(t, s.SetInstanceSettings(config.InstanceSettings{MaxSessionsPerDay: 9}))
+			at := time.Now().UTC()
+			begin := func(repo string) (model.Cycle, bool) {
+				t.Helper()
+				scoped := s.ForRepository(repo)
+				control, err := store.Get(scoped, scoped.ControlKey())
+				must(t, err)
+				next := control.Clone()
+				next.CycleNumber++
+				cycle := cycleFor(task())
+				cycle.Repository = repo
+				fingerprint, err := configs[repo].Fingerprint()
+				must(t, err)
+				_, started, err := scoped.BeginCycle(cycle, next, *control, fingerprint, at)
+				must(t, err)
+				return cycle, started
+			}
+			cycle, started := begin("acme/one")
+			if !started {
+				t.Fatal("first planning pass was refused")
+			}
+			if _, started := begin("acme/two"); started {
+				t.Fatal("two passes shared an allowance that can fund only one")
+			}
+			one, two := s.ForRepository("acme/one"), s.ForRepository("acme/two")
+			reserve := func(scoped *store.Store, cycleID string, taskID *string) error {
+				admission := store.NewAdmission(cycleID, taskID, "discovery", config.NewRoute("fixture", "low"))
+				admission.At = model.Timestamp(at)
+				return scoped.ReserveSession(0, admission)
+			}
+			for range 2 {
+				must(t, reserve(one, cycle.ID, nil))
+			}
+			if finish == "completed" {
+				for range 4 {
+					must(t, reserve(two, "other-cycle", new("other-task")))
+				}
+				if err := reserve(two, "other-cycle", new("other-task")); !errors.Is(err, model.BlockedBudgetExhausted) {
+					t.Fatalf("task stole committed planning capacity: %v", err)
+				}
+				for range 3 {
+					must(t, reserve(one, cycle.ID, nil))
+				}
+				cycle.Status = model.CycleCompleted
+			} else {
+				cycle.Status = model.CycleInterrupted
+			}
+			must(t, store.Put(one, store.Cycles.Key(cycle.ID), cycle))
+			capacity, err := two.PlanningCapacity(at)
+			must(t, err)
+			if finish == "interrupted" {
+				if capacity.Remaining != 7 || !capacity.Available() {
+					t.Fatalf("interrupted plan retained its unused allowance: %+v", capacity)
+				}
+				if _, started := begin("acme/two"); !started {
+					t.Fatal("released planning allowance was not reusable")
+				}
+			} else if capacity.Remaining != 0 {
+				t.Fatalf("completed plan exceeded the shared ceiling: %+v", capacity)
+			}
+		})
+	}
+}

@@ -198,6 +198,7 @@ export type Control = {
   paused: boolean;
   cycle_number: number;
   next_cycle_at: number;
+  budget_waiting?: boolean;
   error: string | null;
   mode: OperatingMode;
   batch: RunBatch | null;
@@ -209,6 +210,7 @@ export type ControlResult = {
   paused: boolean;
   cycle_number: number;
   next_cycle_at: number;
+  budget_waiting?: boolean;
   error: string | null;
   mode: OperatingMode;
   batch: RunBatch | null;

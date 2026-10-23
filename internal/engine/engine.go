@@ -64,6 +64,9 @@ type App struct {
 	// this immutable snapshot under nestedMu; measurement may hold fsLock already.
 	nestedMu sync.RWMutex
 	nested   []string
+	// A managed checkout outside this repository's workspace root still
+	// belongs to its storage budget. Set once before the App is published.
+	checkoutStorage string
 }
 
 func New(state *store.Store, dataDir string, options ...Option) *App {

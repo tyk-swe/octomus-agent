@@ -208,10 +208,14 @@ func measuredBytes(ctx context.Context, path string, excluded ...string) (uint64
 }
 
 func (a *App) measureStorage(cfg config.Config) error {
-	application, err := measuredBytes(a.ctx, a.dataDir, a.nestedRoots()...)
+	usage, err := a.applicationUsage(a.ctx, 0)
 	if err != nil {
 		return err
 	}
+	if len(usage.Unmeasured) != 0 {
+		return errStorageIncomplete
+	}
+	application := usage.Bytes
 	tasks, err := measuredBytes(a.ctx, filepath.Join(a.dataDir, "tasks"))
 	if err != nil {
 		return err
@@ -249,6 +253,6 @@ func (a *App) measureStorage(cfg config.Config) error {
 	} else if measured == len(backends) {
 		transcripts.Status = "measured"
 	}
-	usage := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
-	return store.Put(a.store, a.storageKey(), usage)
+	stored := storageUsage{MeasuredAt: model.Now(), ApplicationBytes: application, TaskBytes: tasks, PlanningBytes: planning, RunnerTranscripts: transcripts}
+	return store.Put(a.store, a.storageKey(), stored)
 }

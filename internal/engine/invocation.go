@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -290,12 +291,28 @@ func (a *App) nestedRoots() []string {
 	return a.nested
 }
 
+func (a *App) applicationUsage(ctx context.Context, group int) (workspace.Usage, error) {
+	usage, err := workspace.Measure(ctx, a.dataDir, group, a.nestedRoots()...)
+	if err != nil || a.checkoutStorage == "" {
+		return usage, err
+	}
+	checkout, err := workspace.Measure(ctx, a.checkoutStorage, 0)
+	if err != nil {
+		return workspace.Usage{}, err
+	}
+	usage.Bytes += min(checkout.Bytes, math.MaxUint64-usage.Bytes)
+	if len(checkout.Unmeasured) != 0 {
+		usage.Unmeasured = append(usage.Unmeasured, "checkout")
+	}
+	return usage, nil
+}
+
 // measure measures the data directory for an admission on behalf of owner, an owned root relative to it. A subtree
 // the walk could not measure, unreadable or too costly to traverse, holds unknown bytes: it puts its own owner over the
 // limit, and puts everyone over it when it lies outside any owned root. Another owner's unmeasured subtree does not
 // stop this admission; that owner can admit nothing more until its retained work is resolved.
 func (a *App) measure(ctx context.Context, owner string) (uint64, error) {
-	usage, err := workspace.Measure(ctx, a.dataDir, ownerDepth, a.nestedRoots()...)
+	usage, err := a.applicationUsage(ctx, ownerDepth)
 	if err != nil {
 		return 0, err
 	}

@@ -56,8 +56,8 @@ test('switching repositories reloads state and scopes subsequent settings reques
   await expect.poll(() => switchedReads).toBe(1);
   await page.clock.fastForward(8000);
   // A pending switch owns the state read; periodic polling cannot restore
-  // a dashboard that would allow another selection ahead of that response.
-  await expect(selection).toHaveCount(0);
+  // a dashboard ahead of that response. Recovery controls stay available.
+  await expect(page.getByRole('heading', { name: 'Loading repository' })).toBeVisible();
   expect(switchedReads).toBe(1);
   switchRead.resolve();
   await proposalsRead;
@@ -74,4 +74,34 @@ test('switching repositories reloads state and scopes subsequent settings reques
   });
   await openNavigation(page, 'Settings', false);
   await settingsRead;
+});
+
+test('a failed repository switch can recover by selecting another repository', async ({ page }) => {
+  const repositories = ['fixture/project', 'fixture/unavailable'];
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/repositories') {
+      await route.fulfill({
+        json: {
+          repositories: repositories.map((github_repo, i) => ({ github_repo, primary: i === 0 })),
+          instance_max_sessions_per_day: 0
+        }
+      });
+      return;
+    }
+    if (url.pathname === '/api/state' && url.searchParams.get('repository') === repositories[1]) {
+      await route.fulfill({ status: 503, json: { error: 'Repository temporarily unavailable' } });
+      return;
+    }
+    url.searchParams.delete('repository');
+    await route.fulfill({ response: await route.fetch({ url: url.toString() }) });
+  });
+  await login(page);
+  const selection = page.getByRole('combobox', { name: 'Repository', exact: true });
+  await selection.selectOption(repositories[1]);
+  await expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Disconnect', exact: true })).toBeVisible();
+  await selection.selectOption(repositories[0]);
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
 });

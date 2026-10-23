@@ -506,6 +506,7 @@
     listError = '';
     lastPage = '';
     error = '';
+    connectionError = '';
     await refresh();
   }
   function disconnect() {
@@ -563,6 +564,25 @@
 >
 {#if !connected}
   <LoginScreen bind:accessToken {error} {busy} onsubmit={login} />
+{:else if !data}
+  <main class="repository-recovery">
+    <h1>{connectionError ? 'Repository unavailable' : 'Loading repository'}</h1>
+    <p>{connectionError || `Loading ${selectedRepository || 'your repository'}…`}</p>
+    {#if repositories.length > 1}
+      <label for="recovery-repository">Repository</label>
+      <select
+        id="recovery-repository"
+        value={selectedRepository}
+        onchange={(event) => switchRepository(event.currentTarget.value)}
+      >
+        {#each repositories as entry}
+          <option value={entry.github_repo}>{entry.github_repo}</option>
+        {/each}
+      </select>
+    {/if}
+    <button onclick={() => refresh()}>Retry</button>
+    <button onclick={disconnect}>Disconnect</button>
+  </main>
 {:else if data}
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell" class:nav-open={mobileOpen}>

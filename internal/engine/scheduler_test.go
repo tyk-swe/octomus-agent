@@ -113,6 +113,41 @@ func TestPreflightRefusesNoAuth(t *testing.T) {
 	}
 }
 
+func TestBudgetWaitingRechecksRaisedInstanceCeiling(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	app := f.pausedApp(t)
+	c := model.DefaultControl()
+	c.SetMode(model.OperatingModeContinuous)
+	if err := f.state.SaveControl(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.state.SetInstanceSettings(config.InstanceSettings{MaxSessionsPerDay: f.cfg.PlanningCost() - 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.tick(); err != nil {
+		t.Fatal(err)
+	}
+	waiting, err := app.Control()
+	if err != nil || !waiting.BudgetWaiting || waiting.NextCycleAt <= time.Now().Unix() {
+		t.Fatalf("not waiting for budget: %+v, %v", waiting, err)
+	}
+	if err := f.state.SetInstanceSettings(config.InstanceSettings{MaxSessionsPerDay: f.cfg.PlanningCost()}); err != nil {
+		t.Fatal(err)
+	}
+	// The next tick must reach preflight now, without changing operator mode
+	// or waiting for midnight. A failed preflight must keep its normal backoff.
+	f.script.FailConnect(config.BackendCodex, errors.New("Budget is now available"))
+	if err := app.tick(); err != nil {
+		t.Fatal(err)
+	}
+	waitApp(t, app)
+	after, err := app.Control()
+	if err != nil || after.BudgetWaiting || after.Error == nil || !strings.Contains(*after.Error, "Budget is now available") {
+		t.Fatalf("raised ceiling did not restart preflight: %+v, %v", after, err)
+	}
+}
+
 func TestOneWriterPerBranch(t *testing.T) {
 	t.Parallel()
 	state := testStore(t)

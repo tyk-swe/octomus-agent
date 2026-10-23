@@ -55,6 +55,8 @@ Sandbox mode, limits, image, runtime, egress allowlists and the pinned repositor
 
 See [configuration.example.json](configuration.example.json) for defaults and the [field reference](#field-reference) for accepted ranges. For a conservative start, use `execution_concurrency: 1`, `max_tasks_per_cycle: 1` and `cycle_interval_seconds: 21600`. Nine discovery agents require 13 session admissions per planning pass. Admissions do not cap dollar spend, and workspace limits are pre-launch checks; see [cost](cost.md) and [deployment](deployment.md).
 
+With an instance-wide ceiling, a running planning pass reserves its remaining admissions before it starts. Other repositories can use only the unreserved capacity; actual starts convert the reservation into usage, and a finished or interrupted pass releases any unused allowance. Continuous repositories waiting for budget recheck capacity automatically, including after the ceiling is increased or cleared.
+
 ## Field reference
 
 Saving checks every field and refuses the whole save when one is out of range, naming

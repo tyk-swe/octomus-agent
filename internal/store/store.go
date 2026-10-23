@@ -483,7 +483,15 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 			if err != nil {
 				return err
 			}
-			if total < 0 || uint64(total) >= instance.MaxSessionsPerDay {
+			ownCycle := ""
+			if admission.TaskID == nil {
+				ownCycle = admission.CycleID
+			}
+			committed, err := planningCommitments(c, ownCycle)
+			if err != nil {
+				return err
+			}
+			if total < 0 || uint64(total) >= instance.MaxSessionsPerDay || committed >= instance.MaxSessionsPerDay-uint64(total) {
 				return fmt.Errorf("Instance-wide daily session ceiling exhausted; increase the configured ceiling or wait until UTC midnight: %w", model.BlockedBudgetExhausted)
 			}
 		}
@@ -510,6 +518,11 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 		data, err := wirejson.Marshal(admission)
 		if err != nil {
 			return err
+		}
+		if admission.TaskID == nil {
+			if _, err := c.ExecContext(background, "UPDATE planning_reservations SET sessions=max(sessions-1,0) WHERE cycle_id=?1", admission.CycleID); err != nil {
+				return err
+			}
 		}
 		_, err = c.ExecContext(background, "INSERT INTO admissions(id,at,day,data) VALUES (?1,?2,?3,?4)", admission.ID, admission.At, day, string(data))
 		return err
@@ -553,6 +566,14 @@ func instanceSessionsOn(c *sql.Conn, day string) (int64, error) {
 	return sessions.Int64, nil
 }
 
+// planningCommitments excludes the caller's own cycle when admitting its
+// planning session. Every other admission preserves the outstanding allowance.
+func planningCommitments(c *sql.Conn, ownCycle string) (uint64, error) {
+	var sessions uint64
+	err := c.QueryRowContext(background, "SELECT COALESCE(SUM(sessions),0) FROM planning_reservations WHERE cycle_id!=?1", ownCycle).Scan(&sessions)
+	return sessions, err
+}
+
 func (s *Store) PlanningCapacity(at time.Time) (model.PlanningCapacity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -594,6 +615,11 @@ func (s *Store) planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCap
 		if total >= 0 && instance.MaxSessionsPerDay > uint64(total) {
 			instanceRemaining = instance.MaxSessionsPerDay - uint64(total)
 		}
+		committed, err := planningCommitments(c, "")
+		if err != nil {
+			return model.PlanningCapacity{}, err
+		}
+		instanceRemaining -= min(instanceRemaining, committed)
 		if instanceRemaining < remaining {
 			remaining = instanceRemaining
 		}

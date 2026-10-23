@@ -148,7 +148,15 @@ func (f *Fleet) repositoryApp(entry store.RepositoryEntry) (*App, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return f.newApp(f.root.ForRepository(entry.GitHubRepo), dir, deployment), nil
+	app := f.newApp(f.root.ForRepository(entry.GitHubRepo), dir, deployment)
+	if deployment.Repository != "" {
+		owned, err := filepath.Rel(f.dataDir, deployment.Repository)
+		inside, insideErr := filepath.Rel(dir, deployment.Repository)
+		if err == nil && filepath.IsLocal(owned) && insideErr == nil && !filepath.IsLocal(inside) {
+			app.checkoutStorage = deployment.Repository
+		}
+	}
+	return app, nil
 }
 
 func (f *Fleet) publish(entry store.RepositoryEntry, app *App) {
@@ -162,6 +170,14 @@ func (f *Fleet) publish(entry store.RepositoryEntry, app *App) {
 			for _, other := range f.entries {
 				if filepath.Clean(other.DataDir) != "." {
 					nested = append(nested, filepath.FromSlash(other.DataDir))
+				}
+			}
+			for j, other := range f.apps {
+				if i == j || other.deployment.Repository == "" {
+					continue
+				}
+				if rel, err := filepath.Rel(f.dataDir, other.deployment.Repository); err == nil && rel != "." && filepath.IsLocal(rel) {
+					nested = append(nested, rel)
 				}
 			}
 			f.apps[i].nestedMu.Lock()

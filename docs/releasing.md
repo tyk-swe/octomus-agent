@@ -165,10 +165,10 @@ fails when `schema.sql` drifts from a migrated golden.
 After tagging a release, generate its golden database:
 
 ```bash
-python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 10 --output internal/store/testdata/state-vX.Y.Z.db > internal/store/testdata/state-vX.Y.Z.json
+python3 scripts/golden-state.py --ref vX.Y.Z --scenario chain --expect-version 13 --output internal/store/testdata/state-vX.Y.Z.db > internal/store/testdata/state-vX.Y.Z.json
 ```
 
-Use the release's actual schema version (`10` for the current schema). Check in the database and the provenance JSON the script prints (commit, scenario, sha256), and extend the golden tests so
+Use the release's actual schema version (`13` for the current schema). Check in the database and the provenance JSON the script prints (commit, scenario, sha256), and extend the golden tests so
 later releases keep opening every checked-in golden. Before tagging a schema change,
 rehearse the upgrade on a copy of real state with the released images, following
 [Backup and upgrade](deployment.md#backup-and-upgrade), and record the image

@@ -281,6 +281,12 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 		if err := txPut(c, Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
+		// Commit the full planning allowance with the cycle, before any
+		// grounding or model work can race another repository's admission.
+		if _, err := c.ExecContext(background, "INSERT INTO planning_reservations(cycle_id,sessions) VALUES (?1,?2)", cycle.ID, capacity.Required); err != nil {
+			return err
+		}
+		control.BudgetWaiting = false
 		return txPut(c, s.ControlKey(), control)
 	})
 	return capacity, started, err

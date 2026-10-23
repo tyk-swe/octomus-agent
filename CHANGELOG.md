@@ -15,8 +15,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GET/POST /api/repositories` and `PUT /api/instance` endpoints scope the existing API by
   `?repository=`, and the Docker deployment pins extra repositories via
   `OCTOMUS_GITHUB_REPOS` with a dedicated fine-grained token each. Behaviour per
-  repository is unchanged (human merge everywhere); schema v12 attributes existing usage
-  counters and retains activity per repository. The primary keeps its records and
+  repository is unchanged (human merge everywhere); schema v13 attributes existing usage
+  counters, retains activity per repository and reserves complete planning allowances. The primary keeps its records and
   data-directory root.
 
 - Model setup improvements: actionable route-issue links, stale catalog retention with

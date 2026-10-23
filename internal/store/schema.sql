@@ -218,3 +218,12 @@ CREATE TRIGGER project_record_update AFTER UPDATE ON records WHEN NEW.kind IN ('
 CREATE TRIGGER release_pr_reservation_insert AFTER INSERT ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.status') IN ('blocked','failed','cancelled') AND json_extract(NEW.data,'$.output_commit') IS NULL BEGIN DELETE FROM pr_reservations WHERE task_id=NEW.id; END;
 
 CREATE TRIGGER release_pr_reservation_update AFTER UPDATE ON records WHEN NEW.kind='task' AND json_extract(NEW.data,'$.status') IN ('blocked','failed','cancelled') AND json_extract(NEW.data,'$.output_commit') IS NULL BEGIN DELETE FROM pr_reservations WHERE task_id=NEW.id; END;
+
+CREATE TABLE planning_reservations(cycle_id TEXT PRIMARY KEY,sessions INTEGER NOT NULL);
+CREATE TRIGGER release_planning_reservation AFTER UPDATE ON records
+WHEN NEW.kind='cycle' AND json_extract(NEW.data,'$.status')!='running' BEGIN
+    DELETE FROM planning_reservations WHERE cycle_id=NEW.id;
+END;
+CREATE TRIGGER delete_planning_reservation AFTER DELETE ON records WHEN OLD.kind='cycle' BEGIN
+    DELETE FROM planning_reservations WHERE cycle_id=OLD.id;
+END;
