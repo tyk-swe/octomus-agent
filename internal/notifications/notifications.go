@@ -1,23 +1,22 @@
 package notifications
 
 import (
-	"crypto/sha256"
-	"net/netip"
-
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	whatwg "github.com/nlnwa/whatwg-url/url"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	whatwg "github.com/nlnwa/whatwg-url/url"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/wirejson"
