@@ -72,23 +72,22 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
 
 ## Build and verify
 
-Requires Go (per `go.mod`), Node 24 LTS (see `.node-version`), npm, Python 3, Git and a C compiler for `-race`.
-Setup: `npm ci --prefix web` and `npx --prefix web playwright install --with-deps chromium`.
+Use the smallest existing check that covers the change:
 
-- `make check`: `gofmt`, `go vet`, Svelte/TypeScript and Prettier checks.
-- `make fmt`: rewrites formatting verified by `make check` (`gofmt` and Prettier).
-- `make build`: builds the dashboard and `bin/octomus-agent`.
-- `make test`: `test-go-race`, `test-integration`, then `test-browser`.
-- `make test-go` / `make test-go-race`: Go suite (without/with `-race`), `-shuffle=on`.
-  Filter with `GO_TEST_PACKAGES=./internal/engine` or set `GO_TEST_FLAGS='-timeout 30m -shuffle=N'`.
-- `make test-ui-logic` (`npm run test:unit --prefix web`): pure dashboard logic specs.
-- `make test-integration`: `make test-python`, `tests/distribution.py`, then `tests/e2e.py`
-  (accepts `SCENARIOS`). Focused run: `make build && OCTOMUS_TEST_BINARY="$PWD/bin/octomus-agent" python3 tests/e2e.py [SCENARIO...]`.
-- `make test-browser`: Playwright suite (accepts `PLAYWRIGHT_ARGS`).
-- `make test-sandbox` (opt-in, Docker 28+): `OCTOMUS_DOCKER_TEST=1` broker tests and `tests/e2e_sandbox.py`.
-- `make test-production-images` (opt-in, disposable Docker 28+ host, Skopeo, OpenSSL):
-  tests pinned clients in `dist/images` OCI archives.
-- `make audit` (govulncheck + `npm audit`) and `make package` (archives + `SHA256SUMS` in `dist/`).
+- Docs only: review the diff; no build or tests.
+- Go: `gofmt` changed files and run the affected package or test with `go test`.
+- Dashboard: `npm run check --prefix web` and the relevant spec via
+  `npm run test:unit --prefix web -- tests/<name>.spec.ts`.
+- Shell: `shellcheck` on changed scripts.
+
+Inspect Makefile targets and package scripts before running them; they can build the
+dashboard or run multiple suites. Use installed dependencies and real dashboard assets
+where required. If prerequisites are missing, report the deferred check instead of
+installing tools or adding stubs just for validation.
+
+Leave broad checks and race, integration, browser, sandbox, production-image and audit
+suites to CI unless explicitly requested. Keep CI and build gates intact and report
+exactly what ran.
 
 Keep Go and `types.ts` aligned. Keep checked-in golden databases loadable when adding
 record fields (use a pointer, `wire:"default"`, or a migration). Pinned client contracts
