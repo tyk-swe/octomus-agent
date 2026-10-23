@@ -1,13 +1,14 @@
 package process
 
 import (
-	"github.com/tyk-swe/octomus-agent/internal/config"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/tyk-swe/octomus-agent/internal/config"
 )
 
 func Command(binary string, cwd string) *exec.Cmd {

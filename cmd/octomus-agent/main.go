@@ -1,3 +1,7 @@
+// Command octomus-agent is the single-operator service: it discovers
+// repository improvements, reviews proposals, executes accepted tasks in
+// sandboxes and delivers GitHub PRs. See docs/architecture.md for the
+// operating contract.
 package main
 
 import (
