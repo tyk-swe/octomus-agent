@@ -380,3 +380,102 @@ func TestFleetDrainsWorkersBeforePublishingRecoveredApps(t *testing.T) {
 		t.Fatalf("replacement did not recover the interrupted task: %s", got.Status)
 	}
 }
+
+func TestFleetFailedInitializationKeepsPrimaryActive(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	fleet, err := NewFleet(state, dataDir, FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	primary := fleet.Primary()
+	if err := store.Put(state, store.ConfigKey, testConfig(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	entry := store.RepositoryEntry{GitHubRepo: "fixture/second", DataDir: "repos/second"}
+	blocked := filepath.Join(dataDir, entry.DataDir)
+	if err := os.MkdirAll(filepath.Dir(blocked), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fleet.AddRepository(entry); err == nil {
+		t.Fatal("repository with a blocked data directory was accepted")
+	}
+	if fleet.Primary() != primary || primary.ctx.Err() != nil {
+		t.Fatal("failed repository initialization retired the live primary")
+	}
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fleet.AddRepository(entry); err != nil {
+		t.Fatal(err)
+	}
+	if len(fleet.Apps()) != 2 || fleet.Primary().ctx.Err() != nil {
+		t.Fatal("registration could not recover after fixing the data directory")
+	}
+}
+
+func TestFleetFailedReplacementRecoveryStopsFleet(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	fleet, err := NewFleet(state, dataDir, FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	if err := store.Put(state, store.ConfigKey, testConfig(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	entry := store.RepositoryEntry{GitHubRepo: "fixture/second", DataDir: "repos/second"}
+	if err := os.MkdirAll(filepath.Join(dataDir, entry.DataDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(dataDir, entry.DataDir, scratchDir)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fleet.AddRepository(entry); err == nil {
+		t.Fatal("repository with unsafe scratch storage passed recovery")
+	}
+	if fleet.Context().Err() == nil {
+		t.Fatal("failed replacement recovery left a stopped primary behind a live fleet")
+	}
+}
+
+func TestFleetCancelsAddedAppsBeforeDrainingPrimary(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	if err := state.RegisterRepository(store.RepositoryEntry{GitHubRepo: "fixture/one", DataDir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	fleet, err := NewFleet(state, t.TempDir(), FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	added, err := fleet.AddRepository(store.RepositoryEntry{GitHubRepo: "fixture/two", DataDir: "repos/two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := fleet.Primary()
+	primary.wg.Add(1)
+	release := sync.OnceFunc(primary.wg.Done)
+	defer release()
+	done := make(chan struct{})
+	go func() { fleet.Shutdown(); close(done) }()
+	select {
+	case <-added.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("added repository stayed live while the primary was draining")
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fleet did not finish draining")
+	}
+}

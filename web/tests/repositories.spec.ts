@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { deferred, login, openNavigation, test, token } from './synthetic';
+import { configurationFixture, deferred, login, openNavigation, test, token } from './synthetic';
 import type { Snapshot } from '../src/lib/types';
 
 test('switching repositories reloads state and scopes subsequent settings requests', async ({
@@ -72,7 +72,7 @@ test('switching repositories reloads state and scopes subsequent settings reques
     const url = new URL(request.url());
     return url.pathname === '/api/config' && url.searchParams.get('repository') === repositories[1];
   });
-  await openNavigation(page, 'Settings', false);
+  await openNavigation(page, 'Configuration', false);
   await settingsRead;
 });
 
@@ -110,4 +110,26 @@ test('a failed repository switch can recover by selecting another repository', a
   await expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
   await selection.selectOption(repositories[0]);
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+});
+
+test('Enter in configuration saves settings without submitting fleet actions', async ({ page }) => {
+  const state = await configurationFixture(page);
+  let registrations = 0;
+  await page.route('**/api/repositories', async (route) => {
+    if (route.request().method() === 'POST') {
+      registrations++;
+      await route.fulfill({ json: { repositories: [], instance_max_sessions_per_day: 0 } });
+      return;
+    }
+    await route.fallback();
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', false);
+  await page.getByLabel('Add a repository', { exact: true }).fill('fixture/extra');
+  const branch = page.getByLabel('Default branch', { exact: true });
+  await branch.fill('updated-default');
+  await branch.press('Enter');
+  await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
+  expect(state.saved!.default_branch).toBe('updated-default');
+  expect(registrations).toBe(0);
 });

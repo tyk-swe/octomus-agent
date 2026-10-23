@@ -548,6 +548,7 @@
           <div>
             <button
               class="button"
+              type="button"
               onclick={addRepository}
               disabled={fleetBusy || !newRepository.trim()}>Add repository</button
             >
@@ -565,7 +566,7 @@
             ></label
           >
           <div>
-            <button class="button" onclick={saveInstanceCeiling} disabled={fleetBusy}
+            <button class="button" type="button" onclick={saveInstanceCeiling} disabled={fleetBusy}
               >Save instance ceiling</button
             >
           </div>

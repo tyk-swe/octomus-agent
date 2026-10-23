@@ -116,7 +116,7 @@ func (f *Fleet) newApp(scoped *store.Store, dir string, deployment Deployment) *
 	if f.options.Connector != nil {
 		options = append(options, WithRunnerConnector(f.options.Connector))
 	}
-	return New(scoped, dir, options...)
+	return newWithContext(f.ctx, scoped, dir, options...)
 }
 
 func (f *Fleet) deploymentFor(repo string) (Deployment, error) {
@@ -194,6 +194,9 @@ func (f *Fleet) publish(entry store.RepositoryEntry, app *App) {
 func (f *Fleet) AddRepository(entry store.RepositoryEntry) (*App, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ctx.Err() != nil {
+		return nil, fmt.Errorf("The service is shutting down")
+	}
 	if len(f.options.Deployments) > 0 {
 		if _, pinned := f.options.Deployments[strings.ToLower(entry.GitHubRepo)]; !pinned {
 			return nil, fmt.Errorf("Repositories are fixed by this deployment (OCTOMUS_GITHUB_REPO and OCTOMUS_GITHUB_REPOS); change them there and restart")
@@ -216,10 +219,14 @@ func (f *Fleet) AddRepository(entry store.RepositoryEntry) (*App, error) {
 	var retired *App
 	if len(f.entries) == 0 && len(f.apps) == 1 {
 		retired = f.apps[0]
-		retired.Shutdown()
 	}
 	var added []*App
 	var addedEntries []store.RepositoryEntry
+	discard := func() {
+		for _, app := range added {
+			app.Shutdown()
+		}
+	}
 	// Hold the fleet lock until every replacement has recovered. Neither the
 	// scheduler nor API readers may see an App whose previous workers still run.
 	for _, next := range registered {
@@ -228,14 +235,27 @@ func (f *Fleet) AddRepository(entry store.RepositoryEntry) (*App, error) {
 		}
 		app, err := f.repositoryApp(next)
 		if err != nil {
+			discard()
 			return nil, err
-		}
-		if err := app.Recover(); err != nil {
-			app.Shutdown()
-			return nil, fmt.Errorf("Repository %s registered but its recovery failed; restart the service: %w", app.Repository(), err)
 		}
 		added = append(added, app)
 		addedEntries = append(addedEntries, next)
+	}
+	// Finish filesystem initialization while the original primary is still
+	// live. Recovery itself must wait until its old workers have joined.
+	if retired != nil {
+		retired.Shutdown()
+	}
+	for _, app := range added {
+		if err := app.Recover(); err != nil {
+			if retired != nil {
+				// The original App cannot resume after shutdown. Stop the
+				// fleet instead of leaving an apparently live idle service.
+				f.cancel()
+			}
+			discard()
+			return nil, fmt.Errorf("Repository %s registered but its recovery failed; restart the service: %w", app.Repository(), err)
+		}
 	}
 	if retired != nil {
 		f.apps = nil
@@ -320,15 +340,6 @@ func (f *Fleet) Recover() error {
 func (f *Fleet) Run(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, f.cancel)
 	defer stop()
-	stops := []func() bool{}
-	for _, app := range f.Apps() {
-		stops = append(stops, context.AfterFunc(ctx, app.cancel))
-	}
-	defer func() {
-		for _, stop := range stops {
-			stop()
-		}
-	}()
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
 	start := 0

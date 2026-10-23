@@ -70,7 +70,11 @@ type App struct {
 }
 
 func New(state *store.Store, dataDir string, options ...Option) *App {
-	ctx, cancel := context.WithCancel(context.Background())
+	return newWithContext(context.Background(), state, dataDir, options...)
+}
+
+func newWithContext(parent context.Context, state *store.Store, dataDir string, options ...Option) *App {
+	ctx, cancel := context.WithCancel(parent)
 	a := &App{
 		store:   state,
 		dataDir: filepath.Clean(dataDir),
