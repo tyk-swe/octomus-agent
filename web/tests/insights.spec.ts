@@ -26,7 +26,7 @@ test('insights reads seeded usage and stays readable when refresh fails @respons
   });
   await login(page);
   await openNavigation(page, 'Insights', isMobile);
-  await expect(page.getByRole('heading', { name: 'What the work adds up to.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Insights' })).toBeVisible();
   await expect(stat(page, 'Admissions')).toContainText('9');
   await expect(stat(page, 'Admissions')).toContainText('avg 0.3/day');
   await expect(stat(page, 'Execution cycles')).toContainText('1');

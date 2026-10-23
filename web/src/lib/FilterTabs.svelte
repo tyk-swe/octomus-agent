@@ -12,14 +12,17 @@
     onselect: (state: string) => void;
     counts?: Record<string, number | undefined>;
   } = $props();
+  const uid = $props.id();
 </script>
 
 <div class="filter-tabs" role="group" aria-label={aria}>
   {#each labels as state}<button
       class:active={current === state}
       aria-pressed={current === state}
+      aria-describedby={counts[state] ? `${uid}-${state}` : undefined}
       onclick={() => onselect(state)}
-      >{state}{#if counts[state]}<b class="tab-count" aria-hidden="true">{counts[state]}</b
+      >{state}{#if counts[state]}<b class="tab-count" id={`${uid}-${state}`} aria-hidden="true"
+          >{counts[state]}</b
         >{/if}</button
     >{/each}
 </div>

@@ -8,7 +8,7 @@ for (const list of [
     endpoint: 'tasks',
     noun: 'tasks',
     rows: '.task-row',
-    empty: 'The next good idea starts here.',
+    empty: 'No tasks yet',
     filter: 'queued'
   },
   {
@@ -16,7 +16,7 @@ for (const list of [
     endpoint: 'proposals',
     noun: 'proposals',
     rows: '.proposal-card',
-    empty: 'Better ideas start with questions.',
+    empty: 'No proposals yet',
     filter: 'rejected'
   },
   {
@@ -24,7 +24,7 @@ for (const list of [
     endpoint: 'prs',
     noun: 'pull requests',
     rows: '.pr-row',
-    empty: 'Room for your next improvement.',
+    empty: 'No pull requests yet',
     filter: 'merged'
   }
 ]) {

@@ -421,11 +421,7 @@
     <fieldset disabled={!editable || busy}>
       <section class="panel settings-section">
         <div class="section-heading">
-          <div>
-            <h2>Repository</h2>
-            <p>Your project and its delivery destination.</p>
-          </div>
-          <Icon name="branch" />
+          <h2>Repository</h2>
         </div>
         <div class="form-grid">
           <label
@@ -484,10 +480,7 @@
       </section>
       <section class="panel settings-section">
         <div class="section-heading">
-          <div>
-            <h2>Models & reasoning</h2>
-            <p>Explicit routes for every role. No automatic substitutions.</p>
-          </div>
+          <h2>Models & reasoning</h2>
         </div>
         <div class="form-grid">
           <label
@@ -600,11 +593,7 @@
       </section>
       <section class="panel settings-section">
         <div class="section-heading">
-          <div>
-            <h2>Improvement coverage</h2>
-            <p>Discover work with a concrete benefit to your project.</p>
-          </div>
-          <Icon name="proposals" />
+          <h2>Improvement coverage</h2>
         </div>
         {@render previewNote('categories', 'category set', true)}
         <div class="category-options">
@@ -640,11 +629,7 @@
       </section>
       <section class="panel settings-section">
         <div class="section-heading">
-          <div>
-            <h2>Delivery</h2>
-            <p>How reviewed work reaches your project.</p>
-          </div>
-          <Icon name="branch" />
+          <h2>Delivery</h2>
         </div>
         <div class="form-grid">
           <label class="full"
@@ -690,11 +675,7 @@
       </section>
       <section class="panel settings-section">
         <div class="section-heading">
-          <div>
-            <h2>Scheduling & operating limits</h2>
-            <p>Bound the work. Preserve anything that needs attention.</p>
-          </div>
-          <Icon name="settings" />
+          <h2>Scheduling & operating limits</h2>
         </div>
         {@render previewNote('runner_storage_paths', 'storage paths', true)}
         <div class="form-grid">
@@ -849,7 +830,7 @@
     background: none;
     border: none;
     padding: 0;
-    color: var(--green);
+    color: var(--accent);
     font-size: 12px;
     font-weight: 600;
     cursor: pointer;

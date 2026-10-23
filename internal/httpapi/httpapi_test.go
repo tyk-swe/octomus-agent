@@ -3,11 +3,16 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +21,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
+	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
 const token = "operator-fixture-token-with-at-least-32-characters"
@@ -70,6 +76,17 @@ func request(t *testing.T, handler http.Handler, method, path string, body strin
 func call(t *testing.T, handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	return request(t, handler, method, path, body, true)
+}
+
+func requestHeaders(t *testing.T, handler http.Handler, method, path string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(""))
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder
 }
 
 func decode(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
@@ -183,6 +200,127 @@ func TestDashboardAssets(t *testing.T) {
 			response.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 			t.Fatalf("%s: %d %q %q", check.uri, response.Code, response.Header().Get("Content-Type"), response.Body.String())
 		}
+	}
+}
+
+func TestDashboardAssetDelivery(t *testing.T) {
+	app, _ := testApp(t)
+	router := Router(app, token, "", "test")
+	// Pick an asset big enough that gzip is always the cheaper encoding; tiny
+	// chunks are correctly served uncompressed.
+	var asset string
+	var assetSize int64
+	err := fs.WalkDir(dashboard.Files(), "_app/immutable", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".js") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > assetSize {
+			asset, assetSize = path, info.Size()
+		}
+		return nil
+	})
+	if err != nil || asset == "" {
+		t.Fatalf("no immutable .js asset in the embedded dashboard: %v", err)
+	}
+	raw, err := fs.ReadFile(dashboard.Files(), asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gunzip := func(t *testing.T, body []byte) []byte {
+		t.Helper()
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("gzip reader: %v", err)
+		}
+		out, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("gzip body: %v", err)
+		}
+		return out
+	}
+	acceptGzip := map[string]string{"Accept-Encoding": "gzip, deflate"}
+
+	compressed := requestHeaders(t, router, "GET", "/"+asset, acceptGzip)
+	if compressed.Code != http.StatusOK {
+		t.Fatalf("asset gzip GET: %d", compressed.Code)
+	}
+	if h := compressed.Header(); h.Get("Content-Encoding") != "gzip" ||
+		h.Get("Cache-Control") != "public, max-age=31536000, immutable" ||
+		!strings.Contains(h.Get("Vary"), "Accept-Encoding") {
+		t.Fatalf("asset gzip GET headers: %v", h)
+	}
+	if !bytes.Equal(gunzip(t, compressed.Body.Bytes()), raw) {
+		t.Fatal("asset gzip GET body does not gunzip to the embedded bytes")
+	}
+	compressedLength := compressed.Header().Get("Content-Length")
+	if compressedLength != strconv.Itoa(compressed.Body.Len()) {
+		t.Fatalf("asset gzip GET Content-Length %q for %d body bytes", compressedLength, compressed.Body.Len())
+	}
+
+	identity := request(t, router, "GET", "/"+asset, "", false)
+	if identity.Code != http.StatusOK || identity.Header().Get("Content-Encoding") != "" ||
+		identity.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" ||
+		!strings.Contains(identity.Header().Get("Vary"), "Accept-Encoding") ||
+		!bytes.Equal(identity.Body.Bytes(), raw) {
+		t.Fatalf("asset identity GET: %d headers %v", identity.Code, identity.Header())
+	}
+	if contentType := compressed.Header().Get("Content-Type"); contentType != identity.Header().Get("Content-Type") ||
+		(!strings.HasPrefix(contentType, "text/javascript") && !strings.HasPrefix(contentType, "application/javascript")) {
+		t.Fatalf("asset content type %q, identity %q", contentType, identity.Header().Get("Content-Type"))
+	}
+
+	for _, header := range []string{"gzip;q=0", "gzip;q=0.0"} {
+		refused := requestHeaders(t, router, "GET", "/"+asset, map[string]string{"Accept-Encoding": header})
+		if refused.Code != http.StatusOK || refused.Header().Get("Content-Encoding") != "" ||
+			!bytes.Equal(refused.Body.Bytes(), raw) {
+			t.Fatalf("Accept-Encoding %q: %d headers %v", header, refused.Code, refused.Header())
+		}
+	}
+
+	index, err := fs.ReadFile(dashboard.Files(), indexName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := requestHeaders(t, router, "GET", "/", map[string]string{"Accept-Encoding": "gzip"})
+	if root.Code != http.StatusOK || root.Header().Get("Content-Encoding") != "gzip" ||
+		root.Header().Get("Cache-Control") != "no-store" ||
+		!bytes.Equal(gunzip(t, root.Body.Bytes()), index) {
+		t.Fatalf("/ gzip GET: %d headers %v", root.Code, root.Header())
+	}
+
+	missing := requestHeaders(t, router, "GET", "/_app/missing.js", map[string]string{"Accept-Encoding": "gzip"})
+	if missing.Code != http.StatusNotFound || missing.Header().Get("Cache-Control") != "no-store" ||
+		missing.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("missing asset: %d headers %v", missing.Code, missing.Header())
+	}
+
+	head := requestHeaders(t, router, "HEAD", "/"+asset, map[string]string{"Accept-Encoding": "gzip"})
+	if head.Code != http.StatusOK || head.Body.Len() != 0 ||
+		head.Header().Get("Content-Encoding") != "gzip" ||
+		head.Header().Get("Content-Length") != compressedLength {
+		t.Fatalf("asset HEAD: %d headers %v body %d", head.Code, head.Header(), head.Body.Len())
+	}
+
+	override := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(override, "_app", "immutable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(override, "_app", "immutable", "app.js"), []byte("override js"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overridden := requestHeaders(t, Router(app, token, override, "test"), "GET", "/_app/immutable/app.js",
+		map[string]string{"Accept-Encoding": "gzip"})
+	if overridden.Code != http.StatusOK || overridden.Header().Get("Content-Encoding") != "" ||
+		overridden.Header().Get("Cache-Control") != "no-store" ||
+		overridden.Body.String() != "override js" {
+		t.Fatalf("override asset: %d headers %v body %q", overridden.Code, overridden.Header(), overridden.Body.String())
 	}
 }
 

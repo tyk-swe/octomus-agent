@@ -61,7 +61,7 @@ export async function login(page: Page) {
   await page.goto('/');
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
-  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
 }
 
 /**

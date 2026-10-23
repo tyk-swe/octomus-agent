@@ -23,7 +23,6 @@
       ><Badge label={task.status} tone={task.status} /><Icon name="chevron" size={16} /></button
     >{:else}<div class="empty">
       <Icon name="check" size={30} />
-      <h3>All caught up.</h3>
-      <p>No tasks are waiting right now.</p>
+      <h3>No tasks</h3>
     </div>{/each}
 </div>

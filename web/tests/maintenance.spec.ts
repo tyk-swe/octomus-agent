@@ -64,13 +64,13 @@ for (const mode of ['standard', 'maintenance'] as const) {
     await login(page);
     await expect(page.getByText('5 PRs observed merged', { exact: true })).toBeVisible();
     await expect(page.getByText(/PRs merged by maintainers/)).toHaveCount(0);
-    const delivery = page.getByText('Published means a pull request was delivered.', {
+    const delivery = page.getByText('Published = pull request delivered', {
       exact: false
     });
     await expect(delivery).toContainText(
       mode === 'maintenance'
-        ? 'Eligible maintenance PRs may be merged automatically after checks and protections allow it.'
-        : 'Merging stays with you.'
+        ? 'eligible maintenance PRs may merge automatically'
+        : 'merging stays with you'
     );
   });
 }
@@ -233,7 +233,7 @@ test('overview, notices and pull requests show automatic merge activity and evid
 
   const stat = page.locator('#auto-merge-stat');
   await expect(stat).toContainText('Merge outcomes');
-  await expect(stat).toContainText('03');
+  await expect(stat.locator('strong')).toHaveText('3');
   await expect(stat).toContainText('3 waiting on checks or protections · checking now');
   await expect(page.getByLabel('Automatic merges')).toContainText('3 pull requests wait');
   await expect(page.getByLabel('Operating mode')).toContainText('Run once · settling merges');

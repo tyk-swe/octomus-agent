@@ -18,35 +18,35 @@ test('the view lives in the URL hash, so history and dialogs follow it @responsi
   const navigate = (name: string) => openNavigation(page, name, !!isMobile);
   await navigate('Task queue');
   await expect(page).toHaveURL(/#queue$/);
-  await expect(page.getByRole('heading', { name: 'From idea to improvement.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Task queue' })).toBeVisible();
   await navigate('Pull requests');
   await expect(page).toHaveURL(/#prs$/);
-  await expect(page.getByRole('heading', { name: 'Progress, ready for review.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Pull requests' })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'From idea to improvement.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Task queue' })).toBeVisible();
   await page.goBack();
-  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
   await page.goForward();
-  await expect(page.getByRole('heading', { name: 'From idea to improvement.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Task queue' })).toBeVisible();
   await page.goForward();
-  await expect(page.getByRole('heading', { name: 'Progress, ready for review.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Pull requests' })).toBeVisible();
 
   await navigate('Task queue');
   await page.getByRole('button', { name: /Explain the local development workflow/ }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.goBack();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Progress, ready for review.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Pull requests' })).toBeVisible();
 
   await page.getByRole('link', { name: 'Skip to main content' }).dispatchEvent('click');
   await expect(page).toHaveURL(/#main-content$/);
-  await expect(page.getByRole('heading', { name: 'Progress, ready for review.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Pull requests' })).toBeVisible();
 
   // The brand link is hidden in the mobile navigation drawer; only the wide layout offers it.
   if (!isMobile) {
     await page.locator('a.brand').click();
     await expect(page).toHaveURL(/#overview$/);
-    await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
   }
 });
 
@@ -59,20 +59,20 @@ test('a reload or an expired session returns to the hashed view @responsive', as
   await openNavigation(page, 'Configuration', !!isMobile);
   await expect(page).toHaveURL(/#settings$/);
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Connect to Octomus' })).toBeVisible();
   await loginForm(page);
-  await expect(page.getByRole('heading', { name: 'Make it work your way.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Configuration' })).toBeVisible();
 
   await openNavigation(page, 'Pull requests', !!isMobile);
   await page.route('**/api/state', (route) =>
     route.fulfill({ status: 401, json: { error: 'Synthetic expired session' } })
   );
   await nextPoll(page);
-  await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Connect to Octomus' })).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('Session expired');
   await page.unroute('**/api/state');
   await loginForm(page);
-  await expect(page.getByRole('heading', { name: 'Progress, ready for review.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Pull requests' })).toBeVisible();
 });
 
 test('the tab title names the view and the attention count', async ({ page }) => {
@@ -90,7 +90,7 @@ test('the tab title names the view and the attention count', async ({ page }) =>
   await nextPoll(page);
   await expect(page).toHaveTitle('Task queue · Octomus Agent');
   await page.getByRole('button', { name: 'Disconnect' }).click();
-  await expect(page).toHaveTitle('Octomus Agent · Your project, moving forward');
+  await expect(page).toHaveTitle('Octomus Agent');
 });
 
 test('filtered empty lists offer to clear search and filters', async ({ page }) => {
@@ -150,9 +150,7 @@ test('an unfiltered empty list offers no clear button', async ({ page }) => {
   );
   await login(page);
   await openNavigation(page, 'Task queue', false);
-  await expect(
-    page.getByRole('heading', { name: 'The next good idea starts here.' })
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No tasks yet' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Clear search and filters' })).toHaveCount(0);
 });
 
@@ -226,4 +224,37 @@ test('task details and run evidence copy the branch and workspace @responsive', 
   await evidence.getByLabel('Proposal', { exact: true }).selectOption('task-reviewed');
   await evidence.getByRole('button', { name: 'Copy branch name' }).click();
   await expect(evidence.locator('.dialog-footer .muted')).toHaveText('Branch name copied.');
+});
+
+test('the navigation drawer closes from its scrim, keeps the page inert while open, and every view fits the viewport @responsive', async ({
+  page,
+  isMobile
+}) => {
+  test.skip(!isMobile, 'mobile drawer only');
+  await login(page);
+  const main = page.locator('main.content');
+  await page.getByRole('button', { name: 'Toggle navigation' }).click();
+  await expect(page.locator('.nav-scrim')).toBeVisible();
+  await expect(main).toHaveAttribute('inert', '');
+  const width = page.viewportSize()!.width;
+  await page.mouse.click(width - 10, 400);
+  await expect(page.locator('#workspace-navigation')).not.toHaveClass(/mobile-open/);
+  const toggle = page.getByRole('button', { name: 'Toggle navigation' });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toBeFocused();
+  await expect(main).not.toHaveAttribute('inert', '');
+  for (const name of [
+    'Overview',
+    'Task queue',
+    'Proposals',
+    'Requests',
+    'Pull requests',
+    'Insights',
+    'Configuration'
+  ]) {
+    await openNavigation(page, name, true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      await page.evaluate(() => window.innerWidth)
+    );
+  }
 });

@@ -203,7 +203,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   );
   await expect(badge('sandbox')).toHaveText(/^Proven · /);
   await expect(step('sandbox')).toContainText('containment checks passed from inside a sandbox');
-  await expect(page.getByText('1 of 7 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('1 of 7 steps done')).toBeVisible();
 
   await page.getByLabel('Repository path').fill('/fixture/entered');
   await page.getByLabel('GitHub repository').fill('fixture/entered');
@@ -257,7 +257,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(badge('verification')).toHaveText('Saved');
   await expect(badge('preflight')).toHaveText('Not checked');
   await expect(step('preflight')).toContainText('does not prove repository push permission');
-  await expect(page.getByText('4 of 7 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('4 of 7 steps done')).toBeVisible();
   expect(state.writes).toHaveLength(2);
 
   await step('preflight').getByRole('button', { name: 'Open the execution check' }).click();
@@ -266,7 +266,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await page.keyboard.press('Enter');
   await expect(badge('preflight')).toHaveText(/^Passed · execution · /);
   await expect.poll(() => state.checks).toEqual(['execution']);
-  await expect(page.getByText('5 of 7 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('5 of 7 steps done')).toBeVisible();
 
   // A reload of the same saved revision keeps the check it passed.
   const result = await badge('preflight').innerText();
@@ -277,7 +277,7 @@ test('setup checklist distinguishes entered, saved, checked, stale and failed st
   await expect(page.getByRole('button', { name: 'Check connection', exact: true })).toBeEnabled();
   await expect(badge('preflight')).toHaveText(result);
   await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('5 of 7 steps saved, checked or run')).toBeVisible();
+  await expect(page.getByText('5 of 7 steps done')).toBeVisible();
   expect(state.checks).toEqual(['execution']);
 
   await page.getByLabel('Default branch', { exact: true }).fill('edited-main');

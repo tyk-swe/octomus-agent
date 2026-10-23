@@ -1,0 +1,218 @@
+.task-dialog {
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  width: min(780px, 95vw);
+  max-width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  background: var(--surface);
+  border: 0;
+  border-left: 1px solid var(--border);
+  z-index: 100;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  box-shadow: var(--shadow-3);
+}
+.task-dialog[open] {
+  animation: dialog-in 0.26s var(--ease);
+}
+.task-dialog::backdrop {
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+  animation: backdrop-in 0.26s ease;
+}
+@keyframes dialog-in {
+  from {
+    transform: translateX(42px);
+    opacity: 0.4;
+  }
+}
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+.dialog-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 22px 28px 8px;
+}
+.task-title {
+  padding: 10px 28px 22px;
+}
+.task-title h2 {
+  font-size: 25px;
+  line-height: 1.3;
+  margin: 14px 0;
+  font-weight: 550;
+}
+.task-title p {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tabs {
+  display: flex;
+  gap: 17px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 28px;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.tabs button {
+  padding: 12px 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition:
+    color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+.tabs button:hover {
+  color: var(--text-2);
+}
+.tabs button.active {
+  color: var(--olive-deep);
+  border-color: var(--olive);
+}
+.tabs button span {
+  font-size: 12px;
+  background: var(--accent-soft);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.detail-content {
+  padding: 26px 28px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.detail-content > h3 {
+  margin: 20px 0 10px;
+  color: var(--text-muted);
+}
+.detail-content > h3:first-child {
+  margin-top: 0;
+}
+.detail-content > p {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  background: var(--surface-2);
+  padding: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  margin: 24px 0;
+}
+.detail-grid dt {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.detail-grid dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.detail-grid code {
+  font-size: 12px;
+}
+.evidence {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+.dialog-footer {
+  padding: 18px 28px max(18px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--surface-hover);
+}
+.dialog-footer > .muted {
+  font-size: 12px;
+}
+.history-card {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.history-card p {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin: 10px 0;
+}
+.history-card > code,
+.history-card > small {
+  display: block;
+  margin-top: 8px;
+}
+.history-card .inline-note {
+  margin: 13px 0 0;
+}
+.finding {
+  padding: 17px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 6px;
+  margin-top: 14px;
+}
+.finding h4 {
+  margin: 10px 0;
+}
+.finding p {
+  font-size: 14px;
+}
+@media (max-width: 700px) {
+  .dialog-top {
+    padding: 18px 20px 6px;
+  }
+  .task-title {
+    padding: 10px 20px 18px;
+  }
+  .task-title h2 {
+    font-size: 22px;
+  }
+  .tabs {
+    padding: 0 20px;
+    gap: 16px;
+  }
+  .detail-content {
+    padding: 20px;
+  }
+  .dialog-footer {
+    padding: 15px 20px max(15px, env(safe-area-inset-bottom));
+    flex-wrap: wrap;
+  }
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .dialog-footer .actions {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .dialog-footer .button {
+    white-space: normal;
+  }
+  .task-dialog {
+    width: 100vw;
+  }
+}

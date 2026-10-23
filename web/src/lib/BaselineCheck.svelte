@@ -365,7 +365,7 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font-size: 12px;
-    background: #f5f6f2;
+    background: var(--neutral-bg);
     padding: 10px;
     border-radius: 6px;
   }

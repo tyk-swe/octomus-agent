@@ -15,18 +15,6 @@
     connectionError: string;
     onnavigate: (id: string) => void;
   } = $props();
-  const OPERATING_MODE_LABELS: Record<string, string> = {
-    run_once: 'Run once',
-    continuous: 'Continuous operation',
-    paused: 'New work paused'
-  };
-  function operatingStatus(snapshot: Snapshot): string {
-    const mode = OPERATING_MODE_LABELS[snapshot.control.mode] ?? 'New work paused';
-    const phase = snapshot.control.batch?.phase === 'merging' ? ' · settling merges' : '';
-    const publishing =
-      snapshot.control.paused && snapshot.active_tasks > 0 ? ' · active workflows may publish' : '';
-    return `${mode}${phase} · ${snapshot.active_tasks} active tasks${publishing}`;
-  }
   const mergePending = (snapshot: Snapshot): number =>
     (snapshot.auto_merge.counts.waiting ?? 0) +
     (snapshot.auto_merge.counts.merging ?? 0) +
@@ -119,6 +107,3 @@
     >
   </div>
 {/if}
-<div class="notice" role="status" aria-label="Operating mode" aria-live="polite">
-  <span>{operatingStatus(data)}</span>
-</div>

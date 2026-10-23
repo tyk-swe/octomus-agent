@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: './tests',
   testMatch: [
     '**/dashboard-helpers.spec.ts',
+    '**/design-tokens.spec.ts',
     '**/evidence.spec.ts',
     '**/control-eligibility.spec.ts',
     '**/cycle-history.spec.ts',

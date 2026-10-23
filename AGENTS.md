@@ -52,7 +52,11 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
 - `web`: `embed.go` embeds the build; `src/routes/+page.svelte` is the shell; `src/lib`
   holds views (`Requests.svelte` operator requests, `Insights.svelte` usage insights) and
   state owners
-  (`stateSession.ts`, `resource.ts`, `configurationDraft.ts`).
+  (`stateSession.ts`, `resource.ts`, `configurationDraft.ts`). Settings and Insights are
+  lazy-loaded. Each view's `h1` is its `NAVIGATION` label (tests anchor on it).
+  `src/styles` holds global CSS by area with co-located 1500/1200/900/700px media
+  queries; `tokens.css` owns every colour and token, and `tests/design-tokens.spec.ts`
+  (unit config) rejects colour literals elsewhere and flags unused tokens.
   Regenerate `src/lib/types.ts` with
   `OCTOMUS_UPDATE_API_CONTRACT=1 go test ./web -run TestAPIContractGenerated`.
 - `web/tests`: Playwright specs against `tests/serve_ui.py` (`synthetic.ts`). `mobile`

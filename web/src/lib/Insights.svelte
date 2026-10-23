@@ -259,23 +259,23 @@
     height: 130px;
   }
   .bar.planning {
-    fill: #235a49;
+    fill: var(--chart-1);
   }
   .bar.task {
-    fill: #3d6780;
+    fill: var(--chart-2);
   }
   .bar.other {
-    fill: #ff9365;
+    fill: var(--chart-3);
   }
   .axis {
-    stroke: var(--line);
+    stroke: var(--border);
     stroke-width: 1;
   }
   .legend {
     display: flex;
     gap: 16px;
     font-size: 12px;
-    color: var(--ink-2);
+    color: var(--text-2);
     margin: 4px 0 10px;
   }
   .legend span {
@@ -290,13 +290,13 @@
     border-radius: 2px;
   }
   .swatch.planning {
-    background: #235a49;
+    background: var(--accent);
   }
   .swatch.task {
-    background: #3d6780;
+    background: var(--info-fg);
   }
   .swatch.other {
-    background: #ff9365;
+    background: var(--chart-3);
   }
   .insight-table {
     overflow-x: auto;
@@ -306,17 +306,24 @@
     border-collapse: collapse;
     font-size: 12.5px;
   }
+  .insight-table th:first-child,
+  .insight-table td:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--surface);
+  }
+
   .insight-table th {
     text-align: left;
     font-weight: 600;
-    color: var(--ink-2);
+    color: var(--text-2);
     padding: 6px 10px 6px 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border);
     white-space: nowrap;
   }
   .insight-table td {
     padding: 6px 10px 6px 0;
-    border-bottom: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--border-soft);
     white-space: nowrap;
   }
 </style>

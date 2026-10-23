@@ -299,7 +299,7 @@
     justify-content: space-between;
     gap: 12px;
     font-size: 12px;
-    color: var(--muted, #5c6950);
+    color: var(--text-muted);
   }
   .submit-row {
     margin: 14px 0 8px;

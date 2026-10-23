@@ -323,7 +323,7 @@ for (const action of ['cycle', 'audit'] as const) {
       await expect(audit).toBeDisabled();
       if (action === 'cycle')
         await expect(page.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
-      await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
 
       const refreshed = page.waitForResponse('**/api/state');
       newRead.resolve();
@@ -333,9 +333,7 @@ for (const action of ['cycle', 'audit'] as const) {
       await expect(run).toBeDisabled();
       await expect(audit).toBeDisabled();
       if (action === 'audit')
-        await expect(
-          page.getByRole('heading', { name: 'Worth doing. Before doing.' })
-        ).toBeVisible();
+        await expect(page.getByRole('heading', { level: 1, name: 'Proposals' })).toBeVisible();
       await expect(page.getByRole('alert')).toContainText('Synthetic state refresh outage');
       await run.dispatchEvent('click');
       await audit.dispatchEvent('click');
@@ -492,7 +490,7 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
   await expect(runAudit).toBeEnabled({ timeout: 10000 });
   await expect(run).toBeDisabled();
   await runAudit.click();
-  await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Proposals' })).toBeVisible();
   await expect(page.getByRole('status').filter({ hasText: 'Audit in progress' })).toContainText(
     'Audit in progress'
   );
@@ -504,7 +502,9 @@ test('controls share eligibility, refuse duplicate pending actions, and an audit
     timeout: 10000
   });
   await page.getByLabel('Cycle', { exact: true }).selectOption('audit-fixture');
-  await expect(page.getByLabel('Decision counts')).toContainText('rejected: 1');
+  await expect(
+    page.getByRole('button', { name: 'rejected', exact: true })
+  ).toHaveAccessibleDescription('1');
   await page.getByRole('button', { name: 'rejected', exact: true }).click();
   await expect(
     page.getByText('rejected: both adversaries considered the concrete evidence.')

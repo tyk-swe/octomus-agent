@@ -20,11 +20,9 @@
   import Notices from '#lib/Notices.svelte';
   import Overview from '#lib/Overview.svelte';
   import Proposals from '#lib/Proposals.svelte';
-  import Insights from '#lib/Insights.svelte';
   import Requests from '#lib/Requests.svelte';
   import RelativeTime from '#lib/RelativeTime.svelte';
   import SearchBox from '#lib/SearchBox.svelte';
-  import Settings from '#lib/Settings.svelte';
   import { configurationEditable, controlEligibility, type SetupStatus } from '#lib/setup.ts';
   import TaskDetail from '#lib/TaskDetail.svelte';
   import TaskList from '#lib/TaskList.svelte';
@@ -37,7 +35,14 @@
     viewFromHash
   } from '#lib/navigation.ts';
   const version = __APP_VERSION__;
-  const shortVersion = version.split('.').slice(0, 2).join('.');
+  // Settings and Insights load on demand so the startup chunk stays small. The
+  // promises are memoized so a re-render never re-imports or remounts.
+  const loadSettings = () => import('#lib/Settings.svelte');
+  const loadInsights = () => import('#lib/Insights.svelte');
+  let settingsModule: ReturnType<typeof loadSettings> | undefined;
+  let insightsModule: ReturnType<typeof loadInsights> | undefined;
+  const settingsView = () => (settingsModule ??= loadSettings());
+  const insightsView = () => (insightsModule ??= loadInsights());
   let connected = $state(false),
     accessToken = $state(''),
     data = $state<Snapshot | null>(null),
@@ -136,8 +141,25 @@
   const documentTitle = $derived(
     connected && data
       ? `${attentionCount ? `(${attentionCount}) ` : ''}${current?.label ?? 'Overview'} · Octomus Agent`
-      : 'Octomus Agent · Your project, moving forward'
+      : 'Octomus Agent'
   );
+  const OPERATING_MODE_LABELS: Record<string, string> = {
+    run_once: 'Run once',
+    continuous: 'Continuous operation',
+    paused: 'New work paused'
+  };
+  function operatingStatus(snapshot: Snapshot): string {
+    const mode = OPERATING_MODE_LABELS[snapshot.control.mode] ?? 'New work paused';
+    const phase = snapshot.control.batch?.phase === 'merging' ? ' · settling merges' : '';
+    const publishing =
+      snapshot.control.paused && snapshot.active_tasks > 0 ? ' · active workflows may publish' : '';
+    return `${mode}${phase} · ${snapshot.active_tasks} active tasks${publishing}`;
+  }
+  function operatingTone(snapshot: Snapshot): string {
+    if (snapshot.control.paused && snapshot.active_tasks > 0) return 'warn';
+    if (snapshot.control.paused) return 'neutral';
+    return 'good';
+  }
   let latestCycle = $derived(data?.cycles[0]);
   const setupStatus = $derived<SetupStatus | null>(
     data
@@ -340,10 +362,7 @@
   async function onWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && mobileOpen) {
       event.preventDefault();
-      noteNavigationIntent();
-      mobileOpen = false;
-      await tick();
-      document.getElementById('navigation-toggle')?.focus();
+      await closeDrawer();
       return;
     }
     if (event.key !== '/' || event.defaultPrevented || mobileOpen) return;
@@ -353,6 +372,16 @@
     if (!box) return;
     event.preventDefault();
     box.focus();
+  }
+  $effect(() => {
+    document.documentElement.classList.toggle('nav-locked', mobileOpen);
+    return () => document.documentElement.classList.remove('nav-locked');
+  });
+  async function closeDrawer() {
+    noteNavigationIntent();
+    mobileOpen = false;
+    await tick();
+    document.getElementById('navigation-toggle')?.focus();
   }
   async function toggleNavigation() {
     noteNavigationIntent();
@@ -472,7 +501,13 @@
   <LoginScreen bind:accessToken {error} {busy} onsubmit={login} />
 {:else if data}
   <a class="skip-link" href="#main-content">Skip to main content</a>
-  <div class="app-shell">
+  <div class="app-shell" class:nav-open={mobileOpen}>
+    {#if mobileOpen}<div
+        class="nav-scrim"
+        role="presentation"
+        aria-hidden="true"
+        onclick={closeDrawer}
+      ></div>{/if}
     <aside id="workspace-navigation" class:mobile-open={mobileOpen} class="sidebar">
       <a
         class="brand"
@@ -485,7 +520,6 @@
           >octomus<span class="brand-light">agent</span></span
         ></a
       >
-      <div class="workspace-label">WORKSPACE</div>
       <div class="repository-switch">
         <div class="repo-avatar"><Icon name="code" size={19} /></div>
         <div>
@@ -493,7 +527,6 @@
             >{data.repository.split('/')[0] || 'Not connected yet'}</small
           >
         </div>
-        <span class="connection-dot"></span>
       </div>
       <nav aria-label="Main navigation">
         {#each navigation as item}<button
@@ -510,22 +543,16 @@
           >{/each}
       </nav>
       <div class="sidebar-bottom">
-        <div class="autonomy-note">
-          <span class="small-orbit"><Icon name="activity" size={18} /></span><strong
-            >Always improving.</strong
-          >
-          <p>Useful changes.<br />A fresh review. Every time.</p>
-        </div>
         <button class="disconnect" onclick={disconnect}
           ><Icon name="logout" size={17} /><span>Disconnect</span><span class="version"
-            >v{shortVersion}</span
+            >v{version}</span
           ></button
         >
       </div>
     </aside>
     <div class="main-shell">
       <header class="topbar">
-        <div class="breadcrumbs">
+        <div class="topbar-left">
           <button
             class="icon-button mobile-toggle"
             id="navigation-toggle"
@@ -533,23 +560,29 @@
             aria-controls="workspace-navigation"
             aria-expanded={mobileOpen}
             onclick={toggleNavigation}><Icon name="menu" /></button
-          ><span>Workspace</span><Icon name="chevron" size={13} /><strong>{current?.label}</strong>
+          ><img class="topbar-brand" src="/favicon.svg" alt="" width="26" height="26" />
+          <div
+            class="mode-pill"
+            role="status"
+            aria-label="Operating mode"
+            aria-live="polite"
+            data-tone={operatingTone(data)}
+            title={operatingStatus(data)}
+          >
+            <span class="mode-dot"></span><span class="mode-text">{operatingStatus(data)}</span>
+          </div>
         </div>
         <div class="topbar-right">
           <span class="live-indicator" class:offline={!!connectionError}
-            ><span></span>{connectionError ? 'Reconnecting' : 'Connected'}</span
-          >{#if lastUpdated}<span class="topbar-updated">Updated {lastUpdated}</span>{/if}<span
-            class="topbar-divider"
-          ></span><span class="operator-avatar" title="Private operator">OP</span>
+            ><span></span><span class="live-text"
+              >{connectionError ? 'Reconnecting' : 'Connected'}</span
+            ></span
+          >{#if lastUpdated}<span class="topbar-updated">Updated {lastUpdated}</span>{/if}
         </div>
       </header>
-      <main class="content" id="main-content" tabindex="-1">
+      <main class="content" id="main-content" tabindex="-1" inert={mobileOpen}>
         <div class="page-heading">
-          <div>
-            <div class="eyebrow">YOUR PROJECT, MOVING FORWARD</div>
-            <h1>{current?.heading}</h1>
-            <p>{current?.lede}</p>
-          </div>
+          <h1>{current?.label}</h1>
           {#if view !== 'settings'}<div class="actions">
               <button
                 class="button"
@@ -616,15 +649,11 @@
                 onselect={inspectTask}
               />{:else if listLoaded}<div class="empty">
                 <Icon name="queue" size={34} />
-                <h3>
-                  {search || filter !== 'all'
-                    ? 'No matching tasks'
-                    : 'The next good idea starts here.'}
-                </h3>
+                <h3>{search || filter !== 'all' ? 'No matching tasks' : 'No tasks yet'}</h3>
                 <p>
                   {search || filter !== 'all'
                     ? 'Try another filter or search term.'
-                    : 'Accepted proposals become focused tasks with a clear outcome.'}
+                    : 'Accepted proposals become tasks.'}
                 </p>
                 {#if search || filter !== 'all'}<button class="button" onclick={clearListFilters}
                     >Clear search and filters</button
@@ -632,35 +661,27 @@
               </div>{/if}
           </section>
         {:else if view === 'prs'}
-          <div class="notice">
-            <Icon name="shield" size={18} /><span
-              >{data.delivery_mode === 'maintenance'
-                ? 'Octomus publishes reviewed pull requests; small verified maintenance work can merge itself. Everything else stays manual.'
-                : 'Octomus publishes reviewed pull requests. Merge decisions stay with you.'}</span
-            >
-          </div>
-          <div class="list-toolbar" onfocusin={noteNavigationIntent}>
-            <FilterTabs
-              labels={PR_FILTERS}
-              current={filter}
-              aria="PR filters"
-              onselect={(state) => {
-                noteNavigationIntent();
-                filter = state;
-              }}
-            />
-            <SearchBox bind:value={search} />
-          </div>
+          {#if data.delivery_mode === 'maintenance'}<div class="notice">
+              <Icon name="shield" size={18} /><span
+                >Octomus publishes reviewed pull requests; small verified maintenance work can merge
+                itself. Everything else stays manual.</span
+              >
+            </div>{/if}
           <section class="panel">
             <div class="section-heading">
-              <div>
-                <h2>PR outcomes</h2>
-                <p>
-                  Observed every five minutes. Delivery and maintainer acceptance are recorded
-                  separately.
-                </p>
-              </div>
-              <span class="count">{prRows.length}</span>
+              <h2>PR outcomes <span class="count">{prRows.length}</span></h2>
+            </div>
+            <div class="list-toolbar" onfocusin={noteNavigationIntent}>
+              <FilterTabs
+                labels={PR_FILTERS}
+                current={filter}
+                aria="PR filters"
+                onselect={(state) => {
+                  noteNavigationIntent();
+                  filter = state;
+                }}
+              />
+              <SearchBox bind:value={search} />
             </div>
             {#each prRows as observed (prKey(observed))}
               {@const pr = observed.pr}
@@ -702,12 +723,12 @@
                 <h3>
                   {search || filter !== 'all'
                     ? 'No matching pull requests'
-                    : 'Room for your next improvement.'}
+                    : 'No pull requests yet'}
                 </h3>
                 <p>
                   {search || filter !== 'all'
                     ? 'Try another filter or search term.'
-                    : 'Open Octomus branches appear here after discovery grounds the repository.'}
+                    : 'Delivered tasks open pull requests here.'}
                 </p>
                 {#if search || filter !== 'all'}<button class="button" onclick={clearListFilters}
                     >Clear search and filters</button
@@ -748,44 +769,56 @@
             onnavigate={navigate}
           />
         {/if}
-        {#if view === 'insights'}<Insights active={view === 'insights'} />{/if}
+        {#if view === 'insights'}
+          {#await insightsView() then { default: Insights }}
+            <Insights active />
+          {:catch}
+            <div class="notice error" role="alert">
+              <span>Could not load this view. Reload the page to get the current dashboard.</span>
+            </div>
+          {/await}
+        {/if}
         {#if settingsVisited}<div hidden={view !== 'settings'}>
-            <Settings
-              active={view === 'settings'}
-              editable={configurationEditable(setupStatus)}
-              status={setupStatus}
-              onsaved={configSaved}
-              onbaselinechanged={baselineChanged}
-              onchoose={chooseOnOverview}
-            />
+            {#await settingsView() then { default: Settings }}
+              <Settings
+                active={view === 'settings'}
+                editable={configurationEditable(setupStatus)}
+                status={setupStatus}
+                onsaved={configSaved}
+                onbaselinechanged={baselineChanged}
+                onchoose={chooseOnOverview}
+              />
+            {:catch}
+              <div class="notice error" role="alert">
+                <span>Could not load this view. Reload the page to get the current dashboard.</span>
+              </div>
+            {/await}
           </div>{/if}
         {#if current?.noun}
-          <div class="actions" aria-label="History pagination">
-            <button
-              class="button"
-              disabled={listLoading || previousPages.length === 0}
-              onclick={() => {
-                navigationGeneration++;
-                listBefore = previousPages.at(-1) ?? null;
-                previousPages = previousPages.slice(0, -1);
-              }}>Previous page</button
-            >
-            <button
-              class="button"
-              disabled={listLoading || !!listError || listNext === null}
-              onclick={() => {
-                navigationGeneration++;
-                previousPages = [...previousPages, listBefore];
-                listBefore = listNext;
-              }}>Next page</button
-            >
+          <div class="list-footer">
+            {@render listFeedback(current.noun, filtered.length + proposals.length + prRows.length)}
+            <div class="actions" aria-label="History pagination">
+              <button
+                class="button"
+                disabled={listLoading || previousPages.length === 0}
+                onclick={() => {
+                  navigationGeneration++;
+                  listBefore = previousPages.at(-1) ?? null;
+                  previousPages = previousPages.slice(0, -1);
+                }}>Previous page</button
+              >
+              <button
+                class="button"
+                disabled={listLoading || !!listError || listNext === null}
+                onclick={() => {
+                  navigationGeneration++;
+                  previousPages = [...previousPages, listBefore];
+                  listBefore = listNext;
+                }}>Next page</button
+              >
+            </div>
           </div>
-          {@render listFeedback(current.noun, filtered.length + proposals.length + prRows.length)}
         {/if}
-        <footer class="content-footer">
-          <span><span class="footer-dot"></span> Thoughtful progress. No artificial churn.</span
-          ><span>Updated {lastUpdated || 'just now'} · v{version}</span>
-        </footer>
       </main>
     </div>
   </div>

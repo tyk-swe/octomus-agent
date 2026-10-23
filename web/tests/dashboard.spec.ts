@@ -59,17 +59,14 @@ test('the private dashboard names its version and tours tasks, proposals, pull r
   await configurationFixture(page, { catalog: [...codexModels, ...opencodeModels] });
   await page.clock.install();
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Your project’s control room.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Connect to Octomus' })).toBeVisible();
   await page.getByLabel('Operator access token').fill('incorrect');
   await page.getByRole('button', { name: 'Open dashboard' }).click();
   await expect(page.getByRole('alert')).toContainText('operator access token');
   await page.getByLabel('Operator access token').fill(token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
-  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
-  await expect(page.locator('.content-footer')).toContainText(`· v${version}`);
-  await expect(page.locator('.disconnect .version')).toHaveText(
-    `v${version.split('.').slice(0, 2).join('.')}`
-  );
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
+  await expect(page.locator('.disconnect .version')).toHaveText(`v${version}`);
   await expect(page.getByRole('button', { name: 'Run once' })).toBeDisabled();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await accessible(page);
@@ -96,7 +93,7 @@ test('the private dashboard names its version and tours tasks, proposals, pull r
   await page.getByRole('button', { name: 'Close task details' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await navigate('Proposals');
-  await expect(page.getByRole('heading', { name: 'Worth doing. Before doing.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Proposals' })).toBeVisible();
   await page.getByRole('button', { name: 'rejected', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'No matching proposals' })).toBeVisible();
   await navigate('Pull requests');
@@ -136,7 +133,7 @@ test('the private dashboard names its version and tours tasks, proposals, pull r
   await expect(page.getByLabel('Repair reasoning effort', { exact: true })).toHaveValue('high');
   expect(await fitsViewport(page)).toBe(true);
   await navigate('Overview');
-  await expect(page.getByRole('heading', { name: 'The bigger picture.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible();
   expect(errors).toEqual([]);
 });
 

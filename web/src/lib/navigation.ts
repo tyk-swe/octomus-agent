@@ -4,61 +4,45 @@ export const NAVIGATION: {
   id: string;
   label: string;
   icon: IconName;
-  heading: string;
-  lede: string;
   noun?: string;
 }[] = [
   {
     id: 'overview',
     label: 'Overview',
-    icon: 'overview',
-    heading: 'The bigger picture.',
-    lede: 'A clear view of what’s happening, and what’s coming next.'
+    icon: 'overview'
   },
   {
     id: 'queue',
     label: 'Task queue',
     icon: 'queue',
-    heading: 'From idea to improvement.',
-    lede: 'Every task has a purpose, a workspace, and a path to a reviewed PR.',
     noun: 'tasks'
   },
   {
     id: 'proposals',
     label: 'Proposals',
     icon: 'proposals',
-    heading: 'Worth doing. Before doing.',
-    lede: 'Grounded opportunities, challenged from two independent perspectives.',
     noun: 'proposals'
   },
   {
     id: 'requests',
     label: 'Requests',
-    icon: 'inbox',
-    heading: 'Ask for what matters.',
-    lede: 'Request specific work. It still has to earn its place through review.'
+    icon: 'inbox'
   },
   {
     id: 'prs',
     label: 'Pull requests',
     icon: 'prs',
-    heading: 'Progress, ready for review.',
-    lede: 'New improvements and continued work on your existing branches.',
     noun: 'pull requests'
   },
   {
     id: 'insights',
     label: 'Insights',
-    icon: 'chart',
-    heading: 'What the work adds up to.',
-    lede: 'Admissions, decisions and delivered outcomes over time.'
+    icon: 'chart'
   },
   {
     id: 'settings',
     label: 'Configuration',
-    icon: 'settings',
-    heading: 'Make it work your way.',
-    lede: 'Your repository, your priorities, your operating limits.'
+    icon: 'settings'
   }
 ];
 

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"io"
 	"io/fs"
 	"mime"
@@ -8,12 +10,15 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
 
 const indexName = "200.html"
+
+const immutablePrefix = "_app/immutable/"
 
 const assetMethods = "GET, HEAD"
 
@@ -76,7 +81,51 @@ func contentType(name string) string {
 	return "application/octet-stream"
 }
 
-type embeddedAssets struct{ files fs.FS }
+func compressible(name string) bool {
+	switch path.Ext(name) {
+	case ".js", ".css", ".html", ".svg", ".json":
+		return true
+	}
+	return false
+}
+
+func acceptsGzip(r *http.Request) bool {
+	for _, token := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		coding, parameters, _ := strings.Cut(token, ";")
+		if !strings.EqualFold(strings.TrimSpace(coding), "gzip") {
+			continue
+		}
+		acceptable := true
+		for _, parameter := range strings.Split(parameters, ";") {
+			key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "q") {
+				weight, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+				acceptable = err == nil && weight > 0
+			}
+		}
+		if acceptable {
+			return true
+		}
+	}
+	return false
+}
+
+type embeddedAssets struct {
+	files fs.FS
+	gzip  sync.Map
+}
+
+func (e *embeddedAssets) compressed(name string, data []byte) []byte {
+	if cached, ok := e.gzip.Load(name); ok {
+		return cached.([]byte)
+	}
+	var buffer bytes.Buffer
+	writer, _ := gzip.NewWriterLevel(&buffer, gzip.BestCompression)
+	_, _ = writer.Write(data)
+	_ = writer.Close()
+	cached, _ := e.gzip.LoadOrStore(name, buffer.Bytes())
+	return cached.([]byte)
+}
 
 func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name, ok := assetName(w, r)
@@ -98,6 +147,19 @@ func (e *embeddedAssets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		name = indexName
+	}
+	if strings.HasPrefix(name, immutablePrefix) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	if compressible(name) {
+		w.Header().Add("Vary", "Accept-Encoding")
+		if acceptsGzip(r) {
+			if compressed := e.compressed(name, data); len(compressed) < len(data) {
+				w.Header().Set("Content-Encoding", "gzip")
+				serveFile(w, r, name, compressed)
+				return
+			}
+		}
 	}
 	serveFile(w, r, name, data)
 }

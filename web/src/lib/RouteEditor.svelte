@@ -179,7 +179,7 @@
   .model-route {
     margin: 0 24px;
     padding: 18px 0;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--border);
   }
   h3 {
     margin: 0 0 12px;
@@ -211,7 +211,7 @@
     margin: 10px 0 0;
   }
   .route-help {
-    color: var(--muted);
+    color: var(--text-muted);
   }
   .route-problem {
     color: var(--bad-fg);

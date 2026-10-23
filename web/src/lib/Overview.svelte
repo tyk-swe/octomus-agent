@@ -3,7 +3,7 @@
   import DecisionCounts from './DecisionCounts.svelte';
   import { modeLabel, planningVerdict, taskOutcomeCounts } from './evidence';
   import { bytesLabel, gb, shortHash } from './format';
-  import Icon, { type IconName } from './Icon.svelte';
+  import Icon from './Icon.svelte';
   import RelativeTime from './RelativeTime.svelte';
   import { sandboxVerdict } from './sandbox';
   import TaskList from './TaskList.svelte';
@@ -37,12 +37,6 @@
     onrunonce: () => void;
     onselftest: () => void;
   } = $props();
-  const pipeline: { name: string; icon: IconName; detail: string }[] = [
-    { name: 'Ground & discover', icon: 'proposals', detail: 'Understand what matters' },
-    { name: 'Challenge & refine', icon: 'shield', detail: 'Keep the worthwhile work' },
-    { name: 'Build & verify', icon: 'code', detail: 'Make the complete change' },
-    { name: 'Review & deliver', icon: 'prs', detail: 'Fresh eyes before every PR' }
-  ];
   const runnerStorageStatus: Record<string, string> = {
     unconfigured: 'not configured',
     unavailable: 'path unavailable',
@@ -69,45 +63,28 @@
 </script>
 
 {#if !data.configured}<section class="onboarding">
-    <div>
-      <span class="eyebrow">LET’S SET THINGS IN MOTION</span>
-      <h2>A home for your next improvement.</h2>
-      <p>
-        Connect your repository, choose model routes, and set the checks every change must pass.
-        Save, check the connection, then try an audit. Setup never starts work on its own.
-      </p>
-      <button class="button primary" onclick={() => onnavigate('settings')}
-        >Set up your project<Icon name="arrow" size={17} /></button
-      >
-    </div>
-    <div class="onboarding-art" aria-hidden="true">
-      <div class="orbit orbit-one"></div>
-      <div class="orbit orbit-two"></div>
-      <div class="art-node node-one"><Icon name="proposals" size={21} /></div>
-      <div class="art-node node-two"><Icon name="prs" size={21} /></div>
-      <div class="art-node node-three"><Icon name="check" size={20} /></div>
-      <img src="/favicon.svg" alt="" width="82" height="82" />
-    </div>
+    <h2>Finish setting up your project</h2>
+    <button class="button primary" onclick={() => onnavigate('settings')}
+      >Set up your project<Icon name="arrow" size={17} /></button
+    >
   </section>{/if}
 {#if data.cycles.length === 0}
   <section class="first-run-guide" aria-label="Choose your first run">
     <div class="first-run-heading">
-      <span class="eyebrow">START WITH A LOOK AROUND</span>
       <h2>Your first move: an audit.</h2>
-      <p>Read the recommendations before choosing an execution run. Each new run plans afresh.</p>
     </div>
     <dl class="run-options">
       <div>
         <dt>Run an audit <span>Recommended first</span></dt>
-        <dd>Discover and review proposals. No execution queue or PRs.</dd>
+        <dd>Discover and review proposals. No queue, no PRs.</dd>
       </div>
       <div>
         <dt>Run once</dt>
-        <dd>Drain queued work, plan one cycle, finish accepted tasks, then pause.</dd>
+        <dd>Plan one cycle, finish accepted tasks, then pause.</dd>
       </div>
       <div>
         <dt>Start continuous</dt>
-        <dd>Keep scheduling work within your configured limits until paused.</dd>
+        <dd>Keep scheduling work within your limits until paused.</dd>
       </div>
     </dl>
   </section>
@@ -131,32 +108,43 @@
   </article>
   <article class="stat">
     <div class="stat-label">Active tasks<Icon name="code" size={17} /></div>
-    <strong>{data.active_tasks.toString().padStart(2, '0')}</strong><small
-      >{data.counts.queued ?? 0} waiting in the queue</small
+    <strong>{data.active_tasks}</strong><small>{data.counts.queued ?? 0} waiting in the queue</small
     >
   </article>
   <article class="stat">
     <div class="stat-label">Delivered tasks<Icon name="prs" size={17} /></div>
-    <strong>{(data.counts.published ?? 0).toString().padStart(2, '0')}</strong><small
-      >{data.merged_prs} PRs observed merged</small
+    <strong>{data.counts.published ?? 0}</strong><small>{data.merged_prs} PRs observed merged</small
     >
   </article>
   <article class="stat">
     <div class="stat-label">Needs attention<Icon name="alert" size={17} /></div>
-    <strong class:warning-number={attentionCount > 0}
-      >{attentionCount.toString().padStart(2, '0')}</strong
-    ><small>{attentionCount ? 'Work preserved for inspection' : 'No blocked or failed tasks'}</small
+    <strong class:warning-number={attentionCount > 0}>{attentionCount}</strong><small
+      >{attentionCount ? 'Work preserved for inspection' : 'No blocked or failed tasks'}</small
     >
   </article>
   {#if showMerges}<article class="stat" id="auto-merge-stat">
       <div class="stat-label">Merge outcomes<Icon name="prs" size={17} /></div>
-      <strong>{(data.auto_merge.counts.merged ?? 0).toString().padStart(2, '0')}</strong><small
+      <strong>{data.auto_merge.counts.merged ?? 0}</strong><small
         >{mergePending} waiting on checks or protections{data.auto_merge.active
           ? ' · checking now'
           : ''}</small
       >
     </article>{/if}
 </div>
+{#if attentionCount}<section class="panel attention-panel" aria-labelledby="attention-heading">
+    <div class="section-heading">
+      <div>
+        <h2 id="attention-heading">
+          Needs attention <span class="count">{attentionCount}</span>
+        </h2>
+        <p>Blocked or failed tasks keep their workspace and evidence for inspection.</p>
+      </div>
+      <button class="text-button" onclick={onviewattention}
+        >View all unresolved work<Icon name="arrow" size={15} /></button
+      >
+    </div>
+    <TaskList tasks={data.attention_tasks} onselect={onopentask} />
+  </section>{/if}
 <section class="panel cycle-panel" aria-labelledby="latest-run-heading">
   <div class="section-heading">
     <div class="row-title">
@@ -207,9 +195,10 @@
               </li>{/each}
           </ul>
           <small
-            >Published means a pull request was delivered. {data.delivery_mode === 'maintenance'
-              ? 'Eligible maintenance PRs may be merged automatically after checks and protections allow it.'
-              : 'Merging stays with you.'}</small
+            >Recent window only, not cycle totals. Published = pull request delivered; {data.delivery_mode ===
+            'maintenance'
+              ? 'eligible maintenance PRs may merge automatically.'
+              : 'merging stays with you.'}</small
           >
         {:else}
           <p class="muted">
@@ -217,26 +206,107 @@
               ? 'Audits record recommendations and queue no tasks.'
               : 'No tasks from this run appear in the recent window. Older tasks may exist.'}
           </p>
+          <small>Recent window only, not cycle totals.</small>
         {/if}
-        <small
-          >Recent window only, not cycle totals. Inspect run for complete retained run evidence.</small
-        >
       </div>
     </div>
     {#if cycle.error}<div class="notice error">
         <Icon name="alert" size={18} /><span>{cycle.error}</span>
       </div>{/if}
   {/if}
-  <div class="pipeline">
-    {#each pipeline as step, i}<div class="pipeline-step">
-        <div class:highlight={data.cycle_active && i === 0} class="pipeline-icon">
-          <Icon name={step.icon} size={22} />
-        </div>
-        <div><strong>{step.name}</strong><small>{step.detail}</small></div>
-        {#if i < 3}<span class="pipeline-connector"><Icon name="chevron" size={15} /></span>{/if}
-      </div>{/each}
-  </div>
 </section>
+<div class="overview-columns">
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>
+          Work in motion <span class="count">{data.active_tasks + (data.counts.queued ?? 0)}</span>
+        </h2>
+      </div>
+      <button class="text-button" onclick={() => onnavigate('queue')}
+        >View queue<Icon name="arrow" size={15} /></button
+      >
+    </div>
+    {#if data.active_tasks > 0 || (data.counts.queued ?? 0) > 0}<TaskList
+        tasks={data.tasks
+          .filter((t) => ACTIVE_STATUSES.includes(t.status) || t.status === 'queued')
+          .slice(0, 5)}
+        onselect={onopentask}
+      />{:else}<div class="empty work-empty">
+        <Icon name="queue" size={30} />
+        <h3>No active or queued tasks</h3>
+        <p>
+          {data.configured
+            ? 'Run a cycle to discover improvements.'
+            : 'Configure your repository first.'}
+        </p>
+        <button
+          class="text-button"
+          disabled={data.configured && (busy || !canRunOnce)}
+          onclick={() => (data.configured ? onrunonce() : onnavigate('settings'))}
+          >{pendingAction === 'cycle'
+            ? 'Starting run…'
+            : data.configured
+              ? 'Discover opportunities'
+              : 'Configure your repository'}<Icon name="arrow" size={16} /></button
+        >
+      </div>{/if}
+  </section>
+  <section class="panel activity-panel">
+    <div class="section-heading">
+      <h2>Recent activity</h2>
+    </div>
+    <div class="activity-list">
+      {#each data.events.slice(0, 6) as event (event.id)}<div class="activity-item">
+          <span
+            class={'activity-point ' +
+              (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
+          ></span>
+          <div>
+            <p>{event.message}</p>
+            <small
+              >{ERROR_EVENT_KINDS.includes(event.kind) ? 'Error · ' : ''}<RelativeTime
+                value={event.at}
+              /></small
+            >
+          </div>
+        </div>{:else}<p class="muted">No activity yet.</p>{/each}
+    </div>
+    <div class="budget">
+      <dl class="budget-facts">
+        <div>
+          <dt>Sessions today</dt>
+          <dd>
+            {data.sessions_today} / {data.session_limit}
+            <progress
+              value={data.sessions_today}
+              max={data.session_limit}
+              aria-label="Daily session budget used"
+            ></progress>
+          </dd>
+        </div>
+        <div>
+          <dt>Planning pass</dt>
+          <dd>
+            needs {data.planning_capacity.required} · {data.planning_capacity.remaining} remain
+          </dd>
+        </div>
+        <div>
+          <dt>Open PRs</dt>
+          <dd>
+            {data.pr_capacity.owned_open ?? '?'} / {data.pr_capacity.limit}{data.pr_capacity
+              .reserved > 0
+              ? ` + ${data.pr_capacity.reserved} reserved`
+              : ''}{#if data.pr_capacity.observed_at}{' · observed '}<RelativeTime
+                value={data.pr_capacity.observed_at}
+              />{/if}
+          </dd>
+        </div>
+      </dl>
+      <small>Resets at midnight UTC.</small>
+    </div>
+  </section>
+</div>
 <section class="panel sandbox-panel" aria-labelledby="sandbox-heading">
   <div class="section-heading">
     <div class="row-title">
@@ -311,115 +381,6 @@
     </div>
   {/if}
 </section>
-{#if attentionCount}<section class="panel attention-panel" aria-labelledby="attention-heading">
-    <div class="section-heading">
-      <div>
-        <h2 id="attention-heading">
-          Needs attention <span class="count">{attentionCount}</span>
-        </h2>
-        <p>Blocked or failed tasks keep their workspace and evidence for inspection.</p>
-      </div>
-      <button class="text-button" onclick={onviewattention}
-        >View all unresolved work<Icon name="arrow" size={15} /></button
-      >
-    </div>
-    <TaskList tasks={data.attention_tasks} onselect={onopentask} />
-  </section>{/if}
-<div class="overview-columns">
-  <section class="panel">
-    <div class="section-heading">
-      <div>
-        <h2>
-          Work in motion <span class="count">{data.active_tasks + (data.counts.queued ?? 0)}</span>
-        </h2>
-        <p>Good changes, one focused task at a time.</p>
-      </div>
-      <button class="text-button" onclick={() => onnavigate('queue')}
-        >View queue<Icon name="arrow" size={15} /></button
-      >
-    </div>
-    {#if data.active_tasks > 0 || (data.counts.queued ?? 0) > 0}<TaskList
-        tasks={data.tasks
-          .filter((t) => ACTIVE_STATUSES.includes(t.status) || t.status === 'queued')
-          .slice(0, 5)}
-        onselect={onopentask}
-      />{:else}<div class="empty work-empty">
-        <div class="empty-illustration">
-          <Icon name="queue" size={30} /><span><Icon name="check" size={12} /></span>
-        </div>
-        <h3>A little quiet. A lot of potential.</h3>
-        <p>
-          {data.configured
-            ? 'Run a cycle to discover grounded improvements. Only worthwhile work makes it to the queue.'
-            : 'Once your project is configured, accepted improvements will appear here.'}
-        </p>
-        <button
-          class="text-button"
-          disabled={data.configured && (busy || !canRunOnce)}
-          onclick={() => (data.configured ? onrunonce() : onnavigate('settings'))}
-          >{pendingAction === 'cycle'
-            ? 'Starting run…'
-            : data.configured
-              ? 'Discover opportunities'
-              : 'Configure your repository'}<Icon name="arrow" size={16} /></button
-        >
-      </div>{/if}
-  </section>
-  <section class="panel activity-panel">
-    <div class="section-heading">
-      <div>
-        <h2>Recent activity</h2>
-        <p>The latest from your workspace.</p>
-      </div>
-      <Icon name="activity" size={18} />
-    </div>
-    <div class="activity-list">
-      {#each data.events.slice(0, 6) as event}<div class="activity-item">
-          <span
-            class={'activity-point ' +
-              (ERROR_EVENT_KINDS.includes(event.kind) ? 'error-point' : '')}
-          ></span>
-          <div>
-            <p>{event.message}</p>
-            <small
-              >{ERROR_EVENT_KINDS.includes(event.kind) ? 'Error · ' : ''}<RelativeTime
-                value={event.at}
-              /></small
-            >
-          </div>
-        </div>{:else}<div class="activity-item">
-          <span class="activity-point"></span>
-          <div>
-            <p>Your control room is connected.</p>
-            <small>Waiting for the first cycle</small>
-          </div>
-        </div>
-        <div class="activity-idle">
-          Progress will be recorded here as the system discovers, builds, and reviews.
-        </div>{/each}
-    </div>
-    <div class="budget">
-      <div>
-        <span>Today’s session budget</span><strong
-          >{data.sessions_today} <span>/ {data.session_limit}</span></strong
-        >
-      </div>
-      <progress
-        value={data.sessions_today}
-        max={data.session_limit}
-        aria-label="Daily session budget used"
-      ></progress><small
-        >Resets at midnight UTC · planning pass requires {data.planning_capacity.required} admissions,
-        {data.planning_capacity.remaining} remain · open-PR capacity {data.pr_capacity.owned_open ??
-          '?'}/{data.pr_capacity.limit}{data.pr_capacity.reserved > 0
-          ? ` + ${data.pr_capacity.reserved} reserved`
-          : ''}{#if data.pr_capacity.observed_at}{' · observed '}<RelativeTime
-            value={data.pr_capacity.observed_at}
-          />{/if}</small
-      >
-    </div>
-  </section>
-</div>
 <section class="panel operating-panel">
   <details class="operating-details">
     <summary>

@@ -1,0 +1,325 @@
+.list-feedback {
+  margin: 18px 24px;
+}
+.list-feedback:not(.empty) {
+  padding: 12px 16px;
+}
+.list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+.list-footer .list-feedback {
+  margin: 0;
+}
+.list-footer .list-feedback:not(.empty) {
+  padding: 0;
+}
+.list-footer .notice.error {
+  flex-basis: 100%;
+  margin: 0;
+}
+.list-footer .actions {
+  margin-left: auto;
+}
+.task-list {
+  width: 100%;
+}
+.task-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 13px;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  padding: 18px 24px;
+  border-top: 1px solid var(--border-soft);
+  transition: background var(--t-fast) var(--ease);
+}
+.task-row:hover {
+  background: var(--surface-hover);
+}
+.task-row:hover > strong,
+.task-row:hover .task-row-body > strong {
+  color: var(--text);
+}
+.task-row > svg {
+  transition: transform var(--t-fast) var(--ease);
+}
+.task-row:hover > svg:last-child {
+  transform: translateX(3px);
+}
+.task-type-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.task-type-icon.blocked {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.task-type-icon.failed {
+  background: var(--bad-bg);
+  color: var(--bad-fg);
+}
+.task-type-icon.published {
+  background: var(--good-bg);
+  color: var(--good-fg);
+}
+.task-type-icon.executing,
+.task-type-icon.reviewing,
+.task-type-icon.repairing,
+.task-type-icon.verifying,
+.task-type-icon.publishing {
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+.task-row-body {
+  min-width: 0;
+  flex: 1;
+  min-width: 0;
+}
+.task-row-body > strong {
+  font-size: 14px;
+  font-weight: 550;
+  display: block;
+  color: var(--text-2);
+  line-height: 1.5;
+  transition: color var(--t-fast) var(--ease);
+}
+.task-row-body > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.task-row-body code {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.task-row > svg {
+  color: var(--text-muted);
+}
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 17px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.proposal-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px 24px;
+  margin: 20px 0;
+}
+.proposal-controls .cycle-picker {
+  flex: 1 1 240px;
+  max-width: 340px;
+}
+.proposal-controls .actions {
+  margin-left: auto;
+}
+.cycle-picker select {
+  margin-top: 8px;
+}
+.proposal-list {
+  display: grid;
+}
+.proposal-card {
+  padding: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.proposal-card:last-child {
+  border: 0;
+}
+.proposal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.category {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.proposal-card h2 {
+  margin: 15px 0 8px;
+}
+.proposal-card > p {
+  color: var(--text-muted);
+  font-size: 14px;
+  max-width: 900px;
+}
+.decision-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 15px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--olive-pale);
+  border-radius: 8px;
+  margin: 16px 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+.decision-reason p {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.decision-reason svg {
+  margin-top: 2px;
+}
+.proposal-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 18px;
+  color: var(--text-muted);
+}
+.proposal-target code {
+  font-size: 12px;
+}
+.pr-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 16px;
+  align-items: center;
+  padding: 22px 24px;
+  border-top: 1px solid var(--border);
+  transition: background var(--t-fast) var(--ease);
+}
+.pr-row:hover {
+  background: var(--surface-hover);
+}
+.pr-row > svg {
+  transition: transform var(--t-fast) var(--ease);
+}
+.pr-row:hover > svg:last-child {
+  transform: translate(2px, -2px);
+}
+.pr-icon {
+  box-sizing: content-box;
+  padding: 8px;
+  color: var(--olive-deep);
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+}
+.pr-icon.merged {
+  color: var(--good-fg);
+  background: var(--good-bg);
+  border-color: var(--good-line);
+}
+.pr-icon.closed {
+  color: var(--text-muted);
+}
+.pr-observed {
+  color: var(--text-muted);
+}
+.pr-row > div {
+  min-width: 0;
+  flex: 1;
+  min-width: 0;
+}
+.pr-row h3 {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.pr-number {
+  margin-left: 8px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.pr-row p {
+  display: flex;
+  gap: 8px;
+  color: var(--neutral-fg);
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+.pr-row code {
+  font-size: 12px;
+}
+.pr-row > svg {
+  color: var(--text-muted);
+}
+.published-panel {
+  margin-top: 24px;
+}
+@media (max-width: 1200px) {
+  .task-row {
+    padding: 17px 20px;
+  }
+}
+@media (max-width: 900px) {
+  .list-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 13px;
+  }
+  .pr-row {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 700px) {
+  .task-row {
+    gap: 9px;
+    padding: 17px 16px;
+  }
+  .task-row-body > span {
+    gap: 5px;
+  }
+  .task-row-body code {
+    max-width: 130px;
+  }
+  .task-row .badge,
+  .pr-row .badge {
+    padding: 3px 5px;
+    align-self: start;
+    justify-self: end;
+  }
+  .task-type-icon {
+    width: 29px;
+    height: 29px;
+  }
+  .task-row > svg {
+    display: none;
+  }
+  .list-toolbar {
+    padding: 16px;
+  }
+  .proposal-card {
+    padding: 20px;
+  }
+  .pr-row {
+    padding: 20px;
+    gap: 12px;
+  }
+  .pr-row > div {
+    min-width: 0;
+    flex-basis: 75%;
+  }
+}

@@ -438,6 +438,9 @@ table in `internal/httpapi/routes.go` is authoritative.
   unknown field or an unknown name), and `413` for a body over 256 KiB.
 - Every `/api` JSON response is redacted. Request headers must arrive within 10
   seconds, and idle keep-alive connections close after two minutes.
+- Hashed dashboard assets under `/_app/immutable/` are cacheable for a year
+  (`immutable`) and served gzip-compressed when the client accepts it; every
+  other response is `no-store`.
 
 | Method | Path | Purpose | Success |
 | --- | --- | --- | --- |

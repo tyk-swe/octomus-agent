@@ -8,33 +8,33 @@
   font-size: 12px;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  color: #5b694a;
+  color: var(--text-muted);
 }
 .evidence-picker select {
   flex: 1;
   min-width: 0;
   font-size: 12px;
   padding: 8px 32px 8px 10px;
-  border: 1px solid #dfe5dd;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background-color: #fff;
-  color: var(--ink);
+  background-color: var(--surface);
+  color: var(--text);
 }
 .evidence-note {
   font-size: 12px;
   margin-bottom: 14px;
 }
 .evidence-section {
-  border: 1px solid #e4ecd9;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 18px 20px;
   margin: 0 0 14px;
-  background: #fff;
+  background: var(--surface);
   min-width: 0;
 }
 .evidence-section > h3,
 .evidence-section > .row-between h3 {
-  color: #536c3f;
+  color: var(--text-muted);
   margin: 0 0 12px;
 }
 .evidence-section > .row-between {
@@ -47,7 +47,7 @@
 }
 .evidence-section > p {
   font-size: 14px;
-  color: #5a6948;
+  color: var(--text-muted);
 }
 .evidence-section > p + p {
   margin-top: 8px;
@@ -59,8 +59,8 @@
   margin: 12px 0;
 }
 .evidence-section .task-row[aria-pressed='true'] {
-  border-color: #89a968;
-  background: #f6faf1;
+  border-color: var(--olive);
+  background: var(--surface-2);
 }
 .evidence-section .history-card:last-child {
   margin-bottom: 0;
@@ -78,7 +78,7 @@
   margin-top: 12px;
 }
 .run-summary {
-  background: #fbfdf8;
+  background: var(--surface-hover);
 }
 .run-summary .outcome-counts {
   margin-top: 14px;
@@ -90,7 +90,7 @@
   justify-content: flex-end;
   gap: 8px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .evidence-meta code {
   font-size: 12px;
@@ -101,7 +101,7 @@
   letter-spacing: -0.3px;
   line-height: 1.35;
   margin: 0 0 12px;
-  color: var(--ink);
+  color: var(--text);
 }
 .evidence-more {
   margin-top: 10px;
@@ -112,7 +112,7 @@
 .expandable > details > summary {
   font-size: 12px;
   font-weight: 600;
-  color: var(--green);
+  color: var(--accent);
   cursor: pointer;
 }
 .evidence-more .proposal-target {
@@ -137,13 +137,13 @@
 }
 .fact-row dt {
   font-size: 12px;
-  color: #5b694a;
+  color: var(--text-muted);
   margin-bottom: 5px;
 }
 .fact-row dd {
   margin: 0;
   font-size: 12px;
-  color: #566b43;
+  color: var(--text-muted);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -159,8 +159,8 @@
   gap: 12px;
 }
 .reviewer-card {
-  border: 1px solid #e1ead6;
-  background: #fbfdf8;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
   border-radius: 8px;
   padding: 16px;
   display: flex;
@@ -173,18 +173,18 @@
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: #536c3f;
+  color: var(--text-muted);
 }
 .reviewer-card .reviewer-role {
   display: block;
   font-size: 12px;
   font-weight: 450;
-  color: var(--muted);
+  color: var(--text-muted);
   margin-top: 3px;
 }
 .reviewer-card p {
   font-size: 14px;
-  color: #5a6948;
+  color: var(--text-muted);
 }
 .reviewer-card .inline-note {
   margin: 0;
@@ -202,16 +202,16 @@
   max-width: 100%;
 }
 .sha code {
-  background: #f2f5ec;
-  border: 1px solid #e6ebdf;
-  border-radius: 4px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-xs);
   padding: 2px 6px;
   font-size: 12px;
   white-space: nowrap;
 }
 .sha .icon-button {
   padding: 3px;
-  color: #5f6854;
+  color: var(--text-muted);
 }
 .copy-text {
   display: inline-flex;
@@ -227,11 +227,11 @@
 .copy-text .icon-button {
   flex: none;
   padding: 3px;
-  color: #5f6854;
+  color: var(--text-muted);
 }
 .sha-none {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .command-list {
   list-style: none;
@@ -246,7 +246,7 @@
   gap: 8px 14px;
   align-items: start;
   padding: 12px 14px;
-  border: 1px solid #e4ecd9;
+  border: 1px solid var(--border);
   border-radius: 7px;
   min-width: 0;
 }
@@ -256,12 +256,12 @@
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: #3d5548;
+  color: var(--text-2);
 }
 .command-row .command-meta {
   grid-column: 1 / -1;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text-muted);
   margin: 0;
   line-height: 1.6;
 }
@@ -303,30 +303,30 @@
 .evidence-section .detail-grid small,
 .result-summary .detail-grid small {
   flex-basis: 100%;
-  color: var(--muted);
+  color: var(--text-muted);
   line-height: 1.6;
 }
 .expandable > .preview {
   margin-bottom: 5px;
   font-size: 14px;
-  color: #5a6948;
+  color: var(--text-muted);
 }
 .expandable > details > p {
   margin-top: 9px;
   font-size: 14px;
-  color: #5a6948;
+  color: var(--text-muted);
 }
 .evidence-gaps {
   margin: 14px 0;
-  border: 1px solid #eee5ce;
-  background: #faf7ee;
+  border: 1px solid var(--warn-line);
+  background: var(--warn-bg);
   border-radius: 7px;
   padding: 12px 15px;
 }
 .evidence-gaps > summary {
   font-size: 12px;
   font-weight: 600;
-  color: #835d29;
+  color: var(--warn-fg);
   cursor: pointer;
 }
 .evidence-gaps ul {
@@ -336,21 +336,21 @@
 .evidence-gaps li {
   font-size: 12px;
   line-height: 1.7;
-  color: #6d5b3c;
+  color: var(--warn-fg);
 }
 .result-summary {
-  border: 1px solid #e1ead6;
-  background: #fbfdf8;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
   border-radius: 8px;
   padding: 17px 19px;
   margin-bottom: 22px;
 }
 .result-summary > .row-between h3 {
   margin: 0;
-  color: #536c3f;
+  color: var(--text-muted);
 }
 .result-summary .detail-grid {
-  background: #fff;
+  background: var(--surface);
   margin: 13px 0 0;
 }
 .result-summary dd a {
@@ -358,7 +358,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--green);
+  color: var(--accent);
 }
 .review-badges {
   display: flex;
@@ -367,8 +367,8 @@
   justify-content: flex-end;
 }
 .operating-limits {
-  border: 1px solid #eaf0e0;
-  background: #f8faf4;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
   border-radius: 7px;
   padding: 12px 15px;
   margin: 16px 0 20px;
@@ -376,18 +376,17 @@
 .operating-limits > summary {
   font-size: 12px;
   font-weight: 600;
-  color: #536c3f;
+  color: var(--text-muted);
   cursor: pointer;
 }
 .operating-limits p {
   margin-top: 10px;
   font-size: 12px;
-  color: #5a6948;
+  color: var(--text-muted);
 }
 .proposal-target .text-button {
   margin-left: auto;
 }
-
 @media (max-width: 700px) {
   .evidence-picker select {
     font-size: 16px;

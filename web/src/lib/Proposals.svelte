@@ -13,8 +13,7 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { client } from './api';
   import { CycleHistory, type CycleHistoryState } from './cycleHistory';
-  import Badge from './Badge.svelte';
-  import { DECISIONS, cycleLabel, decisionTone } from './evidence';
+  import { DECISIONS, cycleLabel } from './evidence';
   import FilterTabs from './FilterTabs.svelte';
   import Icon from './Icon.svelte';
   import ProposalCard from './ProposalCard.svelte';
@@ -200,9 +199,6 @@
 </script>
 
 {#if active}
-  <p class="muted">
-    Audits record recommendations without queuing work. A later execution cycle plans afresh.
-  </p>
   {#if error}<div class="notice error" role="alert">{error}</div>{/if}
   {#if refreshMessage || refreshError}<RecoveryNotice
       message={refreshMessage}
@@ -213,31 +209,6 @@
       onfocus={() => (retryNavigation = navigationGeneration())}
       bind:button={retryButton}
     />{/if}
-  <div class="actions">
-    {#if cyclesLoading && !cycleRows.length && !refreshMessage && !refreshError}
-      <span class="muted" role="status">Loading cycle history…</span>
-    {/if}
-    {#if cycleCursor !== null}<button
-        class="button"
-        disabled={cyclesLoading}
-        onclick={loadOlderCycles}>Load older cycles</button
-      >{/if}
-    {#if selectedCycle && selectedCycle.allowed_actions.length > 0}
-      {#if selectedCycle.allowed_actions.includes('archive')}<button
-          class="button"
-          disabled={busy || !!refreshMessage}
-          onclick={() => cycleAction('archive')}
-          >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
-        >{:else if selectedCycle.allowed_actions.includes('discard')}<button
-          class="button danger"
-          disabled={busy || !!refreshMessage}
-          onclick={() => cycleAction('discard')}
-          >{pendingAction === 'discard'
-            ? 'Discarding workspaces…'
-            : 'Discard cycle workspaces'}</button
-        >{/if}
-    {/if}
-  </div>
   <div class="proposal-controls">
     <div class="cycle-picker">
       <label for="proposal-cycle">Cycle</label>
@@ -258,10 +229,30 @@
           >{/each}
       </select>
     </div>
-    <div class="decision-counts" role="group" aria-label="Decision counts">
-      {#each DECISIONS as decision}
-        <Badge label={`${decision}: ${counts[decision] ?? 0}`} tone={decisionTone(decision)} />
-      {/each}
+    <div class="actions">
+      {#if cyclesLoading && !cycleRows.length && !refreshMessage && !refreshError}
+        <span class="muted" role="status">Loading cycle history…</span>
+      {/if}
+      {#if cycleCursor !== null}<button
+          class="button"
+          disabled={cyclesLoading}
+          onclick={loadOlderCycles}>Load older cycles</button
+        >{/if}
+      {#if selectedCycle && selectedCycle.allowed_actions.length > 0}
+        {#if selectedCycle.allowed_actions.includes('archive')}<button
+            class="button"
+            disabled={busy || !!refreshMessage}
+            onclick={() => cycleAction('archive')}
+            >{pendingAction === 'archive' ? 'Archiving cycle…' : 'Archive cycle'}</button
+          >{:else if selectedCycle.allowed_actions.includes('discard')}<button
+            class="button danger"
+            disabled={busy || !!refreshMessage}
+            onclick={() => cycleAction('discard')}
+            >{pendingAction === 'discard'
+              ? 'Discarding workspaces…'
+              : 'Discard cycle workspaces'}</button
+          >{/if}
+      {/if}
     </div>
   </div>
   <section class="panel">
@@ -293,12 +284,12 @@
           <h3>
             {search || filter !== 'all' || cycle !== 'all'
               ? 'No matching proposals'
-              : 'Better ideas start with questions.'}
+              : 'No proposals yet'}
           </h3>
           <p>
             {search || filter !== 'all' || cycle !== 'all'
               ? 'Try another cycle, filter or search term.'
-              : 'Discovery explores your project. Two adversarial reviewers challenge each proposal before the orchestrator decides.'}
+              : 'Run an audit or a cycle to discover proposals.'}
           </p>
           {#if search || filter !== 'all' || cycle !== 'all'}<button
               class="button"

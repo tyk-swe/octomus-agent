@@ -1,10 +1,10 @@
 @import './styles/tokens.css';
-@import './styles/controls.css';
+@import './styles/base.css';
+@import './styles/components.css';
 @import './styles/shell.css';
-@import './styles/panels.css';
-@import './styles/forms.css';
-@import './styles/login.css';
-@import './styles/responsive.css';
-@import './styles/utilities.css';
+@import './styles/lists.css';
 @import './styles/overview.css';
+@import './styles/forms.css';
+@import './styles/dialog.css';
 @import './styles/evidence.css';
+@import './styles/login.css';

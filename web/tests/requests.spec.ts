@@ -166,7 +166,7 @@ test('operator requests collect, guard and settle work @responsive', async ({ pa
   });
   await login(page);
   await openNavigation(page, 'Requests', isMobile);
-  await expect(page.getByRole('heading', { name: 'Ask for what matters.' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Requests' })).toBeVisible();
   await expect(page.getByText('Add the feature', { exact: true })).toBeVisible();
   await expect(page.locator('[aria-label="History pagination"]')).toBeHidden();
 

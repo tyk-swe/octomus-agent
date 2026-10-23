@@ -101,10 +101,7 @@
   <div class="section-heading">
     <div>
       <h2 id="setup-heading">Setup checklist</h2>
-      <p>
-        {progress} of {steps.length} steps saved, checked or run. Start with your repository and model
-        routes; save before checking the connection.
-      </p>
+      <p>{progress} of {steps.length} steps done.</p>
     </div>
     <button
       type="button"
@@ -182,31 +179,31 @@
     margin: 0 24px 14px;
     padding: 14px;
     border-radius: 9px;
-    background: #f5f0fc;
+    background: var(--lilac-soft);
     font-size: 12px;
   }
   .setup-legend dt {
     font-weight: 650;
-    color: #49365f;
+    color: var(--lilac-fg);
   }
   .setup-legend dd {
     margin: 3px 0 0;
-    color: var(--ink);
+    color: var(--text);
   }
   .step {
     display: flex;
     gap: 14px;
     padding-top: 14px;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--border);
   }
   .step-index {
     flex-shrink: 0;
     width: 26px;
     height: 26px;
     border-radius: 50%;
-    border: 1px solid var(--line);
-    background: #f5f6f2;
-    color: #5c694f;
+    border: 1px solid var(--border);
+    background: var(--neutral-bg);
+    color: var(--neutral-fg);
     font-size: 12px;
     font-weight: 650;
     display: grid;
@@ -232,7 +229,7 @@
   .step-body > p {
     margin: 6px 0 0;
     font-size: 12px;
-    color: var(--muted);
+    color: var(--text-muted);
     overflow-wrap: anywhere;
   }
   .step-links {
@@ -261,6 +258,6 @@
   .setup-footnote {
     margin: 16px 24px 20px;
     font-size: 12px;
-    color: var(--muted);
+    color: var(--text-muted);
   }
 </style>

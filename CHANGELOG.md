@@ -103,6 +103,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   link the deployment guide's VM section.
 - The release archive no longer ships `AGENTS.md`, `CONTRIBUTING.md` or `docs/releasing.md`;
   shipped documents link to them on GitHub.
+- Dashboard redesign: global styles moved onto semantic design tokens in
+  `src/styles/tokens.css` (a unit guard rejects colour literals elsewhere and flags unused
+  tokens), and the layout is decluttered — view titles replace taglines, the operating
+  mode becomes a topbar pill, the overview is reordered with the budget as a compact list,
+  duplicate proposal decision counts are removed, and the login screen is simplified.
+- Mobile navigation drawer: a scrim closes it, the page stays inert and scroll-locked
+  while open, and the shell honours `env(safe-area-inset-*)`.
+- The Settings and Insights views load on demand instead of in the startup bundle.
+- Hashed dashboard assets under `/_app/immutable/` are cacheable for a year (`immutable`)
+  and gzip-compressed when the client accepts it; every other response stays `no-store`.
 
 ### Fixed
 
