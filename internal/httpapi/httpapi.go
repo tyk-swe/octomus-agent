@@ -13,7 +13,7 @@ import (
 const bodyLimit = 256 * 1024
 
 type api struct {
-	app       *engine.App
+	fleet     *engine.Fleet
 	tokenHash [32]byte
 	failures  *authFailures
 	assets    http.Handler
@@ -53,9 +53,9 @@ type HealthResponse struct {
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) (int, any, error)
 
-func Router(app *engine.App, token, assetsOverride, version string) http.Handler {
+func Router(fleet *engine.Fleet, token, assetsOverride, version string) http.Handler {
 	s := &api{
-		app:       app,
+		fleet:     fleet,
 		tokenHash: sha256.Sum256([]byte(token)),
 		failures:  &authFailures{},
 		assets:    assetHandler(assetsOverride),
@@ -87,4 +87,30 @@ func Router(app *engine.App, token, assetsOverride, version string) http.Handler
 		}
 		s.assets.ServeHTTP(w, r)
 	})
+}
+
+// resolve picks the App serving this request: the ?repository=OWNER/NAME
+// selection, or the primary repository when absent. Unknown selections are
+// a plain not-found, never another repository's data.
+func (a *api) resolve(r *http.Request) (*engine.App, error) {
+	repo := first(r.URL.Query(), "repository")
+	if repo == nil || *repo == "" {
+		return a.fleet.Primary(), nil
+	}
+	app := a.fleet.For(*repo)
+	if app == nil {
+		return nil, engine.NotFound("Repository not found")
+	}
+	return app, nil
+}
+
+// resolveRecord routes an ID-addressed request to the App owning that
+// record. An explicit ?repository= that names a different owner is
+// not-found, so one repository's view never acts on another's records.
+func (a *api) resolveRecord(r *http.Request, kind, id string) (*engine.App, error) {
+	selected := ""
+	if repo := first(r.URL.Query(), "repository"); repo != nil && *repo != "" {
+		selected = *repo
+	}
+	return a.fleet.ForRecord(kind, id, selected)
 }

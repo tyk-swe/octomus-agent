@@ -76,6 +76,9 @@ func (e *capacityError) Unwrap() error { return model.BlockedBudgetExhausted }
 func (a *App) ControlAction(action model.ControlAction) (*ControlResult, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	if a.ctx.Err() != nil {
+		return nil, conflictError("The repository service has stopped; reload before changing controls")
+	}
 	control, err := a.Control()
 	if err != nil {
 		return nil, err
@@ -422,6 +425,9 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 	}
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	if a.ctx.Err() != nil {
+		return nil, conflictError("The repository service has stopped; reload before saving configuration")
+	}
 	control, err := a.Control()
 	if err != nil {
 		return nil, err
@@ -451,6 +457,16 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	c = a.deployment.pin(c)
+	repo := a.Repository()
+	if repo == "" {
+		repo, err = a.store.RegisteredPrimary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if repo != "" && !config.EqualASCII(c.GitHubRepo, repo) {
+		return nil, fmt.Errorf("GitHub repository must remain %s; register another repository to configure it separately", repo)
+	}
 	if err := c.Validate(false); err != nil {
 		return nil, err
 	}
@@ -466,7 +482,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 			return nil, codedConflict(UnresolvedWorkConflict, "Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
-	if err := store.Put(a.store, store.ConfigKey, c); err != nil {
+	if err := store.Put(a.store, a.store.ConfigKey(), c); err != nil {
 		return nil, err
 	}
 	a.invalidatePRs()

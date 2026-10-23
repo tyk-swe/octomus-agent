@@ -428,6 +428,7 @@ type Control struct {
 	Paused             bool          `json:"paused"`
 	CycleNumber        uint64        `json:"cycle_number"`
 	NextCycleAt        int64         `json:"next_cycle_at"`
+	BudgetWaiting      bool          `json:"budget_waiting,omitempty" wire:"default"`
 	Error              *string       `json:"error"`
 	Mode               OperatingMode `json:"mode"`
 	Batch              *RunBatch     `json:"batch"`

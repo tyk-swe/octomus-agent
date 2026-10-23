@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
@@ -98,6 +99,48 @@ func TestAttentionCategories(t *testing.T) {
 		if row["category"] != want[i] || row["action"] != "inspect_task" {
 			t.Fatalf("row %d %+v; want category %q", i, row, want[i])
 		}
+	}
+}
+
+func TestScopedControlNotifications(t *testing.T) {
+	t.Parallel()
+	for _, migrated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fresh", true: "upgraded-v0.1.0"}[migrated], func(t *testing.T) {
+			path := statePath(t)
+			if migrated {
+				path = golden(t)
+			}
+			s := open(t, path)
+			entries, err := s.Repositories()
+			must(t, err)
+			primary := "acme/one"
+			if len(entries) > 0 {
+				primary = entries[0].GitHubRepo
+			}
+			must(t, s.RegisterRepository(store.RepositoryEntry{GitHubRepo: primary, DataDir: "."}))
+			must(t, s.RegisterRepository(store.RepositoryEntry{GitHubRepo: "acme/two", DataDir: "repos/two"}))
+			saveRepoConfig(t, s, primary, func(c *config.Config) {})
+			must(t, s.SetNotifyPolicy(str(notifyDest), "enabled", nil))
+			secondary := s.ForRepository("acme/two")
+			failed := model.DefaultControl()
+			failed.Error = str("Scheduler failed")
+			// A secondary needs no config record for its control to carry ownership.
+			must(t, secondary.SaveControl(failed))
+			must(t, secondary.SaveControl(failed))
+			must(t, secondary.SaveControl(model.DefaultControl()))
+			must(t, secondary.SaveControl(failed))
+			must(t, s.ForRepository(primary).SaveControl(model.DefaultControl()))
+			must(t, s.ForRepository(primary).SaveControl(failed))
+			rows := pendingRows(t, path)
+			if len(rows) != 3 {
+				t.Fatalf("got %d pause notifications, want 3: %+v", len(rows), rows)
+			}
+			for i, repo := range []string{"acme/two", "acme/two", primary} {
+				if rows[i]["repository"] != repo || rows[i]["category"] != "service_error_paused" {
+					t.Fatalf("wrong pause notification: %+v", rows[i])
+				}
+			}
+		})
 	}
 }
 

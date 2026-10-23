@@ -198,6 +198,7 @@ export type Control = {
   paused: boolean;
   cycle_number: number;
   next_cycle_at: number;
+  budget_waiting?: boolean;
   error: string | null;
   mode: OperatingMode;
   batch: RunBatch | null;
@@ -209,6 +210,7 @@ export type ControlResult = {
   paused: boolean;
   cycle_number: number;
   next_cycle_at: number;
+  budget_waiting?: boolean;
   error: string | null;
   mode: OperatingMode;
   batch: RunBatch | null;
@@ -626,6 +628,14 @@ export type RepairProgress = {
   revision: string;
   no_progress_rounds: number;
   awaiting_review: boolean;
+};
+export type RepositoriesView = {
+  repositories: RepositorySummary[];
+  instance_max_sessions_per_day: number;
+};
+export type RepositorySummary = {
+  github_repo: string;
+  primary: boolean;
 };
 export type RequestAction = 'withdraw';
 export type RequestAssessment = {

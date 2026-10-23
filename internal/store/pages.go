@@ -16,6 +16,14 @@ type HistoryQuery struct {
 	Status *string
 	Q      *string
 	Cycle  *string
+	// repository is set from the store handle's scope by page entry points;
+	// callers never set it directly.
+	repository string
+}
+
+func (q HistoryQuery) scoped(repo string) HistoryQuery {
+	q.repository = repo
+	return q
 }
 
 type Page[T any] struct {
@@ -94,6 +102,10 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 		filter += " AND id=?6"
 		args = append(args, *query.Cycle)
 	}
+	if query.repository != "" {
+		args = append(args, query.repository)
+		filter += fmt.Sprintf(" AND repository=?%d COLLATE NOCASE", len(args))
+	}
 	rows, err := c.QueryContext(background,
 		"SELECT summary,seq,id FROM "+from+" WHERE kind=?1 AND seq<?2"+filter+" AND (?4='' OR instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
 		args...)
@@ -158,6 +170,7 @@ func decodePage[T any](rows []pageRow, limit int) (Page[T], error) {
 func historyPage[T any](s *Store, kind string, query HistoryQuery) (Page[T], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	query = query.scoped(s.repo)
 	if kind != "task" {
 		return page[T](s.conn, kind, query)
 	}
@@ -168,7 +181,7 @@ func historyPage[T any](s *Store, kind string, query HistoryQuery) (Page[T], err
 		if err != nil {
 			return err
 		}
-		return taskHistoryCounts(c, result.Counts)
+		return taskHistoryCounts(c, result.Counts, s.repo)
 	})
 	return result, err
 }
@@ -187,8 +200,15 @@ func (s *Store) PRPage(query HistoryQuery) (Page[PRSummary], error) {
 
 // History retains archived tasks; only the attention filter excludes them.
 // Counts describe each whole filter, independent of search and pagination.
-func taskHistoryCounts(c *sql.Conn, counts map[string]int64) error {
-	rows, err := c.QueryContext(background, "SELECT status,sum(count),sum(CASE WHEN archived=0 THEN count ELSE 0 END) FROM record_counts WHERE kind='task' GROUP BY status HAVING sum(count)>0")
+func taskHistoryCounts(c *sql.Conn, counts map[string]int64, repository string) error {
+	query := "SELECT status,sum(count),sum(CASE WHEN archived=0 THEN count ELSE 0 END) FROM record_counts WHERE kind='task' GROUP BY status HAVING sum(count)>0"
+	var args []any
+	if repository != "" {
+		// record_counts is instance-wide; scoped counts come from the projection.
+		query = "SELECT status,count(*),sum(CASE WHEN archived IS NULL THEN 1 ELSE 0 END) FROM record_meta WHERE kind='task' AND repository=?1 COLLATE NOCASE GROUP BY status"
+		args = []any{repository}
+	}
+	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return err
 	}
@@ -221,9 +241,15 @@ func (s *Store) ProposalPage(q HistoryQuery) (Page[ProposalSummary], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	limit := q.limit()
+	from, repoFilter, args := "proposal_records p", "", []any{q.before(), filterAll(q.Status), filterAll(q.Cycle), orEmpty(q.Q), int64(limit + 1)}
+	if s.repo != "" {
+		from += " JOIN record_meta m ON m.kind='cycle' AND m.id=p.cycle_id"
+		args = append(args, s.repo)
+		repoFilter = " AND m.repository=?6 COLLATE NOCASE"
+	}
 	rows, err := s.conn.QueryContext(background,
-		"SELECT json_set(json_remove(data,'$.prompt','$.evidence'),'$.content_revision',content_revision,'$.cycle',number,'$.cycle_id',cycle_id,'$.mode',mode,'$.prompt','','$.evidence',json('[]')),seq,proposal_id FROM proposal_records WHERE seq<?1 AND (?2='' OR decision=?2) AND (?3='' OR cycle_id=?3) AND (?4='' OR instr(lower(title || ' ' || json_extract(data,'$.problem')),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
-		q.before(), filterAll(q.Status), filterAll(q.Cycle), orEmpty(q.Q), int64(limit+1))
+		"SELECT json_set(json_remove(p.data,'$.prompt','$.evidence'),'$.content_revision',p.content_revision,'$.cycle',p.number,'$.cycle_id',p.cycle_id,'$.mode',p.mode,'$.prompt','','$.evidence',json('[]')),p.seq,p.proposal_id FROM "+from+" WHERE p.seq<?1 AND (?2='' OR p.decision=?2) AND (?3='' OR p.cycle_id=?3) AND (?4='' OR instr(lower(p.title || ' ' || json_extract(p.data,'$.problem')),lower(?4))>0)"+repoFilter+" ORDER BY p.seq DESC LIMIT ?5",
+		args...)
 	if err != nil {
 		return Page[ProposalSummary]{}, err
 	}
@@ -235,7 +261,12 @@ func (s *Store) ProposalPage(q HistoryQuery) (Page[ProposalSummary], error) {
 	if err != nil {
 		return Page[ProposalSummary]{}, err
 	}
-	counts, err := s.conn.QueryContext(background, "SELECT decision,count(*) FROM proposal_records WHERE (?1='' OR cycle_id=?1) GROUP BY decision", filterAll(q.Cycle))
+	countQuery, countArgs := "SELECT p.decision,count(*) FROM proposal_records p WHERE (?1='' OR p.cycle_id=?1) GROUP BY p.decision", []any{filterAll(q.Cycle)}
+	if s.repo != "" {
+		countQuery = "SELECT p.decision,count(*) FROM proposal_records p JOIN record_meta m ON m.kind='cycle' AND m.id=p.cycle_id WHERE (?1='' OR p.cycle_id=?1) AND m.repository=?2 COLLATE NOCASE GROUP BY p.decision"
+		countArgs = append(countArgs, s.repo)
+	}
+	counts, err := s.conn.QueryContext(background, countQuery, countArgs...)
 	if err != nil {
 		return Page[ProposalSummary]{}, err
 	}
@@ -286,19 +317,19 @@ func (s *Store) Dashboard() (Dashboard, error) {
 	var result Dashboard
 	err := s.transaction(false, func(c *sql.Conn) error {
 		result.Counts = map[string]int64{}
-		if err := statusCounts(c, result.Counts); err != nil {
+		if err := statusCounts(c, result.Counts, s.repo); err != nil {
 			return err
 		}
 		active, queued := "active", "queued"
-		current, err := pageRows(c, "task", HistoryQuery{Status: &active}, 100)
+		current, err := pageRows(c, "task", HistoryQuery{Status: &active}.scoped(s.repo), 100)
 		if err != nil {
 			return err
 		}
-		waiting, err := pageRows(c, "task", HistoryQuery{Status: &queued}, 100)
+		waiting, err := pageRows(c, "task", HistoryQuery{Status: &queued}.scoped(s.repo), 100)
 		if err != nil {
 			return err
 		}
-		history, err := pageRows(c, "task", HistoryQuery{}, 300)
+		history, err := pageRows(c, "task", HistoryQuery{}.scoped(s.repo), 300)
 		if err != nil {
 			return err
 		}
@@ -319,31 +350,35 @@ func (s *Store) Dashboard() (Dashboard, error) {
 			}
 		}
 		twenty := 20
-		cycles, err := page[CycleSummary](c, "cycle", HistoryQuery{Limit: &twenty})
+		cycles, err := page[CycleSummary](c, "cycle", HistoryQuery{Limit: &twenty}.scoped(s.repo))
 		if err != nil {
 			return err
 		}
 		result.Cycles = cycles.Items
 		hundred := 100
-		prs, err := page[PRSummary](c, "pr", HistoryQuery{Limit: &hundred})
+		prs, err := page[PRSummary](c, "pr", HistoryQuery{Limit: &hundred}.scoped(s.repo))
 		if err != nil {
 			return err
 		}
 		result.PRs = prs.Items
-		if result.Events, err = queryEvents(c, "SELECT id,at,entity_id,kind,message FROM events ORDER BY id DESC LIMIT 200"); err != nil {
+		if result.Events, err = repositoryEvents(c, s.repo, nil); err != nil {
 			return err
 		}
 		for i := range result.Events {
 			result.Events[i].Message = boundText(result.Events[i].Message, 512)
 		}
-		if result.SessionsToday, err = sessionsOn(c, model.Today()); err != nil {
+		if result.SessionsToday, err = sessionsOn(c, s.repo, model.Today()); err != nil {
 			return err
 		}
-		if err := c.QueryRowContext(background, "SELECT COALESCE(sum(count),0) FROM record_counts WHERE kind='pr' AND status='merged'").Scan(&result.MergedPRs); err != nil {
+		mergedQuery, mergedArgs := "SELECT COALESCE(sum(count),0) FROM record_counts WHERE kind='pr' AND status='merged'", []any(nil)
+		if s.repo != "" {
+			mergedQuery, mergedArgs = "SELECT count(*) FROM record_meta WHERE kind='pr' AND status='merged' AND repository=?1 COLLATE NOCASE", []any{s.repo}
+		}
+		if err := c.QueryRowContext(background, mergedQuery, mergedArgs...).Scan(&result.MergedPRs); err != nil {
 			return err
 		}
 		attention, five := "attention", 5
-		attentionPage, err := page[TaskSummary](c, "task", HistoryQuery{Status: &attention, Limit: &five})
+		attentionPage, err := page[TaskSummary](c, "task", HistoryQuery{Status: &attention, Limit: &five}.scoped(s.repo))
 		if err != nil {
 			return err
 		}
@@ -353,8 +388,14 @@ func (s *Store) Dashboard() (Dashboard, error) {
 	return result, err
 }
 
-func statusCounts(c *sql.Conn, counts map[string]int64) error {
-	rows, err := c.QueryContext(background, fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses())))
+func statusCounts(c *sql.Conn, counts map[string]int64, repository string) error {
+	query := fmt.Sprintf("SELECT status,sum(count) FROM record_counts WHERE kind='task' AND (status NOT IN (%s) OR archived=0) GROUP BY status HAVING sum(count)>0", statusList(model.AttentionStatuses()))
+	var args []any
+	if repository != "" {
+		query = fmt.Sprintf("SELECT status,count(*) FROM record_meta WHERE kind='task' AND repository=?1 COLLATE NOCASE AND (status NOT IN (%s) OR archived IS NULL) GROUP BY status", statusList(model.AttentionStatuses()))
+		args = []any{repository}
+	}
+	rows, err := c.QueryContext(background, query, args...)
 	if err != nil {
 		return err
 	}

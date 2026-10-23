@@ -1,8 +1,7 @@
 # Configuration
 
-Your saved configuration sets the repository, model routes, verification policy, and
-operating limits. Configure it from the private dashboard while the service is paused and
-has no active tasks or cycle. For the first-run sequence and host setup, see [Getting
+Your saved configuration sets the selected repository's checkout, model routes, verification policy, and
+operating limits. Every served repository has its own saved configuration; the sidebar selects which one you are viewing and editing. **Configuration → Repositories & instance** registers additional repositories (each starts paused with defaults) and sets the optional instance-wide daily session ceiling that bounds the total across repositories on top of each one's `max_sessions_per_day`. These instance controls remain available while repositories run. Pause the selected repository and wait for its active work before changing its own configuration. For the first-run sequence and host setup, see [Getting
 started](getting-started.md) and [Deployment](deployment.md).
 
 Loading a model catalog does not save choices or start a model call. A connection check
@@ -26,7 +25,7 @@ saved revision they covered.
 ## Repository and routes
 
 Set an absolute, persistent repository path and a GitHub identity such as `OWNER/REPOSITORY`.
-In the Docker deployment both are fixed by `OCTOMUS_GITHUB_REPO` and shown read-only: the
+In the Docker deployment both are fixed by `OCTOMUS_GITHUB_REPO` / `OCTOMUS_GITHUB_REPOS` and shown read-only: the
 control plane owns its checkout in the data volume, and the operator token cannot point
 its git anywhere else. Unsandboxed, the service user needs access to that checkout and the
 repository's build tools.
@@ -54,6 +53,8 @@ Sandbox mode, limits, image, runtime, egress allowlists and the pinned repositor
 ## Operating limits
 
 See [configuration.example.json](configuration.example.json) for defaults and the [field reference](#field-reference) for accepted ranges. For a conservative start, use `execution_concurrency: 1`, `max_tasks_per_cycle: 1` and `cycle_interval_seconds: 21600`. Nine discovery agents require 13 session admissions per planning pass. Admissions do not cap dollar spend, and workspace limits are pre-launch checks; see [cost](cost.md) and [deployment](deployment.md).
+
+With an instance-wide ceiling, a running planning pass reserves its remaining admissions before it starts. Other repositories can use only the unreserved capacity; actual starts convert the reservation into usage, and a finished or interrupted pass releases any unused allowance. Continuous repositories waiting for budget recheck capacity automatically, including after the ceiling is increased or cleared.
 
 ## Field reference
 

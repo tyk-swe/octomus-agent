@@ -35,6 +35,40 @@ func TestMeasureEntryBudgets(t *testing.T) {
 	}
 }
 
+func TestMeasureExcludesForeignRootsBeforeAccounting(t *testing.T) {
+	root := t.TempDir()
+	for rel, content := range map[string]string{
+		"tasks/own/file":           "primary",
+		"repos/foreign-extra/file": "other",
+		"repos/local/file":         "ok",
+	} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rel := range []string{"repos/foreign", "repos/deep/foreign"} {
+		for i := range 40 {
+			path := filepath.Join(root, rel, "tasks", fmt.Sprint(i))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("foreign bytes"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, group := range []int{0, 1, 2} {
+		usage, err := measure(context.Background(), root, group, 20, 30, "repos/foreign", "repos/deep/foreign")
+		if err != nil || len(usage.Unmeasured) != 0 || usage.Bytes != 14 {
+			t.Fatalf("group %d counted foreign roots or exhausted their budgets: %+v, %v", group, usage, err)
+		}
+	}
+}
+
 // Cancel when the scan checks its caller during traversal, rather than before it starts.
 type cancelDuringScan struct {
 	context.Context

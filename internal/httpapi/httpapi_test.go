@@ -20,6 +20,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	dashboard "github.com/tyk-swe/octomus-agent/web"
 )
@@ -46,11 +47,16 @@ func savedConfig(t *testing.T, state *store.Store) string {
 	return string(*raw)
 }
 
-func testApp(t *testing.T, options ...engine.Option) (*engine.App, *store.Store) {
+func testFleet(t *testing.T, connect runner.Connector) (*engine.Fleet, *engine.App, *store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	state := openStore(t, dir)
-	return engine.New(state, dir, options...), state
+	fleet, err := engine.NewFleet(state, dir, engine.FleetOptions{Connector: connect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	return fleet, fleet.Primary(), state
 }
 
 func request(t *testing.T, handler http.Handler, method, path string, body string, auth bool) *httptest.ResponseRecorder {
@@ -99,8 +105,8 @@ func decode(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 }
 
 func TestPrivateAPIGuards(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, t.TempDir(), "test")
+	fleet, app, _ := testFleet(t, nil)
+	router := Router(fleet, token, t.TempDir(), "test")
 	if response := request(t, router, "GET", "/api/state", "", false); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated: %d", response.Code)
 	}
@@ -128,8 +134,8 @@ func TestPrivateAPIGuards(t *testing.T) {
 }
 
 func TestDashboardAssets(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, _, _ := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	for _, check := range []struct {
 		uri    string
 		status int
@@ -161,11 +167,11 @@ func TestDashboardAssets(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(override, "200.html"), []byte("override dashboard"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	response := request(t, Router(app, token, override, "test"), "GET", "/", "", false)
+	response := request(t, Router(fleet, token, override, "test"), "GET", "/", "", false)
 	if response.Body.String() != "override dashboard" {
 		t.Fatalf("override: %q", response.Body.String())
 	}
-	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(app, token, override, "test")} {
+	for name, assets := range map[string]http.Handler{"embedded": router, "override": Router(fleet, token, override, "test")} {
 		for _, uri := range []string{"/", "/%2e%2e/go.mod"} {
 			response := request(t, assets, "POST", uri, "", false)
 			if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != "GET, HEAD" || response.Body.Len() != 0 {
@@ -188,7 +194,7 @@ func TestDashboardAssets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	indexedRouter := Router(app, token, indexed, "test")
+	indexedRouter := Router(fleet, token, indexed, "test")
 	for _, check := range []struct{ uri, body string }{
 		{"/", "root index"},
 		{"/sub", "sub index"},
@@ -204,8 +210,8 @@ func TestDashboardAssets(t *testing.T) {
 }
 
 func TestDashboardAssetDelivery(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, _, _ := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	// Pick an asset big enough that gzip is always the cheaper encoding; tiny
 	// chunks are correctly served uncompressed.
 	var asset string
@@ -315,7 +321,7 @@ func TestDashboardAssetDelivery(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(override, "_app", "immutable", "app.js"), []byte("override js"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	overridden := requestHeaders(t, Router(app, token, override, "test"), "GET", "/_app/immutable/app.js",
+	overridden := requestHeaders(t, Router(fleet, token, override, "test"), "GET", "/_app/immutable/app.js",
 		map[string]string{"Accept-Encoding": "gzip"})
 	if overridden.Code != http.StatusOK || overridden.Header().Get("Content-Encoding") != "" ||
 		overridden.Header().Get("Cache-Control") != "no-store" ||
@@ -325,7 +331,7 @@ func TestDashboardAssetDelivery(t *testing.T) {
 }
 
 func TestControlActionsThroughHTTP(t *testing.T) {
-	app, state := testApp(t)
+	fleet, app, state := testFleet(t, nil)
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -344,7 +350,7 @@ func TestControlActionsThroughHTTP(t *testing.T) {
 	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
-	router := Router(app, token, "", "test")
+	router := Router(fleet, token, "", "test")
 	response := call(t, router, "POST", "/api/control/cycle", "{}")
 	if response.Code != http.StatusOK {
 		t.Fatalf("cycle: %d %s", response.Code, response.Body.String())
@@ -403,8 +409,8 @@ func queuedTask(cfg config.Config) model.Task {
 }
 
 func TestHTTPBoundaries(t *testing.T) {
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, _, state := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
 	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
@@ -477,7 +483,7 @@ func TestHTTPBoundaries(t *testing.T) {
 }
 
 func TestRequestErrorRedaction(t *testing.T) {
-	app, state := testApp(t)
+	fleet, _, state := testFleet(t, nil)
 	cfg := config.Default()
 	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
@@ -487,7 +493,7 @@ func TestRequestErrorRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := savedConfig(t, state)
-	router := Router(app, token, "", "test")
+	router := Router(fleet, token, "", "test")
 	const secret = "ghp_requestSecret0123456789"
 	for _, tc := range []struct {
 		name, method, path, body string
@@ -521,8 +527,8 @@ func TestRequestErrorRedaction(t *testing.T) {
 // TestProposalListRedactsBeforeBound places credentials across the proposal list's 2000-character bound on problem and
 // reason, and expects the list to scrub them as completely as the detail does.
 func TestProposalListRedactsBeforeBound(t *testing.T) {
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, _, state := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	const password, tokenHead = "Hunter2Secret99", "Q7rTk2Lm9"
 	proposal := queuedTask(config.Default()).Proposal
 	// The bound falls just before the URL's "@" and after nine characters of the token.
@@ -555,8 +561,8 @@ func TestProposalListRedactsBeforeBound(t *testing.T) {
 }
 
 func TestInsightsEndpoint(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, _, _ := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	wantDays := map[string]int{"/api/insights": 30, "/api/insights?days=7": 7, "/api/insights?days=90": 90}
 	for path, want := range wantDays {
 		response := call(t, router, "GET", path, "")
@@ -574,13 +580,13 @@ func TestInsightsEndpoint(t *testing.T) {
 }
 
 func TestOperatorRequestEndpoints(t *testing.T) {
-	app, state := testApp(t)
+	fleet, _, state := testFleet(t, nil)
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
 	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
 		t.Fatal(err)
 	}
-	router := Router(app, token, "", "test")
+	router := Router(fleet, token, "", "test")
 	if response := request(t, router, "GET", "/api/requests", "", false); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated: %d", response.Code)
 	}
@@ -619,8 +625,8 @@ func TestOperatorRequestEndpoints(t *testing.T) {
 }
 
 func TestMissingRecordsAreJSONNotFound(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, t.TempDir(), "test")
+	fleet, _, _ := testFleet(t, nil)
+	router := Router(fleet, token, t.TempDir(), "test")
 	for _, path := range []string{
 		"/api/tasks/missing",
 		"/api/cycles/missing",
@@ -644,8 +650,8 @@ func TestMissingRecordsAreJSONNotFound(t *testing.T) {
 }
 
 func TestUnknownActionsAreJSONNotFound(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, t.TempDir(), "test")
+	fleet, _, _ := testFleet(t, nil)
+	router := Router(fleet, token, t.TempDir(), "test")
 	for path, message := range map[string]string{
 		"/api/tasks/x/bogus":  "Unknown task action",
 		"/api/cycles/x/bogus": "Unknown cycle action",

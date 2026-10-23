@@ -194,7 +194,7 @@ func (a *App) tick() error {
 		}
 		return a.startPlanning(cfg, control)
 	}
-	if control.Mode == model.OperatingModeContinuous && time.Now().Unix() >= control.NextCycleAt {
+	if control.Mode == model.OperatingModeContinuous && (control.BudgetWaiting || time.Now().Unix() >= control.NextCycleAt) {
 		return a.startPlanning(cfg, control)
 	}
 	return nil
@@ -273,8 +273,13 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 	a.runtimeMu.Unlock()
 	snapshot := cfg.Clone()
 	expected := control.Clone()
+	turn := a.planningOrder.enqueue()
 	a.wg.Go(func() {
+		defer turn.release()
 		err := a.preflight(a.ctx, snapshot, false)
+		if err == nil {
+			err = turn.wait(a.ctx)
+		}
 		a.gate.Lock()
 		defer a.gate.Unlock()
 		defer a.notify()
@@ -303,6 +308,7 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 		case live.Mode == model.OperatingModeContinuous:
 			message := redact.Error(err)
 			live.Error = &message
+			live.BudgetWaiting = false
 			live.NextCycleAt = time.Now().Unix() + int64(cfg.CycleIntervalSeconds)
 			_ = a.store.SaveControl(live)
 			_ = a.store.Event("system", model.EventPlanningError, message)
@@ -316,8 +322,12 @@ func (a *App) waitForCapacity(control model.Control, capacity model.PlanningCapa
 		return nil
 	}
 	if control.Mode == model.OperatingModeContinuous {
+		if control.BudgetWaiting && control.NextCycleAt == capacity.NextResetAt {
+			return nil
+		}
 		control.Error = nil
 		control.NextCycleAt = capacity.NextResetAt
+		control.BudgetWaiting = true
 		return a.store.SaveControl(control)
 	}
 	message := capacity.Message()

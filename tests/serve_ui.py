@@ -78,7 +78,7 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
     def admission(identity, at, task_id=None, role='discovery', cycle='cycle-1'):
         record = {'id': identity, 'at': at, 'cycle_id': cycle, 'task_id': task_id, 'role': role, 'route': {'backend': 'codex', 'model': 'gpt-6-astra', 'effort': 'medium'}}
         db.execute('INSERT INTO admissions(id,at,day,data) VALUES (?,?,?,?)', (identity, at, at[:10], json.dumps(record)))
-        db.execute('INSERT INTO usage(day,sessions) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1', (at[:10],))
+        db.execute('INSERT INTO usage(repository,day,sessions) VALUES (?, ?,1) ON CONFLICT(repository,day) DO UPDATE SET sessions=sessions+1', (config['github_repo'].lower(), at[:10]))
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
     three_days = (datetime.now(timezone.utc) - timedelta(days=3)).strftime('%Y-%m-%dT%H:%M:%SZ')
     for index in range(4):
@@ -87,7 +87,7 @@ with tempfile.TemporaryDirectory(prefix='octomus-browser-') as directory:
         admission(f'admission-task-{index}', yesterday, task_id='task-reviewed', role='executor')
     admission('admission-early-planning', three_days)
     admission('admission-early-task', three_days, task_id='task-blocked', role='repair')
-    db.execute("INSERT INTO usage(day,sessions) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1", (three_days[:10],))
+    db.execute("INSERT INTO usage(repository,day,sessions) VALUES (?, ?,1) ON CONFLICT(repository,day) DO UPDATE SET sessions=sessions+1", (config['github_repo'].lower(), three_days[:10]))
     db.commit()
     db.close()
 

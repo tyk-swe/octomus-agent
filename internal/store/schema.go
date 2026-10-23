@@ -39,6 +39,18 @@ var releaseMigrations = []migration{
 		_, err := c.ExecContext(ctx, completeSummaryTextV10)
 		return err
 	}},
+	{name: "v11-repository-scopes", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, repositoryScopesV11)
+		return err
+	}},
+	{name: "v12-repository-retention", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, repositoryRetentionV12)
+		return err
+	}},
+	{name: "v13-planning-reservations", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, planningReservationsV13)
+		return err
+	}},
 }
 
 //go:embed migrations/008-notifications.sql
@@ -49,6 +61,15 @@ var decisionIdentityV9 string
 
 //go:embed migrations/010-complete-summary-text.sql
 var completeSummaryTextV10 string
+
+//go:embed migrations/011-repository-scopes.sql
+var repositoryScopesV11 string
+
+//go:embed migrations/012-repository-retention.sql
+var repositoryRetentionV12 string
+
+//go:embed migrations/013-planning-reservations.sql
+var planningReservationsV13 string
 
 type schemaPlan struct {
 	ddl        string

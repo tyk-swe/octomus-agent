@@ -64,3 +64,17 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 }
 func (c Config) MarshalJSON() ([]byte, error) { type plain Config; return wirejson.Record(plain(c)) }
 func (c Config) Clone() Config                { return wirejson.Clone(c) }
+
+// InstanceSettings is policy for the whole service instance, above every
+// per-repository Config. A zero MaxSessionsPerDay means no instance-wide
+// ceiling beyond the per-repository caps (the pre-multi-repository default).
+type InstanceSettings struct {
+	MaxSessionsPerDay uint64 `json:"max_sessions_per_day" wire:"default"`
+}
+
+func (v *InstanceSettings) UnmarshalJSON(data []byte) error { return wirejson.DecodeRecord(data, v) }
+func (v InstanceSettings) MarshalJSON() ([]byte, error) {
+	type plain InstanceSettings
+	return wirejson.Record(plain(v))
+}
+func (v InstanceSettings) Clone() InstanceSettings { return wirejson.Clone(v) }

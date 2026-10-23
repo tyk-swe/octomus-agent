@@ -37,8 +37,12 @@ func pathEnum[T any, P interface {
 	return value, nil
 }
 
-func (a *api) stateView(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
-	view, err := a.app.StateView()
+func (a *api) stateView(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.StateView()
 	return http.StatusOK, view, err
 }
 
@@ -79,7 +83,11 @@ func (a *api) insights(_ http.ResponseWriter, r *http.Request) (int, any, error)
 		}
 		days = value
 	}
-	view, err := a.app.Insights(days)
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.Insights(days)
 	return http.StatusOK, view, err
 }
 
@@ -91,27 +99,39 @@ func first(values map[string][]string, key string) *string {
 	return &list[0]
 }
 
-func history[T any](read func(store.HistoryQuery) (T, error)) handlerFunc {
+func (a *api) history[T any](read func(*engine.App, store.HistoryQuery) (T, error)) handlerFunc {
 	return func(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+		app, err := a.resolve(r)
+		if err != nil {
+			return 0, nil, err
+		}
 		query, err := historyQuery(r)
 		if err != nil {
 			return 0, nil, err
 		}
-		page, err := read(query)
+		page, err := read(app, query)
 		return http.StatusOK, page, err
 	}
 }
 
 func (a *api) proposalDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	detail, err := a.app.ProposalDetail(r.PathValue("cycle"), r.PathValue("id"))
+	app, err := a.resolveRecord(r, "cycle", r.PathValue("cycle"))
+	if err != nil {
+		return 0, nil, err
+	}
+	detail, err := app.ProposalDetail(r.PathValue("cycle"), r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
 	return http.StatusOK, detail, nil
 }
 
-func (a *api) requestsView(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
-	view, err := a.app.Requests()
+func (a *api) requestsView(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.Requests()
 	return http.StatusOK, view, err
 }
 
@@ -128,7 +148,11 @@ func (a *api) requestCreate(w http.ResponseWriter, r *http.Request) (int, any, e
 	if err := decodeBody(w, r, &body); err != nil {
 		return 0, nil, err
 	}
-	record, err := a.app.CreateRequest(engine.RequestInput{Title: body.Title, Description: body.Description, Target: body.Target})
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	record, err := app.CreateRequest(engine.RequestInput{Title: body.Title, Description: body.Description, Target: body.Target})
 	if err != nil {
 		return 0, nil, err
 	}
@@ -140,11 +164,19 @@ func (a *api) requestAction(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err != nil {
 		return 0, nil, err
 	}
-	return acknowledged(a.app.RequestAction(r.PathValue("id"), action))
+	app, err := a.resolveRecord(r, "request", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(app.RequestAction(r.PathValue("id"), action))
 }
 
 func (a *api) cycleDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	cycle, err := a.app.CycleDetail(r.PathValue("id"))
+	app, err := a.resolveRecord(r, "cycle", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	cycle, err := app.CycleDetail(r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -152,7 +184,11 @@ func (a *api) cycleDetail(_ http.ResponseWriter, r *http.Request) (int, any, err
 }
 
 func (a *api) cycleEvidence(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	value, err := a.app.RunEvidence(r.PathValue("id"))
+	app, err := a.resolveRecord(r, "cycle", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	value, err := app.RunEvidence(r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -164,11 +200,19 @@ func (a *api) cycleAction(_ http.ResponseWriter, r *http.Request) (int, any, err
 	if err != nil {
 		return 0, nil, err
 	}
-	return acknowledged(a.app.CycleAction(r.PathValue("id"), action))
+	app, err := a.resolveRecord(r, "cycle", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(app.CycleAction(r.PathValue("id"), action))
 }
 
 func (a *api) taskDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	detail, err := a.app.TaskDetail(r.PathValue("id"))
+	app, err := a.resolveRecord(r, "task", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	detail, err := app.TaskDetail(r.PathValue("id"))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -180,11 +224,19 @@ func (a *api) taskAction(_ http.ResponseWriter, r *http.Request) (int, any, erro
 	if err != nil {
 		return 0, nil, err
 	}
-	return acknowledged(a.app.TaskAction(r.PathValue("id"), action))
+	app, err := a.resolveRecord(r, "task", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(app.TaskAction(r.PathValue("id"), action))
 }
 
-func (a *api) getConfig(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
-	view, err := a.app.Settings()
+func (a *api) getConfig(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.Settings()
 	return http.StatusOK, view, err
 }
 
@@ -200,7 +252,11 @@ func (a *api) saveConfig(w http.ResponseWriter, r *http.Request) (int, any, erro
 	if err := decodeBody(w, r, &body); err != nil {
 		return 0, nil, err
 	}
-	view, err := a.app.SaveConfig(body.ExpectedRevision, body.Config)
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.SaveConfig(body.ExpectedRevision, body.Config)
 	if err != nil {
 		var patch *engine.ConfigPatchError
 		if errors.As(err, &patch) {
@@ -222,26 +278,42 @@ func (a *api) baselineStart(w http.ResponseWriter, r *http.Request) (int, any, e
 	if err := decodeBody(w, r, &body); err != nil {
 		return 0, nil, err
 	}
-	check, err := a.app.StartBaseline(body.ExpectedRevision)
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	check, err := app.StartBaseline(body.ExpectedRevision)
 	if err != nil {
 		return 0, nil, err
 	}
 	return http.StatusAccepted, *check, nil
 }
 
-func (a *api) baselineLatest(_ http.ResponseWriter, _ *http.Request) (int, any, error) {
-	view, err := a.app.BaselineView(nil)
+func (a *api) baselineLatest(_ http.ResponseWriter, r *http.Request) (int, any, error) {
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.BaselineView(nil)
 	return http.StatusOK, view, err
 }
 
 func (a *api) baselineDetail(_ http.ResponseWriter, r *http.Request) (int, any, error) {
 	id := r.PathValue("id")
-	view, err := a.app.BaselineView(&id)
+	app, err := a.resolveRecord(r, "baseline", id)
+	if err != nil {
+		return 0, nil, err
+	}
+	view, err := app.BaselineView(&id)
 	return http.StatusOK, view, err
 }
 
 func (a *api) baselineCancel(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	return acknowledged(a.app.CancelBaseline(r.PathValue("id")))
+	app, err := a.resolveRecord(r, "baseline", r.PathValue("id"))
+	if err != nil {
+		return 0, nil, err
+	}
+	return acknowledged(app.CancelBaseline(r.PathValue("id")))
 }
 
 func (a *api) controlAction(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -249,7 +321,11 @@ func (a *api) controlAction(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err != nil {
 		return 0, nil, err
 	}
-	body, err := a.app.ControlAction(action)
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	body, err := app.ControlAction(action)
 	return http.StatusOK, body, err
 }
 
@@ -269,11 +345,15 @@ func (a *api) doctor(w http.ResponseWriter, r *http.Request) (int, any, error) {
 			return 0, nil, &bodyError{http.StatusBadRequest, "Invalid query string: invalid value for `mode`"}
 		}
 	}
-	cfg, err := a.app.Config()
+	app, err := a.resolve(r)
 	if err != nil {
 		return 0, nil, err
 	}
-	result, _, err := a.app.Doctor(r.Context(), cfg, mode)
+	cfg, err := app.Config()
+	if err != nil {
+		return 0, nil, err
+	}
+	result, _, err := app.Doctor(r.Context(), cfg, mode)
 	revision, fingerprintErr := cfg.Fingerprint()
 	if fingerprintErr != nil {
 		return 0, nil, fingerprintErr
@@ -304,7 +384,11 @@ func (a *api) sandboxSelfTest(w http.ResponseWriter, r *http.Request) (int, any,
 	if _, err := readBody(w, r); err != nil {
 		return 0, nil, err
 	}
-	result, err := a.app.SelfTest(r.Context())
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	result, err := app.SelfTest(r.Context())
 	return http.StatusOK, result, err
 }
 
@@ -320,11 +404,19 @@ func (a *api) modelCatalog(w http.ResponseWriter, r *http.Request) (int, any, er
 	if err := decodeBody(w, r, &request); err != nil {
 		return 0, nil, err
 	}
-	catalog, err := a.app.ModelCatalog(r.Context(), request.Backend, request.Binary)
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	catalog, err := app.ModelCatalog(r.Context(), request.Backend, request.Binary)
 	return http.StatusOK, catalog, err
 }
 
 func (a *api) events(_ http.ResponseWriter, r *http.Request) (int, any, error) {
-	events, err := a.app.Events(first(r.URL.Query(), "entity"))
+	app, err := a.resolve(r)
+	if err != nil {
+		return 0, nil, err
+	}
+	events, err := app.Events(first(r.URL.Query(), "entity"))
 	return http.StatusOK, events, err
 }

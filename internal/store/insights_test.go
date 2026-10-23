@@ -49,6 +49,36 @@ func insightAdmission(at, taskID string) store.Admission {
 	return a
 }
 
+func TestGoldenAdmissionsKeepRepositoryAttribution(t *testing.T) {
+	t.Parallel()
+	path := golden(t)
+	s := open(t, path)
+	cfg, err := store.Get(s, store.ConfigKey)
+	must(t, err)
+	var lastDay string
+	must(t, raw(t, path).QueryRow("SELECT max(day) FROM admissions").Scan(&lastDay))
+	now, err := time.Parse("2006-01-02", lastDay)
+	must(t, err)
+	scoped, err := s.ForRepository(cfg.GitHubRepo).Insights(now, 90)
+	must(t, err)
+	var planning, task, unattributed uint64
+	for _, day := range scoped.Daily {
+		planning += day.PlanningAdmissions
+		task += day.TaskAdmissions
+		unattributed += day.UnattributedAdmissions
+	}
+	if planning != 26 || task != 18 || unattributed != 0 {
+		t.Fatalf("golden admissions lost attribution: planning=%d task=%d unattributed=%d", planning, task, unattributed)
+	}
+	other, err := s.ForRepository("acme/another").Insights(now, 90)
+	must(t, err)
+	for _, day := range other.Daily {
+		if day.Admissions != 0 || day.PlanningAdmissions != 0 || day.TaskAdmissions != 0 {
+			t.Fatal("legacy admissions leaked to a different repository")
+		}
+	}
+}
+
 func TestInsights(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
@@ -114,9 +144,9 @@ func TestInsights(t *testing.T) {
 	must(t, s.ReserveSession(0, insightAdmission(at(1), "task-doc-1")))
 	must(t, s.ReserveSession(0, insightAdmission(at(3), "")))
 	must(t, s.ReserveSession(0, insightAdmission(at(3), "task-fail")))
-	exec(t, db, "INSERT INTO usage(day,sessions) VALUES (?1,1) ON CONFLICT(day) DO UPDATE SET sessions=sessions+1", day(3))
+	exec(t, db, "INSERT INTO usage(repository,day,sessions) VALUES ('',?1,1) ON CONFLICT(repository,day) DO UPDATE SET sessions=sessions+1", day(3))
 	// Before the window: counted nowhere.
-	exec(t, db, "INSERT INTO usage(day,sessions) VALUES (?1,5)", day(30))
+	exec(t, db, "INSERT INTO usage(repository,day,sessions) VALUES ('',?1,5)", day(30))
 	exec(t, db, "INSERT INTO admissions(id,at,day,data) VALUES ('a-old',?1,?1,'{}')", at(30))
 
 	insights, err := s.Insights(now, 30)

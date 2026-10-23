@@ -19,13 +19,13 @@ func (a *App) Recover() error {
 
 	// Store transactions check the saved configuration, so it must carry the identity this deployment pins even when
 	// OCTOMUS_GITHUB_REPO changed after the last save.
-	saved, err := store.Get(a.store, store.ConfigKey)
+	saved, err := store.Get(a.store, a.store.ConfigKey())
 	if err != nil {
 		return err
 	}
 	if saved != nil {
 		if pinned := a.deployment.pin(*saved); !wirejson.Equal(*saved, pinned) {
-			if err := store.Put(a.store, store.ConfigKey, pinned); err != nil {
+			if err := store.Put(a.store, a.store.ConfigKey(), pinned); err != nil {
 				return err
 			}
 			_ = a.store.Event("system", model.EventConfiguration, "Saved configuration now names the repository this deployment pins")

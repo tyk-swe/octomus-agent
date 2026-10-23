@@ -15,6 +15,6 @@ func (s *Store) BeginBaseline(check model.BaselineCheck) error {
 		if err := txPut(c, Baselines.Key(check.ID), check); err != nil {
 			return err
 		}
-		return txPut(c, latestBaselineKey, check.ID)
+		return txPut(c, s.latestBaselineKey(), check.ID)
 	})
 }

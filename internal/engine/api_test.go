@@ -241,3 +241,35 @@ func TestSaveConfigKeepsPinnedIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestSaveConfigKeepsRegisteredRepositoryIdentity(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	for _, repo := range []string{"fixture/primary", "fixture/secondary"} {
+		if err := state.RegisterRepository(store.RepositoryEntry{GitHubRepo: repo, DataDir: store.RepositorySlug(repo)}); err != nil {
+			t.Fatal(err)
+		}
+		scoped := state.ForRepository(repo)
+		cfg := testConfig(t.TempDir())
+		cfg.GitHubRepo = repo
+		if err := store.Put(scoped, scoped.ConfigKey(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		app := New(scoped, t.TempDir())
+		t.Cleanup(app.Shutdown)
+		loaded, err := app.Settings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.SaveConfig(loaded.Revision, map[string]json.RawMessage{"github_repo": json.RawMessage(`"fixture/other"`)}); err == nil {
+			t.Fatal("registered App accepted a different repository identity")
+		}
+		stored, err := store.Get(scoped, scoped.ConfigKey())
+		if err != nil || !wirejson.Equal(stored, cfg) {
+			t.Fatalf("rejected identity change changed saved config: %v", err)
+		}
+		if _, err := app.SaveConfig(loaded.Revision, map[string]json.RawMessage{"max_retries": json.RawMessage(`3`)}); err != nil {
+			t.Fatalf("ordinary scoped configuration change rejected: %v", err)
+		}
+	}
+}

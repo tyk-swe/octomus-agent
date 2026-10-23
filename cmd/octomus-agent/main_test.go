@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/export"
 	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/sandbox"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
 )
@@ -195,6 +197,49 @@ func TestDockerStartupBlamesTheCheckoutOnlyForAForeignOrigin(t *testing.T) {
 	}
 	if strings.Contains(stderr, "is not owner/repo") || strings.Contains(stderr, "remove "+checkout) {
 		t.Fatalf("gh signed out over a checkout whose origin is owner/repo: stderr=%q; removing the checkout fixes nothing", stderr)
+	}
+}
+
+func TestPrepareDeploymentsKeepsPrimaryAndDistinctCheckouts(t *testing.T) {
+	cleanup, err := testutil.InstallFixtureCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	root := t.TempDir()
+	if err := testutil.MarkFixtureRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := testutil.WriteExecutable(filepath.Join(root, "bin", "gh"), []byte("#!/bin/sh\nexit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(root, "data")
+	repos := []string{"acme/z", "acme-tools/service", "acme/tools-service"}
+	for i, repo := range repos {
+		checkout := filepath.Join(data, "checkouts", store.RepositorySlug(repo))
+		if i == 0 {
+			checkout = filepath.Join(data, "checkout")
+		}
+		for _, args := range [][]string{{"init", "-q", checkout}, {"-C", checkout, "remote", "add", "origin", "https://github.com/" + repo + ".git"}} {
+			if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %v: %s", args, err, output)
+			}
+		}
+		t.Setenv(config.RepoGitHubTokenEnv(repo), "fixture-token")
+	}
+	values := map[string]string{"OCTOMUS_GITHUB_REPO": repos[0], "OCTOMUS_GITHUB_REPOS": strings.Join(repos[1:], ",")}
+	deployments, err := prepareDeployments(context.Background(), sandbox.ModeDocker, data, func(key string) (string, bool) { value, ok := values[key]; return value, ok }, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deployments.primary != repos[0] || len(deployments.pins) != len(repos) {
+		t.Fatalf("prepared deployments lost primary or repositories: %+v", deployments)
+	}
+	if deployments.pins[repos[1]].Repository == deployments.pins[repos[2]].Repository {
+		t.Fatal("distinct repositories share a trusted checkout")
 	}
 }
 

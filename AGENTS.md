@@ -6,6 +6,12 @@ and delivers GitHub PRs. The SvelteKit dashboard builds to embedded static asset
 (`web/embed.go`). Runner turns and verification commands run in Docker sandboxes via the
 broker (`docs/sandbox.md`) by default, or on the host with `--sandbox off`.
 
+One instance serves several registered repositories for its single operator: repository-scoped store handles
+(`Store.ForRepository`, registry in `internal/store/repositories.go`; the primary repository keeps the legacy
+settings identities and data-directory root), one engine `App` per repository ticked in rotating order by
+`internal/engine/fleet.go`, per-repository daily caps under an optional instance ceiling enforced in the
+admission transaction, and per-repository GitHub tokens (`internal/config/repo_env.go`).
+
 State uses a Go-owned SQLite schema (v0.1.0 baseline: version 7). At startup `Open`
 checks the version before any schema or journal change, writes a verified
 `state.db.v<N>-backup-<UTC>` beside `state.db`, then applies `releaseMigrations`
@@ -20,7 +26,8 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
   (`service.go`), Docker/trusted-checkout setup (`deploy.go`), secrets (`secrets.go`)
   and sandbox wiring (`sandbox.go`).
 - `internal/engine`: scheduler and cycle orchestration (the only layer HTTP reaches
-  state through). `engine.go` builds `App`; `scheduler.go`, `planning.go`, `execution.go`,
+  state through). `engine.go` builds `App`; `fleet.go` runs one `App` per registered
+  repository in rotating order; `scheduler.go`, `planning.go`, `execution.go`,
   `review.go`, `verification.go`, `recovery.go`, `automerge.go` and `automerge_barriers.go`
   run the stages; `task_commit.go` and `task_worker.go` own task checkpoints and worker
   settlement; `controls.go`, `actions.go` and `eligibility.go` own operator actions;

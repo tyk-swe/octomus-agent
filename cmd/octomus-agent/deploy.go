@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
@@ -17,62 +18,111 @@ import (
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	gitops "github.com/tyk-swe/octomus-agent/internal/git"
 	"github.com/tyk-swe/octomus-agent/internal/sandbox"
+	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
-// prepareDeployment reads the Docker deployment's fixed settings. A GitHub token or pinned repository only exists in
-// Docker mode: without a sandbox, runners would inherit the one and could rewrite the other.
-func prepareDeployment(ctx context.Context, mode sandbox.Mode, data string, env func(string) (string, bool), stderr io.Writer) (engine.Deployment, error) {
+// preparedDeployments is the Docker deployment's fixed settings: one base
+// (egress only) plus a pinned trusted checkout per repository, keyed by the
+// lowercase GitHub identity for engine.FleetOptions.
+type preparedDeployments struct {
+	base    engine.Deployment
+	pins    map[string]engine.Deployment
+	primary string
+}
+
+// prepareDeployments reads the Docker deployment's fixed settings. A GitHub
+// token or pinned repository only exists in Docker mode: without a sandbox,
+// runners would inherit the one and could rewrite the other.
+// OCTOMUS_GITHUB_REPO pins the primary repository with checkout at
+// data/checkout, exactly as before; OCTOMUS_GITHUB_REPOS adds a
+// comma-separated list, each with a checkout under data/checkouts/ and its
+// own dedicated token (OCTOMUS_GITHUB_TOKEN__OWNER_2FNAME or the tokens dir).
+func prepareDeployments(ctx context.Context, mode sandbox.Mode, data string, env func(string) (string, bool), stderr io.Writer) (preparedDeployments, error) {
 	repo, pinned := env("OCTOMUS_GITHUB_REPO")
-	_, token := env(githubTokenEnv)
+	list, listed := env("OCTOMUS_GITHUB_REPOS")
 	fromFile, _ := env("OCTOMUS_GITHUB_TOKEN_FILE")
 	if mode == sandbox.ModeOff {
-		if pinned && repo != "" {
-			return engine.Deployment{}, errors.New("OCTOMUS_GITHUB_REPO needs --sandbox docker; unsandboxed runners could rewrite a managed checkout")
+		if (pinned && repo != "") || (listed && list != "") {
+			return preparedDeployments{}, errors.New("OCTOMUS_GITHUB_REPO and OCTOMUS_GITHUB_REPOS need --sandbox docker; unsandboxed runners could rewrite a managed checkout")
 		}
 		if fromFile != "" {
-			return engine.Deployment{}, errors.New("OCTOMUS_GITHUB_TOKEN_FILE needs --sandbox docker; unsandboxed runners would inherit the token")
+			return preparedDeployments{}, errors.New("OCTOMUS_GITHUB_TOKEN_FILE needs --sandbox docker; unsandboxed runners would inherit the token")
 		}
-		return engine.Deployment{}, nil
+		return preparedDeployments{pins: map[string]engine.Deployment{}}, nil
 	}
 	policy, err := egress.PolicyFromEnv(getenv(env))
 	if err != nil {
-		return engine.Deployment{}, err
+		return preparedDeployments{}, err
 	}
-	deployment := engine.Deployment{Egress: policy.Describe()}
-	if !pinned || repo == "" {
-		return deployment, nil
+	out := preparedDeployments{base: engine.Deployment{Egress: policy.Describe()}, pins: map[string]engine.Deployment{}}
+	type pin struct {
+		repo, checkout string
+		dedicated      bool
 	}
-	if !config.ValidGitHubRepo(repo) {
-		return engine.Deployment{}, errors.New("OCTOMUS_GITHUB_REPO must be OWNER/REPOSITORY")
-	}
-	checkout := filepath.Join(data, "checkout")
-	deployment.Repository, deployment.GitHubRepo = checkout, repo
-	if _, err := os.Stat(filepath.Join(checkout, ".git")); err == nil {
-		if err := checkoutValid(ctx, checkout, repo); err != nil {
-			if errors.As(err, new(gitops.AuthError)) {
-				return engine.Deployment{}, fmt.Errorf("GitHub authentication failed for %s; check OCTOMUS_GITHUB_TOKEN_FILE and network access: %w", repo, err)
-			}
-			return engine.Deployment{}, fmt.Errorf("The trusted checkout is not %s; remove %s and restart: %w", repo, checkout, err)
+	pins := []pin{}
+	if pinned && repo != "" {
+		if !config.ValidGitHubRepo(repo) {
+			return preparedDeployments{}, errors.New("OCTOMUS_GITHUB_REPO must be OWNER/REPOSITORY")
 		}
-		return deployment, nil
+		pins = append(pins, pin{repo: repo, checkout: filepath.Join(data, "checkout")})
+		out.primary = repo
 	}
-	if !token {
-		return engine.Deployment{}, errors.New("The trusted checkout needs a GitHub token; set OCTOMUS_GITHUB_TOKEN_FILE")
+	if listed {
+		for _, candidate := range strings.Split(list, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if !config.ValidGitHubRepo(candidate) {
+				return preparedDeployments{}, errors.New("OCTOMUS_GITHUB_REPOS entries must be OWNER/REPOSITORY")
+			}
+			duplicate := false
+			for _, existing := range pins {
+				duplicate = duplicate || config.EqualASCII(existing.repo, candidate)
+			}
+			if !duplicate {
+				pins = append(pins, pin{repo: candidate, checkout: filepath.Join(data, "checkouts", store.RepositorySlug(candidate)), dedicated: true})
+			}
+		}
 	}
-	fmt.Fprintf(stderr, "Cloning %s into the trusted checkout; later starts reuse it.\n", repo)
-	partial := checkout + ".partial"
-	_ = os.RemoveAll(partial)
-	if err := gitops.CloneRemote(ctx, "https://github.com/"+repo+".git", partial, 3600); err != nil {
+	for _, p := range pins {
+		if p.dedicated && !config.HasOwnGitHubToken(p.repo) {
+			return preparedDeployments{}, fmt.Errorf("Repository %s needs its own token in %s (or a %s file in %s); multi-repository operation never shares the primary token", p.repo, config.RepoGitHubTokenEnv(p.repo), store.RepositorySlug(p.repo), config.GitHubTokensDirEnv)
+		}
+		deployment := out.base
+		deployment.Repository, deployment.GitHubRepo = p.checkout, p.repo
+		if _, err := os.Stat(filepath.Join(p.checkout, ".git")); err == nil {
+			if err := checkoutValid(ctx, p.checkout, p.repo); err != nil {
+				if errors.As(err, new(gitops.AuthError)) {
+					return preparedDeployments{}, fmt.Errorf("GitHub authentication failed for %s; check its token and network access: %w", p.repo, err)
+				}
+				return preparedDeployments{}, fmt.Errorf("The trusted checkout is not %s; remove %s and restart: %w", p.repo, p.checkout, err)
+			}
+			out.pins[strings.ToLower(p.repo)] = deployment
+			continue
+		}
+		if _, ok := config.GitHubTokenFor(p.repo); !ok {
+			return preparedDeployments{}, fmt.Errorf("The trusted checkout for %s needs a GitHub token; set OCTOMUS_GITHUB_TOKEN_FILE or %s", p.repo, config.RepoGitHubTokenEnv(p.repo))
+		}
+		fmt.Fprintf(stderr, "Cloning %s into the trusted checkout; later starts reuse it.\n", p.repo)
+		partial := p.checkout + ".partial"
 		_ = os.RemoveAll(partial)
-		return engine.Deployment{}, fmt.Errorf("Cloning %s: %w", repo, err)
+		if err := os.MkdirAll(filepath.Dir(partial), 0o700); err != nil {
+			return preparedDeployments{}, err
+		}
+		if err := gitops.CloneRemote(ctx, p.repo, "https://github.com/"+p.repo+".git", partial, 3600); err != nil {
+			_ = os.RemoveAll(partial)
+			return preparedDeployments{}, fmt.Errorf("Cloning %s: %w", p.repo, err)
+		}
+		if err := os.Rename(partial, p.checkout); err != nil {
+			return preparedDeployments{}, err
+		}
+		if err := checkoutValid(ctx, p.checkout, p.repo); err != nil {
+			return preparedDeployments{}, fmt.Errorf("The new checkout does not verify: %w", err)
+		}
+		out.pins[strings.ToLower(p.repo)] = deployment
 	}
-	if err := os.Rename(partial, checkout); err != nil {
-		return engine.Deployment{}, err
-	}
-	if err := checkoutValid(ctx, checkout, repo); err != nil {
-		return engine.Deployment{}, fmt.Errorf("The new checkout does not verify: %w", err)
-	}
-	return deployment, nil
+	return out, nil
 }
 
 // checkoutValid checks that the trusted checkout's origin is the pinned repository and that gh is signed in.

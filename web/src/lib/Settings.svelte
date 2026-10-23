@@ -9,6 +9,7 @@
     CycleMode,
     DoctorResponse,
     ModelCatalog,
+    RepositoriesView,
     Route,
     SettingsView,
     TransformedField
@@ -49,7 +50,7 @@
     active: boolean;
     editable: boolean;
     status: SetupStatus | null;
-    onsaved: () => void;
+    onsaved: (repository?: string) => void;
     onbaselinechanged: () => void;
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
@@ -72,6 +73,11 @@
   const dirty = $derived(draft !== null && draftDirty(draft));
   const draftCommands = $derived(draft ? commandsForDraft(draft) : []);
   const draftExcluded = $derived(draft ? excludedForDraft(draft) : []);
+  let fleet = $state<RepositoriesView | null>(null),
+    newRepository = $state(''),
+    instanceCeiling = $state(0),
+    fleetError = $state(''),
+    fleetBusy = $state(false);
   let disposed = false;
   let diagnostic: AbortController | null = null;
   let received: SettingsView | null = null;
@@ -162,9 +168,48 @@
   );
   async function load() {
     if (loading || busy || dirty) return;
+    void loadFleet();
     if (await settingsResource.refresh('settings')) {
       // Edits typed during a reload still belong to this draft.
       if (!disposed && !dirty && received) acceptSaved(received);
+    }
+  }
+  async function loadFleet() {
+    try {
+      const view = await client.repositories();
+      if (disposed) return;
+      fleet = view;
+      instanceCeiling = view.instance_max_sessions_per_day;
+      fleetError = '';
+    } catch (e) {
+      if (!disposed) fleetError = (e as Error).message;
+    }
+  }
+  async function addRepository() {
+    const repo = newRepository.trim();
+    if (!repo || fleetBusy) return;
+    fleetBusy = true;
+    fleetError = '';
+    try {
+      fleet = await client.addRepository(repo);
+      newRepository = '';
+      onsaved();
+    } catch (e) {
+      if (!disposed) fleetError = (e as Error).message;
+    } finally {
+      if (!disposed) fleetBusy = false;
+    }
+  }
+  async function saveInstanceCeiling() {
+    if (fleetBusy) return;
+    fleetBusy = true;
+    fleetError = '';
+    try {
+      fleet = await client.saveInstance(Math.max(0, Math.floor(instanceCeiling) || 0));
+    } catch (e) {
+      if (!disposed) fleetError = (e as Error).message;
+    } finally {
+      if (!disposed) fleetBusy = false;
     }
   }
 
@@ -210,7 +255,7 @@
       if (disposed) return;
       acceptSaved(view);
       message = 'Configuration saved.';
-      onsaved();
+      onsaved(view.config.github_repo);
     } catch (e) {
       if (disposed) return;
       error = (e as Error).message;
@@ -390,6 +435,54 @@
     onfocus={focusControl}
     {onchoose}
   />
+  <section class="panel settings-section">
+    <div class="section-heading">
+      <h2>Repositories & instance</h2>
+    </div>
+    <div class="form-grid">
+      {#if fleet}<p class="full">
+          This instance serves {fleet.repositories.length}
+          {fleet.repositories.length === 1 ? 'repository' : 'repositories'}: {fleet.repositories
+            .map((entry) => entry.github_repo)
+            .join(', ')}. Each has its own settings, pause state and daily cap; switch in the
+          sidebar.
+        </p>{/if}{#if fleetError}<div class="notice error full" role="alert">
+          {fleetError}
+        </div>{/if}
+      <label
+        >Add a repository<input
+          bind:value={newRepository}
+          placeholder="owner/repository"
+          disabled={fleetBusy}
+        /><small>Starts paused with default settings; select it, then save its own.</small></label
+      >
+      <div>
+        <button
+          class="button"
+          type="button"
+          onclick={addRepository}
+          disabled={fleetBusy || !newRepository.trim()}>Add repository</button
+        >
+      </div>
+      <label
+        >Instance-wide sessions per day<input
+          type="number"
+          min="0"
+          step="1"
+          bind:value={instanceCeiling}
+          disabled={fleetBusy}
+        /><small
+          >Ceiling across every repository, on top of each repository's own cap. 0 means no instance
+          ceiling.</small
+        ></label
+      >
+      <div>
+        <button class="button" type="button" onclick={saveInstanceCeiling} disabled={fleetBusy}
+          >Save instance ceiling</button
+        >
+      </div>
+    </div>
+  </section>
   <form
     onsubmit={(e) => {
       e.preventDefault();

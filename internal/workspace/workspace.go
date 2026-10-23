@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -93,14 +95,24 @@ type Usage struct {
 // or replaced while the walk runs, or one exceeding the entry budget. Cancellation and a shared 30-second deadline
 // are checked between filesystem operations. Entries disappearing before their first stat trigger a bounded fresh scan, so a
 // settled temporary-file removal does not block its owner. Any other error, and any failure to read path itself,
-// fails the measurement.
-func Measure(ctx context.Context, path string, group int) (Usage, error) {
+// fails the measurement. Excluded paths are trusted, canonical relative roots;
+// their entries are skipped before stat, accounting or traversal.
+func Measure(ctx context.Context, path string, group int, excluded ...string) (Usage, error) {
 	ctx, cancel := context.WithTimeout(ctx, measurementTime)
 	defer cancel()
-	return measure(ctx, path, group, maxOwnerEntries, maxScanEntries)
+	return measure(ctx, path, group, maxOwnerEntries, maxScanEntries, excluded...)
 }
 
-func measure(ctx context.Context, path string, group, ownerLimit, scanLimit int) (Usage, error) {
+func measure(ctx context.Context, path string, group, ownerLimit, scanLimit int, excluded ...string) (Usage, error) {
+	exclusions := make(map[string]bool, len(excluded))
+	exclusionDepth := 0
+	for _, rel := range excluded {
+		if !filepath.IsLocal(rel) || rel == "." || filepath.Clean(rel) != rel {
+			return Usage{}, fmt.Errorf("invalid excluded storage root %q", rel)
+		}
+		exclusions[rel] = true
+		exclusionDepth = max(exclusionDepth, strings.Count(rel, string(filepath.Separator))+1)
+	}
 	var usage Usage
 	for range maxAttempts {
 		if err := ctx.Err(); err != nil {
@@ -114,7 +126,8 @@ func measure(ctx context.Context, path string, group, ownerLimit, scanLimit int)
 			return Usage{}, err
 		}
 		w := walker{ctx: ctx, root: dir, group: group, unmeasured: map[string]struct{}{},
-			entries: map[string]int{}, ownerLimit: ownerLimit, remaining: scanLimit}
+			entries: map[string]int{}, ownerLimit: ownerLimit, remaining: scanLimit,
+			exclusions: exclusions, exclusionDepth: exclusionDepth}
 		err = w.walk(w.root, ".", nil, nil)
 		dir.Close()
 		if err != nil {
@@ -143,6 +156,9 @@ type walker struct {
 	ownerLimit int
 	remaining  int
 	exhausted  bool
+
+	exclusions     map[string]bool
+	exclusionDepth int
 }
 
 // measuredDir identifies one component below root. Closed ancestors are reopened through these components rather
@@ -197,7 +213,7 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 		case err != nil && !errors.Is(err, io.EOF):
 			return err
 		}
-		children, unreadable, measureErr := w.measureEntries(dir, prefix, depth, names)
+		children, unreadable, measureErr := w.measureEntries(dir, prefix, path, names)
 		if measureErr != nil {
 			return measureErr
 		}
@@ -263,12 +279,16 @@ func (w *walker) walk(dir *os.File, prefix string, path []measuredDir, releasePa
 // measureEntries counts files before any descent, so a single-child chain needs no ancestor reopens. Directory
 // identities are captured here, before opening any child: a renamed directory may keep its bytes in an already
 // scanned part of the owner's tree, and a replacement at the old name must not hide that missing measurement.
-func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []string) ([]measuredDir, bool, error) {
+func (w *walker) measureEntries(dir *os.File, prefix string, path []measuredDir, names []string) ([]measuredDir, bool, error) {
 	fd := int(dir.Fd())
+	depth := len(path)
 	var directories []measuredDir
 	for _, name := range names {
 		if err := w.ctx.Err(); err != nil {
 			return nil, false, err
+		}
+		if w.excludedEntry(path, name) {
+			continue
 		}
 		if w.remaining == 0 {
 			w.exhausted = true
@@ -318,6 +338,17 @@ func (w *walker) measureEntries(dir *os.File, prefix string, depth int, names []
 		}
 	}
 	return directories, false, nil
+}
+
+func (w *walker) excludedEntry(path []measuredDir, name string) bool {
+	if len(path) >= w.exclusionDepth {
+		return false
+	}
+	parts := make([]string, 0, len(path)+1)
+	for _, component := range path {
+		parts = append(parts, component.name)
+	}
+	return w.exclusions[filepath.Join(append(parts, name)...)]
 }
 
 // reopen returns an ancestor with pending children, closing each temporary descriptor before continuing. Verify

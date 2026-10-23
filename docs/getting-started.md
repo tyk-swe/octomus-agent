@@ -1,6 +1,6 @@
 # Getting started
 
-Octomus is a self-hosted service for one operator and one repository. [Deployment](deployment.md)
+Octomus is a self-hosted service for one operator and one or more repositories. [Deployment](deployment.md)
 is the source for Docker, the checksum-verifying release installer, the dedicated VM and
 ongoing operations.
 

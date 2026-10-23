@@ -41,7 +41,7 @@ func apiContract() string {
 		"DoctorResponse": httpapi.DoctorResponse{}, "ControlResult": engine.ControlResult{}, "ControlAction": model.ControlAction(0), "ApiFailure": httpapi.ErrorResponse{},
 		"RequestsView": engine.RequestsView{}, "OperatorRequest": model.OperatorRequest{}, "RequestAction": model.RequestAction(0),
 		"Insights":       store.Insights{},
-		"HealthResponse": httpapi.HealthResponse{}, "DoctorFailure": httpapi.DoctorFailure{}, "Acknowledgement": httpapi.Acknowledgement{}, "TransformedField": redact.DisplayTransform{},
+		"HealthResponse": httpapi.HealthResponse{}, "RepositoriesView": httpapi.RepositoriesView{}, "RepositorySummary": httpapi.RepositorySummary{}, "DoctorFailure": httpapi.DoctorFailure{}, "Acknowledgement": httpapi.Acknowledgement{}, "TransformedField": redact.DisplayTransform{},
 	}
 	names := map[reflect.Type]string{
 		reflect.TypeFor[model.Status]():     "TaskStatus",

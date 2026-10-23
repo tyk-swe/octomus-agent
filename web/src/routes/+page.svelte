@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
-  import { client, setToken, onUnauthorized } from '#lib/api.ts';
+  import { client, setToken, setRepository, onUnauthorized } from '#lib/api.ts';
   import { StateSession } from '#lib/stateSession.ts';
   import type {
     ControlAction,
@@ -10,7 +10,8 @@
     TaskRow,
     Page,
     ProposalRow,
-    PRObservation
+    PRObservation,
+    RepositoriesView
   } from '#lib/types.ts';
   import Badge from '#lib/Badge.svelte';
   import FilterTabs from '#lib/FilterTabs.svelte';
@@ -59,7 +60,9 @@
     selected = $state<string | null>(null),
     runPanel = $state<{ cycle: string; proposal: string | null } | null>(null),
     mobileOpen = $state(false),
-    lastUpdated = $state('');
+    lastUpdated = $state(''),
+    repositories = $state<RepositoriesView['repositories']>([]),
+    selectedRepository = $state('');
   let panelOpener: HTMLElement | null = null;
   function rememberOpener() {
     navigationGeneration++;
@@ -121,12 +124,26 @@
     navigationGeneration++;
   }
   let controlStatePending = $state(false);
+  let repositoriesSyncing = false;
+  async function syncRepositories() {
+    if (repositoriesSyncing) return;
+    repositoriesSyncing = true;
+    try {
+      const fleet = await client.repositories();
+      repositories = fleet.repositories;
+    } catch {
+      // The sidebar keeps the last known fleet; state reads surface failures.
+    } finally {
+      repositoriesSyncing = false;
+    }
+  }
   const stateSession = new StateSession(
     client.state,
     (snapshot) => {
       data = snapshot;
       connectionError = '';
       lastUpdated = clockTime();
+      void syncRepositories();
       if (!listLoading) listRefresh++;
     },
     (failure) => {
@@ -204,7 +221,7 @@
     document.getElementById(action === 'audit' ? 'run-audit-control' : 'run-once-control')?.focus();
   }
   $effect(() => {
-    const scope = `${connected}:${view}:${search}:${filter}:${proposalFilter}:${proposalCycle}`;
+    const scope = `${connected}:${selectedRepository}:${view}:${search}:${filter}:${proposalFilter}:${proposalCycle}`;
     const before = listBefore;
     const refreshNumber = listRefresh;
     const changed = scope !== lastScope;
@@ -289,7 +306,22 @@
     if (data) data.baseline_active = true;
     void refresh();
   }
-  function configSaved() {
+  function rememberRepository(value: string) {
+    try {
+      localStorage.setItem('octomus-repository', value);
+    } catch {
+      // Browser storage is optional; the selected repository still works in memory.
+    }
+  }
+  function configSaved(repository?: string) {
+    if (repository !== undefined && repository.toLowerCase() !== selectedRepository.toLowerCase()) {
+      selectedRepository = repository;
+      // Identity changes are allowed only for the legacy primary. Address
+      // that App without its obsolete explicit repository query.
+      setRepository('');
+      rememberRepository(repository);
+      sessionGeneration++;
+    }
     // Readiness belongs to the newly saved configuration; an earlier poll
     // cannot confirm which work can start with it.
     stateSession.invalidate();
@@ -300,15 +332,26 @@
     error = '';
     setToken(accessToken.trim());
     try {
-      data = await client.state();
+      const fleet = await client.repositories();
+      repositories = fleet.repositories;
+      let remembered = '';
+      try {
+        remembered = localStorage.getItem('octomus-repository') ?? '';
+      } catch {
+        // Use the first repository when browser storage is unavailable.
+      }
+      selectedRepository = repositories.some((entry) => entry.github_repo === remembered)
+        ? remembered
+        : (repositories[0]?.github_repo ?? '');
+      setRepository(selectedRepository);
       view = viewFromHash(location.hash) ?? 'overview';
       settingsVisited = view === 'settings';
       connected = true;
       connectionError = '';
       accessToken = '';
+      await refresh();
       await tick();
       window.scrollTo(0, 0);
-      lastUpdated = clockTime();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -447,12 +490,53 @@
       }
     }
   }
+  async function switchRepository(value: string) {
+    if (value === selectedRepository || busy) return;
+    selectedRepository = value;
+    rememberRepository(value);
+    setRepository(value);
+    sessionGeneration++;
+    navigationGeneration++;
+    // Settings stay mounted behind a hidden div; remount so a draft for the
+    // previous repository can never be saved into the newly selected one.
+    const reopenSettings = view === 'settings';
+    settingsVisited = false;
+    if (reopenSettings) {
+      await tick();
+      settingsVisited = true;
+    }
+    selected = null;
+    runPanel = null;
+    panelOpener = null;
+    listGeneration++;
+    listRequest?.abort();
+    stateSession.reset();
+    data = null;
+    filtered = [];
+    proposals = [];
+    prRows = [];
+    proposalCounts = {};
+    proposalCycle = 'all';
+    queueTabCounts = {};
+    listBefore = null;
+    listNext = null;
+    previousPages = [];
+    listLoaded = false;
+    listError = '';
+    lastPage = '';
+    error = '';
+    connectionError = '';
+    await refresh();
+  }
   function disconnect() {
     sessionGeneration++;
     navigationGeneration++;
     connected = false;
     settingsVisited = false;
     data = null;
+    repositories = [];
+    selectedRepository = '';
+    setRepository('');
     setToken('');
     selected = null;
     runPanel = null;
@@ -499,6 +583,25 @@
 >
 {#if !connected}
   <LoginScreen bind:accessToken {error} {busy} onsubmit={login} />
+{:else if !data}
+  <main class="repository-recovery">
+    <h1>{connectionError ? 'Repository unavailable' : 'Loading repository'}</h1>
+    <p>{connectionError || `Loading ${selectedRepository || 'your repository'}…`}</p>
+    {#if repositories.length > 1}
+      <label for="recovery-repository">Repository</label>
+      <select
+        id="recovery-repository"
+        value={selectedRepository}
+        onchange={(event) => switchRepository(event.currentTarget.value)}
+      >
+        {#each repositories as entry}
+          <option value={entry.github_repo}>{entry.github_repo}</option>
+        {/each}
+      </select>
+    {/if}
+    <button onclick={() => refresh()}>Retry</button>
+    <button onclick={disconnect}>Disconnect</button>
+  </main>
 {:else if data}
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <div class="app-shell" class:nav-open={mobileOpen}>
@@ -526,6 +629,16 @@
           <strong>{data.repository.split('/').pop() || 'Your repository'}</strong><small
             >{data.repository.split('/')[0] || 'Not connected yet'}</small
           >
+          {#if repositories.length > 1}<select
+              class="repository-select"
+              aria-label="Repository"
+              value={selectedRepository}
+              disabled={busy}
+              onchange={(event) => switchRepository(event.currentTarget.value)}
+              >{#each repositories as entry}<option value={entry.github_repo}
+                  >{entry.github_repo}</option
+                >{/each}</select
+            >{/if}
         </div>
       </div>
       <nav aria-label="Main navigation">

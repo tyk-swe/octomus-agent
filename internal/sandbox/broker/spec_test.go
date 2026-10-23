@@ -148,9 +148,19 @@ func TestPlanValidation(t *testing.T) {
 	if _, err := cfg.plan(wire.Request{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: scratch}); err != nil {
 		t.Fatalf("a scratch root needs no git metadata: %v", err)
 	}
+	repoScratch := OwnedRoot(t, cfg, "repos/acme%2Ftwo/system/"+testUUID, append(wire.HomeDirs(wire.KindRunner), wire.VerifyHome)...)
+	if err := os.RemoveAll(filepath.Join(filepath.Dir(repoScratch), workspace.GitDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cfg.plan(wire.Request{Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: repoScratch}); err != nil {
+		t.Fatalf("a per-repository scratch root needs no git metadata: %v", err)
+	}
 	for _, rel := range []string{
 		"cycles/" + testUUID + "/grounding", "cycles/" + testUUID + "/discovery-9", "cycles/" + testUUID + "/adversary-b",
 		"cycles/" + testUUID + "/consolidation", "baselines/" + testUUID, "tasks/" + testUUID + "/verify",
+		"repos/acme-two/tasks/" + testUUID, "repos/acme-two/tasks/" + testUUID + "/verify",
+		"repos/acme-two/cycles/" + testUUID + "/grounding", "repos/acme-two/baselines/" + testUUID,
+		"repos/acme-tools%2Fservice/tasks/" + testUUID, "repos/acme%2Ftools-service/tasks/" + testUUID,
 	} {
 		dir := OwnedRoot(t, cfg, rel, wire.VerifyHome)
 		if _, err := cfg.plan(wire.Request{Kind: "verify", Dir: dir, Command: "true"}); err != nil {
@@ -158,28 +168,31 @@ func TestPlanValidation(t *testing.T) {
 		}
 	}
 	refused := map[string]wire.Request{
-		"unknown kind":          {Kind: "shell", Dir: taskDir},
-		"relative dir":          {Kind: "verify", Dir: "tasks/" + testUUID + "/workspace", Command: "true"},
-		"unclean dir":           {Kind: "verify", Dir: taskDir + "/../workspace", Command: "true"},
-		"not a workspace":       {Kind: "verify", Dir: filepath.Dir(taskDir), Command: "true"},
-		"data dir":              {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "workspace"), Command: "true"},
-		"trusted checkout":      {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "checkout", "workspace"), Command: "true"},
-		"non-uuid task":         {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "tasks", "task-1", "workspace"), Command: "true"},
-		"unknown planning role": {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "cycles", testUUID, "rogue", "workspace"), Command: "true"},
-		"empty command":         {Kind: "verify", Dir: taskDir},
-		"long command":          {Kind: "verify", Dir: taskDir, Command: strings.Repeat("x", 4097)},
-		"verify with env":       {Kind: "verify", Dir: taskDir, Command: "true", Env: []string{"OPENCODE_X=1"}},
-		"verify with stdin":     {Kind: "verify", Dir: taskDir, Command: "true", Stdin: true},
-		"unknown runner":        {Kind: "runner", Runner: "bash", Mode: wire.RunnerModeStdio, Dir: taskDir},
-		"codex over http":       {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 5},
-		"opencode over stdio":   {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeStdio, Dir: taskDir},
-		"opencode unbounded":    {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir},
-		"runner env injection":  {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"LD_PRELOAD=/tmp/x.so"}},
-		"runner proxy override": {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"HTTPS_PROXY=http://evil"}},
-		"runner trust override": {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"SSL_CERT_FILE=/tmp/ca"}},
-		"node trust override":   {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"NODE_EXTRA_CA_CERTS=/tmp/ca"}},
-		"probe with a dir":      {Kind: "probe", Mode: wire.ProbeVersions, Dir: taskDir},
-		"unknown probe":         {Kind: "probe", Mode: "shell"},
+		"unknown kind":              {Kind: "shell", Dir: taskDir},
+		"relative dir":              {Kind: "verify", Dir: "tasks/" + testUUID + "/workspace", Command: "true"},
+		"unclean dir":               {Kind: "verify", Dir: taskDir + "/../workspace", Command: "true"},
+		"not a workspace":           {Kind: "verify", Dir: filepath.Dir(taskDir), Command: "true"},
+		"data dir":                  {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "workspace"), Command: "true"},
+		"trusted checkout":          {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "checkout", "workspace"), Command: "true"},
+		"non-uuid task":             {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "tasks", "task-1", "workspace"), Command: "true"},
+		"unknown planning role":     {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "cycles", testUUID, "rogue", "workspace"), Command: "true"},
+		"repository root itself":    {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "repos", "acme-two", "workspace"), Command: "true"},
+		"repository parent as root": {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "repos", "acme-two", "tasks", "workspace"), Command: "true"},
+		"nested repositories":       {Kind: "verify", Dir: filepath.Join(cfg.DataDir, "repos", "acme-two", "repos", "acme-three", "tasks", testUUID, "workspace"), Command: "true"},
+		"empty command":             {Kind: "verify", Dir: taskDir},
+		"long command":              {Kind: "verify", Dir: taskDir, Command: strings.Repeat("x", 4097)},
+		"verify with env":           {Kind: "verify", Dir: taskDir, Command: "true", Env: []string{"OPENCODE_X=1"}},
+		"verify with stdin":         {Kind: "verify", Dir: taskDir, Command: "true", Stdin: true},
+		"unknown runner":            {Kind: "runner", Runner: "bash", Mode: wire.RunnerModeStdio, Dir: taskDir},
+		"codex over http":           {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 5},
+		"opencode over stdio":       {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeStdio, Dir: taskDir},
+		"opencode unbounded":        {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir},
+		"runner env injection":      {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"LD_PRELOAD=/tmp/x.so"}},
+		"runner proxy override":     {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"HTTPS_PROXY=http://evil"}},
+		"runner trust override":     {Kind: "runner", Runner: "codex", Mode: wire.RunnerModeStdio, Dir: taskDir, Env: []string{"SSL_CERT_FILE=/tmp/ca"}},
+		"node trust override":       {Kind: "runner", Runner: "opencode", Mode: wire.RunnerModeOpenCode, Dir: taskDir, Readiness: 60, Env: []string{"NODE_EXTRA_CA_CERTS=/tmp/ca"}},
+		"probe with a dir":          {Kind: "probe", Mode: wire.ProbeVersions, Dir: taskDir},
+		"unknown probe":             {Kind: "probe", Mode: "shell"},
 	}
 	for name, req := range refused {
 		if _, err := cfg.plan(req); err == nil {

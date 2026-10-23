@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
-	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/runner"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 	"github.com/tyk-swe/octomus-agent/internal/testutil"
@@ -55,7 +54,7 @@ func TestDiagnosticCancellationJoinsBeforeRemovingScratch(t *testing.T) {
 				connect := func(ctx context.Context, _ config.Backend, _ config.Config, cwd string) (runner.Adapter, error) {
 					return &pendingDiagnostic{ctx: ctx, root: filepath.Dir(cwd), entered: entered, closing: make(chan struct{}), allowExit: allowExit}, nil
 				}
-				app, state := testApp(t, engine.WithRunnerConnector(connect))
+				fleet, app, state := testFleet(t, connect)
 				if endpoint == "/api/doctor" {
 					cfg := config.Default()
 					cfg.Repository = t.TempDir()
@@ -82,7 +81,7 @@ func TestDiagnosticCancellationJoinsBeforeRemovingScratch(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				router := Router(app, token, "", "test")
+				router := Router(fleet, token, "", "test")
 				handled := make(chan struct{}, 2)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					defer func() { handled <- struct{}{} }()

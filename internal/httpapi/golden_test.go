@@ -25,8 +25,12 @@ func TestGoldenStateReadsBack(t *testing.T) {
 	dir := t.TempDir()
 	testutil.GoldenState(t, "0.1.0", filepath.Join(dir, "state.db"))
 	state := openStore(t, dir)
-	app := engine.New(state, dir)
-	router := Router(app, token, "", "test")
+	fleet, err := engine.NewFleet(state, dir, engine.FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fleet.Shutdown()
+	router := Router(fleet, token, "", "test")
 
 	get := func(path string) *httptest.ResponseRecorder {
 		t.Helper()

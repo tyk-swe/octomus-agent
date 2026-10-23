@@ -220,6 +220,7 @@ func (p PullRequest) OwnedOpen() bool { return p.Owned && p.State == "open" }
 func DefaultControl() Control         { return Control{Paused: true, Mode: OperatingModePaused} }
 func (c *Control) SetMode(mode OperatingMode) {
 	c.Mode = mode
+	c.BudgetWaiting = false
 	c.Paused = mode == OperatingModePaused
 	if mode != OperatingModeRunOnce {
 		c.Batch = nil

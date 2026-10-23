@@ -5,7 +5,7 @@
 
 **Your repository's next improvement, ready for review.**
 
-Octomus is a self-hosted service for one operator and one repository. It discovers
+Octomus is a self-hosted service for one operator and one or more repositories. It discovers
 improvements, has independent agents review the proposals, executes accepted work through
 Codex or OpenCode, verifies the result, and delivers a pull request. A cycle may reject
 everything and do nothing. The operator decides what merges.
@@ -60,6 +60,7 @@ see [cost and usage](docs/cost.md).
 | [Cost](docs/cost.md) | Session admissions and usage reporting |
 | [Maintenance merging](docs/maintenance-merging.md) | Destination protections for automatic maintenance merges |
 | [Releasing](https://github.com/tyk-swe/octomus-agent/blob/main/docs/releasing.md) | Packaging and release workflow |
+| [Autonomous maintainer](docs/autonomous-maintainer.md) | Accepted decision record for the staged path to fuller autonomy |
 
 ## Security and contribution
 

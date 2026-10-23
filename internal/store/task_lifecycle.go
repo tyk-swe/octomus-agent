@@ -102,7 +102,7 @@ func (s *Store) RetryTask(expected, task model.Task) error {
 		if _, err := txCommitTask(c, expected, task, model.TaskRetry); err != nil {
 			return err
 		}
-		return txEvent(c, task.ID, model.EventAttemptPolicy, string(policy))
+		return txRepositoryEvent(c, s.repo, task.ID, model.EventAttemptPolicy, string(policy))
 	})
 }
 

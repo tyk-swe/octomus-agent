@@ -2,6 +2,13 @@
   min-height: 100dvh;
   display: flex;
 }
+.repository-recovery {
+  max-width: 40rem;
+  margin: 15vh auto;
+  padding: 2rem;
+  display: grid;
+  gap: 1rem;
+}
 .sidebar {
   width: 232px;
   background: linear-gradient(178deg, var(--nav-bg) 0%, var(--nav-bg-2) 55%, var(--nav-bg-2) 100%);
@@ -71,6 +78,16 @@
   color: var(--nav-fg);
   display: block;
   margin-top: 2px;
+}
+.repository-select {
+  margin-top: 7px;
+  width: 100%;
+  background: var(--nav-card);
+  color: var(--nav-fg-strong);
+  border: 1px solid var(--nav-border);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 4px;
 }
 nav {
   display: flex;

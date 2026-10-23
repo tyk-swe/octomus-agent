@@ -23,7 +23,10 @@ func TestSignalShutdownWaitsForSchedulerDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	app := engine.New(state, data)
+	fleet, err := engine.NewFleet(state, data, engine.FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	started := make(chan net.Addr, 1)
 	server := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	server.BaseContext = func(listener net.Listener) context.Context {
@@ -32,8 +35,8 @@ func TestSignalShutdownWaitsForSchedulerDrain(t *testing.T) {
 	}
 	var workerStopped atomic.Int32
 	components := serviceComponents{
-		app:  app,
-		http: server,
+		fleet: fleet,
+		http:  server,
 		startWorker: func() (func(), error) {
 			return func() { workerStopped.Add(1) }, nil
 		},
@@ -67,7 +70,7 @@ func TestSignalShutdownWaitsForSchedulerDrain(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("service did not finish after the shutdown signal")
 	}
-	if app.Context().Err() == nil || !app.Drained() {
+	if fleet.Context().Err() == nil || !fleet.Primary().Drained() {
 		t.Fatal("service returned before the scheduler shut down and drained")
 	}
 	if workerStopped.Load() != 1 {
