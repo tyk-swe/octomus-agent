@@ -50,7 +50,7 @@
     active: boolean;
     editable: boolean;
     status: SetupStatus | null;
-    onsaved: () => void;
+    onsaved: (repository?: string) => void;
     onbaselinechanged: () => void;
     onchoose: (action: 'audit' | 'cycle') => void;
   } = $props();
@@ -255,7 +255,7 @@
       if (disposed) return;
       acceptSaved(view);
       message = 'Configuration saved.';
-      onsaved();
+      onsaved(view.config.github_repo);
     } catch (e) {
       if (disposed) return;
       error = (e as Error).message;
@@ -435,6 +435,54 @@
     onfocus={focusControl}
     {onchoose}
   />
+  <section class="panel settings-section">
+    <div class="section-heading">
+      <h2>Repositories & instance</h2>
+    </div>
+    <div class="form-grid">
+      {#if fleet}<p class="full">
+          This instance serves {fleet.repositories.length}
+          {fleet.repositories.length === 1 ? 'repository' : 'repositories'}: {fleet.repositories
+            .map((entry) => entry.github_repo)
+            .join(', ')}. Each has its own settings, pause state and daily cap; switch in the
+          sidebar.
+        </p>{/if}{#if fleetError}<div class="notice error full" role="alert">
+          {fleetError}
+        </div>{/if}
+      <label
+        >Add a repository<input
+          bind:value={newRepository}
+          placeholder="owner/repository"
+          disabled={fleetBusy}
+        /><small>Starts paused with default settings; select it, then save its own.</small></label
+      >
+      <div>
+        <button
+          class="button"
+          type="button"
+          onclick={addRepository}
+          disabled={fleetBusy || !newRepository.trim()}>Add repository</button
+        >
+      </div>
+      <label
+        >Instance-wide sessions per day<input
+          type="number"
+          min="0"
+          step="1"
+          bind:value={instanceCeiling}
+          disabled={fleetBusy}
+        /><small
+          >Ceiling across every repository, on top of each repository's own cap. 0 means no instance
+          ceiling.</small
+        ></label
+      >
+      <div>
+        <button class="button" type="button" onclick={saveInstanceCeiling} disabled={fleetBusy}
+          >Save instance ceiling</button
+        >
+      </div>
+    </div>
+  </section>
   <form
     onsubmit={(e) => {
       e.preventDefault();
@@ -521,55 +569,6 @@
               All must pass before publication.</small
             ></label
           >
-        </div>
-      </section>
-      <section class="panel settings-section">
-        <div class="section-heading">
-          <h2>Repositories & instance</h2>
-        </div>
-        <div class="form-grid">
-          {#if fleet}<p class="full">
-              This instance serves {fleet.repositories.length}
-              {fleet.repositories.length === 1 ? 'repository' : 'repositories'}: {fleet.repositories
-                .map((entry) => entry.github_repo)
-                .join(', ')}. Each has its own settings, pause state and daily cap; switch in the
-              sidebar.
-            </p>{/if}{#if fleetError}<div class="notice error full" role="alert">
-              {fleetError}
-            </div>{/if}
-          <label
-            >Add a repository<input
-              bind:value={newRepository}
-              placeholder="owner/repository"
-              disabled={fleetBusy}
-            /><small>Starts paused with default settings; select it, then save its own.</small
-            ></label
-          >
-          <div>
-            <button
-              class="button"
-              type="button"
-              onclick={addRepository}
-              disabled={fleetBusy || !newRepository.trim()}>Add repository</button
-            >
-          </div>
-          <label
-            >Instance-wide sessions per day<input
-              type="number"
-              min="0"
-              step="1"
-              bind:value={instanceCeiling}
-              disabled={fleetBusy}
-            /><small
-              >Ceiling across every repository, on top of each repository's own cap. 0 means no
-              instance ceiling.</small
-            ></label
-          >
-          <div>
-            <button class="button" type="button" onclick={saveInstanceCeiling} disabled={fleetBusy}
-              >Save instance ceiling</button
-            >
-          </div>
         </div>
       </section>
       <section class="panel settings-section">

@@ -1,8 +1,7 @@
 # Configuration
 
 Your saved configuration sets the selected repository's checkout, model routes, verification policy, and
-operating limits. Every served repository has its own saved configuration; the sidebar selects which one you are viewing and editing. **Settings → Repositories & instance** registers additional repositories (each starts paused with defaults) and sets the optional instance-wide daily session ceiling that bounds the total across repositories on top of each one's `max_sessions_per_day`. Configure it from the private dashboard while the service is paused and
-has no active tasks or cycle. For the first-run sequence and host setup, see [Getting
+operating limits. Every served repository has its own saved configuration; the sidebar selects which one you are viewing and editing. **Configuration → Repositories & instance** registers additional repositories (each starts paused with defaults) and sets the optional instance-wide daily session ceiling that bounds the total across repositories on top of each one's `max_sessions_per_day`. These instance controls remain available while repositories run. Pause the selected repository and wait for its active work before changing its own configuration. For the first-run sequence and host setup, see [Getting
 started](getting-started.md) and [Deployment](deployment.md).
 
 Loading a model catalog does not save choices or start a model call. A connection check

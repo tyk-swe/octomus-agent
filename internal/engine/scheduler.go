@@ -273,8 +273,13 @@ func (a *App) startPlanning(cfg config.Config, control model.Control) error {
 	a.runtimeMu.Unlock()
 	snapshot := cfg.Clone()
 	expected := control.Clone()
+	turn := a.planningOrder.enqueue()
 	a.wg.Go(func() {
+		defer turn.release()
 		err := a.preflight(a.ctx, snapshot, false)
+		if err == nil {
+			err = turn.wait(a.ctx)
+		}
 		a.gate.Lock()
 		defer a.gate.Unlock()
 		defer a.notify()

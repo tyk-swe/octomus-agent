@@ -549,6 +549,9 @@ func TestRetiredAppCannotSaveConfiguration(t *testing.T) {
 	if _, err := retired.SaveConfig(settings.Revision, map[string]json.RawMessage{"github_repo": json.RawMessage(`"fixture/other"`)}); err == nil {
 		t.Fatal("a request resolved before retirement overwrote the replacement's settings")
 	}
+	if _, err := retired.ControlAction(model.ControlPause); err == nil {
+		t.Fatal("a request resolved before retirement changed the replacement's controls")
+	}
 	if cfg, err := store.Get(state, store.ConfigKey); err != nil || cfg != nil {
 		t.Fatalf("retired save changed primary configuration: %+v, %v", cfg, err)
 	}

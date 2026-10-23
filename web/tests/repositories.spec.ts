@@ -1,5 +1,13 @@
 import { expect } from '@playwright/test';
-import { configurationFixture, deferred, login, openNavigation, test, token } from './synthetic';
+import {
+  configurationFixture,
+  deferred,
+  login,
+  openNavigation,
+  test,
+  token,
+  unsandboxed
+} from './synthetic';
 import type { Snapshot } from '../src/lib/types';
 
 test('switching repositories reloads state and scopes subsequent settings requests', async ({
@@ -132,4 +140,60 @@ test('Enter in configuration saves settings without submitting fleet actions', a
   await expect(page.getByText('Configuration saved.', { exact: true })).toBeVisible();
   expect(state.saved!.default_branch).toBe('updated-default');
   expect(registrations).toBe(0);
+});
+
+test('fleet controls remain available while repository configuration is locked', async ({
+  page
+}) => {
+  await configurationFixture(page, {
+    snapshot: (state) => {
+      state.control.paused = false;
+      state.control.mode = 'continuous';
+      state.capabilities.configure = { allowed: false, reason: 'Repository is running' };
+    }
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', false);
+  await expect(page.getByLabel('Default branch', { exact: true })).toBeDisabled();
+  const add = page.getByRole('textbox', { name: /^Add a repository/ });
+  await expect(add).toBeEnabled();
+  await add.fill('fixture/extra');
+  await expect(page.getByRole('button', { name: 'Add repository', exact: true })).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Save instance ceiling', exact: true })
+  ).toBeEnabled();
+});
+
+test('a legacy rename updates the API scope even when browser storage is denied', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', {
+      value: {
+        getItem() {
+          throw new Error('Storage denied');
+        },
+        setItem() {
+          throw new Error('Storage denied');
+        }
+      }
+    });
+  });
+  const state = await configurationFixture(page, {
+    snapshot: (snapshot) => {
+      unsandboxed(snapshot);
+      snapshot.repository = state.saved?.github_repo ?? 'fixture/project';
+    }
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', false);
+  await page.getByRole('textbox', { name: /^GitHub repository/ }).fill('fixture/renamed');
+  const refreshed = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/api/state' && !url.searchParams.has('repository');
+  });
+  await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
+  await refreshed;
+  expect(state.saved!.github_repo).toBe('fixture/renamed');
+  await expect(page.locator('.repository-switch strong')).toHaveText('renamed');
 });

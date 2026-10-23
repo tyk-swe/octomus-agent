@@ -76,6 +76,9 @@ func (e *capacityError) Unwrap() error { return model.BlockedBudgetExhausted }
 func (a *App) ControlAction(action model.ControlAction) (*ControlResult, error) {
 	a.gate.Lock()
 	defer a.gate.Unlock()
+	if a.ctx.Err() != nil {
+		return nil, conflictError("The repository service has stopped; reload before changing controls")
+	}
 	control, err := a.Control()
 	if err != nil {
 		return nil, err

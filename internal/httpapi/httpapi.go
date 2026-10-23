@@ -108,15 +108,9 @@ func (a *api) resolve(r *http.Request) (*engine.App, error) {
 // record. An explicit ?repository= that names a different owner is
 // not-found, so one repository's view never acts on another's records.
 func (a *api) resolveRecord(r *http.Request, kind, id string) (*engine.App, error) {
-	app, err := a.fleet.ForRecord(kind, id)
-	if err != nil {
-		return nil, err
-	}
+	selected := ""
 	if repo := first(r.URL.Query(), "repository"); repo != nil && *repo != "" {
-		selected := a.fleet.For(*repo)
-		if selected == nil || selected != app {
-			return nil, engine.NotFound("Record not found")
-		}
+		selected = *repo
 	}
-	return app, nil
+	return a.fleet.ForRecord(kind, id, selected)
 }

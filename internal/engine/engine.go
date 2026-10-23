@@ -67,6 +67,7 @@ type App struct {
 	// A managed checkout outside this repository's workspace root still
 	// belongs to its storage budget. Set once before the App is published.
 	checkoutStorage string
+	planningOrder   *planningOrder
 }
 
 func New(state *store.Store, dataDir string, options ...Option) *App {

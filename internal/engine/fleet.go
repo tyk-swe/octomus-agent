@@ -40,9 +40,10 @@ type Fleet struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 
-	mu      sync.Mutex
-	apps    []*App
-	entries []store.RepositoryEntry
+	mu            sync.Mutex
+	apps          []*App
+	entries       []store.RepositoryEntry
+	planningOrder planningOrder
 }
 
 func NewFleet(root *store.Store, dataDir string, options FleetOptions) (*Fleet, error) {
@@ -116,7 +117,9 @@ func (f *Fleet) newApp(scoped *store.Store, dir string, deployment Deployment) *
 	if f.options.Connector != nil {
 		options = append(options, WithRunnerConnector(f.options.Connector))
 	}
-	return newWithContext(f.ctx, scoped, dir, options...)
+	app := newWithContext(f.ctx, scoped, dir, options...)
+	app.planningOrder = &f.planningOrder
+	return app
 }
 
 func (f *Fleet) deploymentFor(repo string) (Deployment, error) {
@@ -394,17 +397,27 @@ func (f *Fleet) Shutdown() {
 // ForRecord resolves the App owning one record by the repository saved on
 // it. Missing or unattributed records resolve to the primary App, which
 // answers exactly as the single-repository service did (usually not-found).
-func (f *Fleet) ForRecord(kind, id string) (*App, error) {
+// An explicit selection must match the saved owner and a served repository.
+func (f *Fleet) ForRecord(kind, id, selected string) (*App, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	repo, found, err := f.root.RecordRepository(kind, id)
 	if err != nil {
 		return nil, err
 	}
+	if selected != "" {
+		app := f.forLocked(selected)
+		if app == nil || (found && !config.EqualASCII(repo, selected)) || (!found && app != f.apps[0]) {
+			return nil, NotFound("Record not found")
+		}
+		return app, nil
+	}
 	if found {
-		if app := f.For(repo); app != nil {
+		if app := f.forLocked(repo); app != nil {
 			return app, nil
 		}
 	}
-	return f.Primary(), nil
+	return f.apps[0], nil
 }
 
 // InstanceSettings returns the saved instance-wide policy.

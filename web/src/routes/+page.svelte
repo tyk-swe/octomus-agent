@@ -306,7 +306,22 @@
     if (data) data.baseline_active = true;
     void refresh();
   }
-  function configSaved() {
+  function rememberRepository(value: string) {
+    try {
+      localStorage.setItem('octomus-repository', value);
+    } catch {
+      // Browser storage is optional; the selected repository still works in memory.
+    }
+  }
+  function configSaved(repository?: string) {
+    if (repository !== undefined && repository.toLowerCase() !== selectedRepository.toLowerCase()) {
+      selectedRepository = repository;
+      // Identity changes are allowed only for the legacy primary. Address
+      // that App without its obsolete explicit repository query.
+      setRepository('');
+      rememberRepository(repository);
+      sessionGeneration++;
+    }
     // Readiness belongs to the newly saved configuration; an earlier poll
     // cannot confirm which work can start with it.
     stateSession.invalidate();
@@ -319,7 +334,12 @@
     try {
       const fleet = await client.repositories();
       repositories = fleet.repositories;
-      const remembered = localStorage.getItem('octomus-repository') ?? '';
+      let remembered = '';
+      try {
+        remembered = localStorage.getItem('octomus-repository') ?? '';
+      } catch {
+        // Use the first repository when browser storage is unavailable.
+      }
       selectedRepository = repositories.some((entry) => entry.github_repo === remembered)
         ? remembered
         : (repositories[0]?.github_repo ?? '');
@@ -473,7 +493,7 @@
   async function switchRepository(value: string) {
     if (value === selectedRepository || busy) return;
     selectedRepository = value;
-    localStorage.setItem('octomus-repository', value);
+    rememberRepository(value);
     setRepository(value);
     sessionGeneration++;
     navigationGeneration++;

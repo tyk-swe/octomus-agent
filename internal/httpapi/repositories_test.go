@@ -129,3 +129,29 @@ func TestRepositorySelectionBeforeRegistration(t *testing.T) {
 		t.Fatalf("unknown repository paused the primary: %+v, %v", after, err)
 	}
 }
+
+func TestExplicitRepositoryRejectsUnservedRecordOwner(t *testing.T) {
+	fleet, _, state := testFleet(t, nil)
+	if _, err := fleet.AddRepository(store.RepositoryEntry{GitHubRepo: "acme/current", DataDir: "."}); err != nil {
+		t.Fatal(err)
+	}
+	old := model.Task{ID: "historical-task", Status: model.StatusPublished, Config: config.Default()}
+	old.Config.GitHubRepo = "acme/previous"
+	if err := store.Put(state, store.Tasks.Key(old.ID), old); err != nil {
+		t.Fatal(err)
+	}
+	router := Router(fleet, token, "", "test")
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/tasks/historical-task?repository=acme/current"},
+		{"POST", "/api/tasks/historical-task/archive?repository=acme/current"},
+	} {
+		response := request(t, router, tc.method, tc.path, "{}", true)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s %s = %d: %s", tc.method, tc.path, response.Code, response.Body.String())
+		}
+	}
+	after, err := store.Get(state, store.Tasks.Key(old.ID))
+	if err != nil || after == nil || after.Lifecycle.ArchivedAt != nil {
+		t.Fatalf("explicit current scope changed another repository's record: %+v, %v", after, err)
+	}
+}
