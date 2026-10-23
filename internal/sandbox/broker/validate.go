@@ -17,10 +17,18 @@ import (
 
 const uuidPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 
+// slugPattern is one repository's data-directory slug (store.RepositorySlug):
+// never dot-led, so it can name neither "." nor "..". URL escapes are literal
+// filename bytes here; neither filepath nor Docker volume subpaths decode them.
+const slugPattern = `[A-Za-z0-9_-]([A-Za-z0-9._-]|%[0-9A-F]{2})*`
+
 // rootPattern names every owned root a sandbox may mount, relative to the data directory. Anything else in the data
 // volume, including state.db, the trusted checkout and other roots' parents, is unreachable by construction.
-var rootPattern = regexp.MustCompile(`^(tasks/` + uuidPattern + `(/verify)?|cycles/` + uuidPattern +
+// Added repositories nest the same owned roots under repos/<slug>/; the primary repository keeps the top level.
+var rootPattern = regexp.MustCompile(`^(repos/` + slugPattern + `/)?(tasks/` + uuidPattern + `(/verify)?|cycles/` + uuidPattern +
 	`/(grounding|consolidation|adversary-[ab]|discovery-[0-9]{1,2})|baselines/` + uuidPattern + `|system/` + uuidPattern + `)$`)
+
+var scratchPattern = regexp.MustCompile(`^(repos/` + slugPattern + `/)?system/` + uuidPattern + `$`)
 
 var envKeyPattern = regexp.MustCompile(`^OPENCODE_[A-Z0-9_]{1,64}$`)
 
@@ -132,7 +140,7 @@ func (c Config) resolveRoot(p *plan, dir string) error {
 		return errors.New("Sandbox directory is not an owned root under the data directory")
 	}
 	p.dir, p.root, p.rel = dir, root, rel
-	p.scratch = strings.HasPrefix(rel, "system/")
+	p.scratch = scratchPattern.MatchString(rel)
 	required := []string{filepath.Join(rel, wire.WorkspaceDir)}
 	if !p.scratch {
 		required = append(required, filepath.Join(rel, workspace.GitDirName))

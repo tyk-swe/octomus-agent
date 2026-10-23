@@ -29,7 +29,7 @@ func Git(ctx context.Context, c config.Config, cwd string, args []string) (strin
 // remoteGit is Git for the few commands that may need an inherited credential helper: fetches, remote listing and
 // pushes. They never apply work-tree attributes, so the ambient configuration cannot arm a repository-named driver.
 func remoteGit(ctx context.Context, c config.Config, cwd string, args []string) (string, error) {
-	return git(ctx, c, cwd, args, nil)
+	return git(ctx, c, cwd, args, repoTokenEnv(c))
 }
 
 func git(ctx context.Context, c config.Config, cwd string, args []string, env []string) (string, error) {

@@ -191,7 +191,7 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	sigCtx, stopSignals := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer stopSignals()
 	doctor := parsed.mode == "--doctor"
-	deployment, err := prepareDeployment(sigCtx, parsed.sandbox, data, env, stderr)
+	deployments, err := prepareDeployments(sigCtx, parsed.sandbox, data, env, stderr)
 	if sigCtx.Err() != nil {
 		if doctor {
 			return errors.New("Doctor interrupted")
@@ -201,7 +201,11 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	if err != nil {
 		return err
 	}
-	app := engine.New(state, data, engine.WithSandbox(backend), engine.WithDeployment(deployment))
+	fleet, err := engine.NewFleet(state, data, engine.FleetOptions{Backend: backend, BaseDeployment: deployments.base, Deployments: deployments.pins, PrimaryRepository: deployments.primary})
+	if err != nil {
+		return err
+	}
+	app := fleet.Primary()
 	if doctor {
 		mode := model.CycleModeExecution
 		if parsed.audit {
@@ -231,15 +235,15 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 	}
 	webhook, _ := env(config.WebhookEnv)
-	server := newHTTPServer(httpapi.Router(app, token, assetsOverride, octomus.Version))
+	server := newHTTPServer(httpapi.Router(fleet, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
-		app:  app,
-		http: server,
+		fleet: fleet,
+		http:  server,
 		prepareWorker: func() error {
 			return notifications.Configure(state, webhook)
 		},
 		startWorker: func() (func(), error) {
-			worker, err := notifications.Start(app.Context(), state, webhook)
+			worker, err := notifications.Start(fleet.Context(), state, webhook)
 			if err != nil || worker == nil {
 				return nil, err
 			}

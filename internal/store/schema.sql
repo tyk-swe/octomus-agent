@@ -7,7 +7,8 @@ CREATE TABLE batch_members(run_id TEXT NOT NULL,task_id TEXT NOT NULL,status TEX
 
 CREATE TABLE events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-                entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL
+                entity_id TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL,
+                repository TEXT NOT NULL DEFAULT ''
             );
 
 CREATE TABLE notification_outbox (
@@ -39,7 +40,8 @@ CREATE TABLE records (
             );
 
 CREATE TABLE usage (
-                day TEXT PRIMARY KEY, sessions INTEGER NOT NULL
+                repository TEXT NOT NULL, day TEXT NOT NULL, sessions INTEGER NOT NULL,
+                PRIMARY KEY (repository, day)
             );
 
 CREATE INDEX batch_status ON batch_members(run_id,status);
@@ -83,12 +85,20 @@ CREATE TRIGGER cap_activity AFTER INSERT ON events BEGIN
                 ),10000);
             END;
 
+CREATE TRIGGER attribute_event_insert AFTER INSERT ON events WHEN NEW.repository='' BEGIN
+    UPDATE events SET repository=COALESCE(
+        (SELECT NULLIF(repository,'') FROM record_meta WHERE id=NEW.entity_id LIMIT 1),
+        (SELECT COALESCE(json_extract(data,'$.repository'),json_extract(data,'$.config.github_repo')) FROM records WHERE id=NEW.entity_id AND kind IN ('request','baseline') LIMIT 1),
+        (SELECT json_extract(data,'$.github_repo') FROM records WHERE kind='settings' AND id='config'),'')
+    WHERE id=NEW.id;
+END;
+
 CREATE TRIGGER count_record_insert AFTER INSERT ON record_meta BEGIN INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END;
 
 CREATE TRIGGER count_record_update AFTER UPDATE OF status,archived ON record_meta WHEN OLD.status IS NOT NEW.status OR OLD.archived IS NOT NEW.archived BEGIN UPDATE record_counts SET count=count-1 WHERE kind=OLD.kind AND status=OLD.status AND archived=(OLD.archived IS NOT NULL); INSERT INTO record_counts VALUES(NEW.kind,NEW.status,NEW.archived IS NOT NULL,1) ON CONFLICT(kind,status,archived) DO UPDATE SET count=count+1; END;
 
 CREATE TRIGGER notify_control_insert AFTER INSERT ON records
-        WHEN NEW.kind='settings' AND NEW.id='control'
+        WHEN NEW.kind='settings' AND (NEW.id='control' OR NEW.id LIKE 'control:%')
             AND (SELECT enabled FROM notification_policy WHERE id=1)=1
             AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1
             AND json_extract(NEW.data,'$.error') IS NOT NULL
@@ -96,7 +106,7 @@ CREATE TRIGGER notify_control_insert AFTER INSERT ON records
             INSERT INTO notification_outbox
                 (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)
                 SELECT lower(hex(randomblob(16))), destination_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                    COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),''),
+                    CASE WHEN NEW.id='control' THEN COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),'') ELSE substr(NEW.id,9) END,
                     json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,
                     'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')
                 FROM notification_policy WHERE id=1;
@@ -104,7 +114,7 @@ CREATE TRIGGER notify_control_insert AFTER INSERT ON records
         END;
 
 CREATE TRIGGER notify_control_update AFTER UPDATE ON records
-        WHEN NEW.kind='settings' AND NEW.id='control'
+        WHEN NEW.kind='settings' AND (NEW.id='control' OR NEW.id LIKE 'control:%')
             AND (SELECT enabled FROM notification_policy WHERE id=1)=1
             AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1
             AND json_extract(NEW.data,'$.error') IS NOT NULL
@@ -113,7 +123,7 @@ CREATE TRIGGER notify_control_update AFTER UPDATE ON records
             INSERT INTO notification_outbox
                 (event_id,destination_id,created_at,repository,cycle_id,run_id,task_id,category,action,status,attempts,next_attempt_at)
                 SELECT lower(hex(randomblob(16))), destination_id, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                    COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),''),
+                    CASE WHEN NEW.id='control' THEN COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),'') ELSE substr(NEW.id,9) END,
                     json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,
                     'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')
                 FROM notification_policy WHERE id=1;

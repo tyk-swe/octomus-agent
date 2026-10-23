@@ -8,6 +8,9 @@ func TestAPIRouteInventory(t *testing.T) {
 		pattern string
 	}{
 		{"GET", "/api/state"},
+		{"GET", "/api/repositories"},
+		{"POST", "/api/repositories"},
+		{"PUT", "/api/instance"},
 		{"GET", "/api/tasks"},
 		{"GET", "/api/cycles"},
 		{"GET", "/api/cycles/{id}"},

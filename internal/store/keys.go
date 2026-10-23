@@ -37,6 +37,37 @@ var (
 	latestBaselineKey = Setting[string]("baseline_latest")
 )
 
+// Root-only settings: the repository registry and the instance-wide policy.
+// They are never repository-scoped.
+var (
+	repositoriesKey = Setting[repositoryRegistry]("repositories")
+	instanceKey     = Setting[config.InstanceSettings]("instance")
+)
+
+// scopedSetting names a settings record for this handle's repository. The root
+// handle and the primary repository keep the legacy identity, so existing
+// single-repository state needs no record rewrite; added repositories get
+// "<id>:<owner/name>".
+func (s *Store) scopedSetting(id string) string {
+	if s.repo == "" || config.EqualASCII(s.repo, s.primary) {
+		return id
+	}
+	return id + ":" + s.repo
+}
+
+func (s *Store) ConfigKey() Key[config.Config] {
+	return Setting[config.Config](s.scopedSetting("config"))
+}
+func (s *Store) ControlKey() Key[model.Control] {
+	return Setting[model.Control](s.scopedSetting("control"))
+}
+func (s *Store) prInventoryKey() Key[model.OpenPRInventory] {
+	return Setting[model.OpenPRInventory](s.scopedSetting("pr_inventory"))
+}
+func (s *Store) latestBaselineKey() Key[string] {
+	return Setting[string](s.scopedSetting("baseline_latest"))
+}
+
 var (
 	cancelMarkers         = Kind[*string]{"cancel"}
 	baselineCancelMarkers = Kind[*string]{"baseline_cancel"}

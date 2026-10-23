@@ -451,6 +451,9 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 		return nil, err
 	}
 	c = a.deployment.pin(c)
+	if repo := a.Repository(); repo != "" && !config.EqualASCII(c.GitHubRepo, repo) {
+		return nil, fmt.Errorf("GitHub repository must remain %s; register another repository to configure it separately", repo)
+	}
 	if err := c.Validate(false); err != nil {
 		return nil, err
 	}
@@ -466,7 +469,7 @@ func (a *App) SaveConfig(expectedRevision string, patch map[string]json.RawMessa
 			return nil, codedConflict(UnresolvedWorkConflict, "Resolve or cancel existing tasks before changing repository identity, branch policy or the delivery mode.")
 		}
 	}
-	if err := store.Put(a.store, store.ConfigKey, c); err != nil {
+	if err := store.Put(a.store, a.store.ConfigKey(), c); err != nil {
 		return nil, err
 	}
 	a.invalidatePRs()

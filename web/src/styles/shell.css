@@ -72,6 +72,16 @@
   display: block;
   margin-top: 2px;
 }
+.repository-select {
+  margin-top: 7px;
+  width: 100%;
+  background: var(--nav-card);
+  color: var(--nav-fg-strong);
+  border: 1px solid var(--nav-border);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 3px 4px;
+}
 nav {
   display: flex;
   flex-direction: column;

@@ -2,7 +2,7 @@ package store
 
 const mergeCandidatesQuery = `SELECT m.seq,r.data
     FROM ` + fromMeta + `
-    WHERE m.kind='pr' AND m.seq>?1 AND (
+    WHERE m.kind='pr' AND m.seq>?1 AND (?3='' OR m.repository=?3 COLLATE NOCASE) AND (
         json_extract(r.data,'$.auto_merge.status') IN ('waiting','merging','uncertain')
         OR (json_extract(r.data,'$.auto_merge.status')='manual'
             AND json_extract(r.data,'$.auto_merge.authorized')=1)

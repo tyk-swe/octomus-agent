@@ -6,8 +6,8 @@ import (
 )
 
 func TestHealthAllowsOnlyGetAndHead(t *testing.T) {
-	app, _ := testApp(t)
-	router := Router(app, token, "", "fixture-version")
+	fleet, _, _ := testFleet(t, nil)
+	router := Router(fleet, token, "", "fixture-version")
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodConnect, http.MethodPost,
 		http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions, http.MethodTrace} {
 		t.Run(method, func(t *testing.T) {

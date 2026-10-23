@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -22,13 +21,14 @@ var ErrMergeDestination = errors.New("Automatic merge destination is not enforce
 // merger must therefore be denied updates to every other branch by an active
 // server-side ruleset. See docs/maintenance-merging.md for the trust assumptions.
 func mergeDestinationToken(ctx context.Context, c config.Config) (string, error) {
-	token := os.Getenv(config.MergeTokenEnv)
+	token, tokenVar := config.MergeTokenFor(c.GitHubRepo)
 	if strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n\x00") {
-		return "", fmt.Errorf("%w: configure %s or its secret file", ErrMergeDestination, config.MergeTokenEnv)
+		return "", fmt.Errorf("%w: configure %s or its secret file", ErrMergeDestination, tokenVar)
 	}
-	rulesetID, err := strconv.ParseUint(os.Getenv(config.MergeRulesetEnv), 10, 64)
+	rulesetText, rulesetVar := config.MergeRulesetFor(c.GitHubRepo)
+	rulesetID, err := strconv.ParseUint(rulesetText, 10, 64)
 	if err != nil || rulesetID == 0 {
-		return "", fmt.Errorf("%w: configure a positive %s", ErrMergeDestination, config.MergeRulesetEnv)
+		return "", fmt.Errorf("%w: configure a positive %s", ErrMergeDestination, rulesetVar)
 	}
 	identity, err := mergeGH(ctx, c, token, []string{"api", "--hostname", "github.com", "user"})
 	if err != nil {

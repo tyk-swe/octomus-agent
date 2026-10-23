@@ -1,0 +1,265 @@
+package engine
+
+// The fleet: two registered repositories dispatch their own queued work
+// independently in one Run, and neither App supervises the other's tasks.
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/model"
+	"github.com/tyk-swe/octomus-agent/internal/store"
+)
+
+func TestFleetDispatchesRepositoriesIndependently(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	repos := []string{"fixture/one", "fixture/two"}
+	tasks := map[string]model.Task{}
+	for i, repo := range repos {
+		cfg := testConfig(t.TempDir())
+		cfg.GitHubRepo = repo
+		// Registration precedes settings, as in the operator flow, so the
+		// primary repository's legacy settings identities are settled first
+		dataDirEntry := "repos/" + store.RepositorySlug(repo)
+		if i == 0 {
+			dataDirEntry = "."
+		}
+		if err := state.RegisterRepository(store.RepositoryEntry{GitHubRepo: repo, DataDir: dataDirEntry}); err != nil {
+			t.Fatal(err)
+		}
+		scoped := state.ForRepository(repo)
+		if err := store.Put(scoped, scoped.ConfigKey(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := scoped.SaveControl(model.DefaultControl()); err != nil {
+			t.Fatal(err)
+		}
+		task := queuedTask(cfg, "task-"+repo, "tyk/work-"+repo, "tyk/work-"+repo)
+		if err := store.Put(state, store.Tasks.Key(task.ID), task); err != nil {
+			t.Fatal(err)
+		}
+		tasks[repo] = task
+	}
+
+	fleet, err := NewFleet(state, dataDir, FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	if got := len(fleet.Apps()); got != 2 {
+		t.Fatalf("fleet serves %d repositories", got)
+	}
+	var mu sync.Mutex
+	supervised := map[string][]string{}
+	for _, repo := range repos {
+		app := fleet.For(repo)
+		if app == nil {
+			t.Fatalf("no app for %s", repo)
+		}
+		deferHousekeeping(app)
+		app.supervise = func(_ context.Context, task model.Task) error {
+			mu.Lock()
+			supervised[repo] = append(supervised[repo], task.ID)
+			mu.Unlock()
+			task.Status = model.StatusPublished
+			return store.Put(state, store.Tasks.Key(task.ID), task)
+		}
+		if err := control(app, model.ControlCycle); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- fleet.Run(ctx) }()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		published := 0
+		for _, task := range tasks {
+			saved, err := store.Get(state, store.Tasks.Key(task.ID))
+			if err == nil && saved != nil && saved.Status == model.StatusPublished {
+				published++
+			}
+		}
+		if published == len(tasks) {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("fleet published %d of %d repositories' tasks", published, len(tasks))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, repo := range repos {
+		got := supervised[repo]
+		if len(got) != 1 || got[0] != tasks[repo].ID {
+			t.Fatalf("%s supervised %v, want only its own task %s", repo, got, tasks[repo].ID)
+		}
+	}
+}
+
+func TestPrimaryMeasurementExcludesNestedRepositories(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	for i, repo := range []string{"fixture/one", "fixture/two"} {
+		entry := "repos/" + store.RepositorySlug(repo)
+		if i == 0 {
+			entry = "."
+		}
+		if err := state.RegisterRepository(store.RepositoryEntry{GitHubRepo: repo, DataDir: entry}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fleet, err := NewFleet(state, dataDir, FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	own := filepath.Join(dataDir, "tasks", "0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab")
+	nested := filepath.Join(dataDir, "repos", store.RepositorySlug("fixture/two"), "tasks", "0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab")
+	for dir, size := range map[string]int{own: 100, nested: 900} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "blob"), make([]byte, size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	measured, err := fleet.Primary().measure(context.Background(), filepath.Join("tasks", "0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measured != 100 {
+		t.Fatalf("primary measured %d bytes, want only its own 100 (nested repository excluded)", measured)
+	}
+	other, err := fleet.For("fixture/two").measure(context.Background(), filepath.Join("tasks", "0b8f1c1e-2a3b-4c5d-8e9f-0123456789ab"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other != 900 {
+		t.Fatalf("nested repository measured %d bytes, want its own 900", other)
+	}
+}
+
+func TestFleetRefusesRemovedDeploymentPin(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	for _, repo := range []string{"acme/one", "acme/two"} {
+		if err := state.RegisterRepository(store.RepositoryEntry{GitHubRepo: repo, DataDir: store.RepositorySlug(repo)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fleet, err := NewFleet(state, t.TempDir(), FleetOptions{Deployments: map[string]Deployment{
+		"acme/one": {GitHubRepo: "acme/one", Repository: t.TempDir()},
+	}})
+	if fleet != nil {
+		fleet.Shutdown()
+		t.Fatal("served a repository whose deployment pin was removed")
+	}
+	if err == nil || !strings.Contains(err.Error(), "acme/two") {
+		t.Fatalf("removed pin error = %v", err)
+	}
+}
+
+func TestFleetPreservesExplicitPrimary(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	fleet, err := NewFleet(state, dataDir, FleetOptions{
+		PrimaryRepository: "acme/Z",
+		Deployments: map[string]Deployment{
+			"acme/a": {GitHubRepo: "acme/a", Repository: t.TempDir()},
+			"acme/z": {GitHubRepo: "acme/z", Repository: t.TempDir()},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	primary := fleet.Primary()
+	if primary.Repository() != "acme/z" || primary.dataDir != dataDir || primary.store.ConfigKey() != store.ConfigKey || primary.store.ControlKey() != store.ControlKey {
+		t.Fatalf("explicit primary lost its legacy identities: %+v", fleet.Entries())
+	}
+}
+
+func TestFleetDrainsWorkersBeforePublishingRecoveredApps(t *testing.T) {
+	t.Parallel()
+	state := testStore(t)
+	dataDir := t.TempDir()
+	fleet, err := NewFleet(state, dataDir, FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	retired := fleet.Primary()
+	cfg := testConfig(t.TempDir())
+	if err := store.Put(state, store.ConfigKey, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task := queuedTask(cfg, model.ID(), "feature", "tyk/work")
+	task.Status = model.StatusExecuting
+	task.ExecutionSession = new("session")
+	task.Workspace = filepath.Join(dataDir, "tasks", task.ID, "work")
+	if err := os.MkdirAll(filepath.Join(task.Workspace, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(state, store.Tasks.Key(task.ID), task); err != nil {
+		t.Fatal(err)
+	}
+	// A cancelled worker still owns the task until it has finished draining.
+	release := make(chan struct{})
+	defer close(release)
+	retired.wg.Add(1)
+	go func() { defer retired.wg.Done(); <-release }()
+	registered := make(chan error, 1)
+	go func() {
+		_, err := fleet.AddRepository(store.RepositoryEntry{GitHubRepo: "fixture/second", DataDir: "repos/second"})
+		registered <- err
+	}()
+	select {
+	case <-retired.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("registration never started draining the old App")
+	}
+	visible := make(chan []*App, 1)
+	go func() { visible <- fleet.Apps() }()
+	select {
+	case apps := <-visible:
+		for _, app := range apps {
+			if app != retired {
+				t.Fatal("replacement became schedulable before the old worker joined")
+			}
+		}
+	case <-time.After(50 * time.Millisecond):
+		// Readers can also wait behind the registration barrier.
+	}
+	if got := loadTask(t, state, task.ID); got.Status != model.StatusExecuting {
+		t.Fatalf("task recovered before its worker joined: %s", got.Status)
+	}
+	release <- struct{}{}
+	select {
+	case err := <-registered:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("registration did not finish after the worker joined")
+	}
+	if got := loadTask(t, state, task.ID); got.Status != model.StatusQueued {
+		t.Fatalf("replacement did not recover the interrupted task: %s", got.Status)
+	}
+}

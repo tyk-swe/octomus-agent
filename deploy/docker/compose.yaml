@@ -39,11 +39,15 @@ services:
       OCTOMUS_TOKEN_FILE: /run/secrets/operator_token
       OCTOMUS_GITHUB_TOKEN_FILE: /run/secrets/github_token
       OCTOMUS_GITHUB_REPO: ${OCTOMUS_GITHUB_REPO:?Set OCTOMUS_GITHUB_REPO in .env}
+      OCTOMUS_GITHUB_REPOS: ${OCTOMUS_GITHUB_REPOS:-}
+      OCTOMUS_GITHUB_TOKENS_DIR: /run/secrets/github_tokens
       OCTOMUS_SANDBOXD_SOCKET: /run/octomus/sandboxd.sock
     secrets: [operator_token, github_token]
     volumes:
       - data:/var/lib/octomus/data
       - broker:/run/octomus
+      # Per-repository GitHub tokens for OCTOMUS_GITHUB_REPOS, one file per repository.
+      - ./secrets/github_tokens:/run/secrets/github_tokens:ro
     ports:
       - "127.0.0.1:${OCTOMUS_PORT:-4200}:4200"
     networks: [control]

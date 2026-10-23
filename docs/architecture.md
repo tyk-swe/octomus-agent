@@ -8,7 +8,7 @@ SvelteKit static dashboard
           ▼
 Go control plane (net/http)
  ├─ SQLite state, event log, daily admission counter and ledger
- ├─ one scheduler, configured task concurrency, branch writer locks
+ ├─ one scheduler fleet: a per-repository engine each, ticked in rotating order
  ├─ Git + GitHub CLI publication coordination on trusted git metadata
  └─ sandbox backend ── unix socket ──▶ sandbox broker ── Docker Engine API
                                           │
@@ -19,7 +19,7 @@ Go control plane (net/http)
                   internal networks ──▶ egress gateway (allowlisted HTTPS only)
 ```
 
-The dashboard polls authoritative service state and never schedules work itself. The binary embeds the dashboard (`--assets` overrides it from disk) and needs no external database or message broker. The default Docker deployment runs the control plane, [sandbox](sandbox.md) broker and egress gateway from one image; `--sandbox off` runs runners and verification commands as host processes.
+One instance serves every registered repository for its single operator: each repository has its own saved configuration, control, budget counters, trusted checkout and workspace root in the shared state database and data directory, and the scheduler rotates its passes across repositories so none systematically precedes another. The instance-wide daily session ceiling (when set) is enforced with each repository's own cap inside the same admission transaction. The primary repository keeps the original unsuffixed settings records and data-directory root, so pre-multi-repository state upgrades in place (schema v11 attributes existing usage counters to it). The dashboard polls authoritative service state for the selected repository and never schedules work itself. The binary embeds the dashboard (`--assets` overrides it from disk) and needs no external database or message broker. The default Docker deployment runs the control plane, [sandbox](sandbox.md) broker and egress gateway from one image; `--sandbox off` runs runners and verification commands as host processes.
 
 ## Planning
 

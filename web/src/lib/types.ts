@@ -627,6 +627,14 @@ export type RepairProgress = {
   no_progress_rounds: number;
   awaiting_review: boolean;
 };
+export type RepositoriesView = {
+  repositories: RepositorySummary[];
+  instance_max_sessions_per_day: number;
+};
+export type RepositorySummary = {
+  github_repo: string;
+  primary: boolean;
+};
 export type RequestAction = 'withdraw';
 export type RequestAssessment = {
   cycle_id: string;

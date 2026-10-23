@@ -86,7 +86,7 @@ func (s *Store) CompletePublication(expected, task model.Task, p model.PullReque
 		if err := txPut(c, PRs.Key(recordID), observation); err != nil {
 			return err
 		}
-		return txEvent(c, task.ID, model.EventStatus, "Published")
+		return txRepositoryEvent(c, s.repo, task.ID, model.EventStatus, "Published")
 	})
 	if err != nil {
 		return model.Task{}, err
@@ -165,7 +165,7 @@ type MergeCandidate struct {
 func (s *Store) MergeCandidates(afterSeq, limit int64) ([]MergeCandidate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.conn.QueryContext(background, mergeCandidatesQuery, afterSeq, limit)
+	rows, err := s.conn.QueryContext(background, mergeCandidatesQuery, afterSeq, limit, s.repo)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +265,7 @@ func (s *Store) ClaimMerge(repository string, number uint64, intent model.AutoMe
 		if err := txPut(c, PRs.Key(id), *observation); err != nil {
 			return err
 		}
-		return txEvent(c, intent.TaskID, model.EventAutomerge,
+		return txRepositoryEvent(c, s.repo, intent.TaskID, model.EventAutomerge,
 			fmt.Sprintf("Automatic squash merge attempt %s recorded for %s", *intent.AttemptID, intent.Head))
 	})
 }

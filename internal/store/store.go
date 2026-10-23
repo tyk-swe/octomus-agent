@@ -24,6 +24,9 @@ type Admission struct {
 	TaskID  *string      `json:"task_id"`
 	Role    string       `json:"role"`
 	Route   config.Route `json:"route"`
+	// Repository is stamped by ReserveSession from the reserving handle's
+	// scope; admissions saved before multi-repository state omit it.
+	Repository string `json:"repository,omitempty" wire:"default"`
 }
 
 func NewAdmission(cycleID string, taskID *string, role string, route config.Route) Admission {
@@ -45,11 +48,35 @@ var background = context.Background()
 const fromMeta = "record_meta m JOIN records r ON r.kind=m.kind AND r.id=m.id"
 
 type Store struct {
-	mu       sync.Mutex
+	mu       *sync.Mutex
 	db       *sql.DB
 	conn     *sql.Conn
 	path     string
 	upgraded *Upgrade
+	// repo scopes settings, budgets and list queries to one GitHub repository
+	// ("owner/name"). Empty is the unscoped root handle: the registry, instance
+	// settings and read-only exports live there, and legacy single-repository
+	// state keeps its original record identities through it.
+	repo string
+	// primary is the first registered repository (or the legacy saved
+	// configuration's), resolved at Open. Its settings keep the original
+	// unsuffixed record identities; added repositories are suffixed.
+	primary string
+}
+
+// Repository returns this handle's repository scope, or "" for the root handle.
+func (s *Store) Repository() string { return s.repo }
+
+// ForRepository returns a handle over the same database scoped to one repository.
+// Handles share the connection and mutex, so admission transactions stay atomic
+// across repositories. Scoping the root handle to "" returns the root handle.
+func (s *Store) ForRepository(repo string) *Store {
+	if repo == s.repo {
+		return s
+	}
+	scoped := *s
+	scoped.repo = repo
+	return &scoped
 }
 
 // Upgraded reports the upgrade Open applied, or nil when it applied none.
@@ -79,12 +106,26 @@ func open(path string, plan schemaPlan) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, conn: conn, path: path}
+	s := &Store{mu: &sync.Mutex{}, db: db, conn: conn, path: path}
 	if err := s.initialize(plan); err != nil {
 		s.Close()
 		return nil, err
 	}
+	s.loadPrimary()
 	return s, nil
+}
+
+// loadPrimary resolves the repository whose settings keep their legacy
+// identities. Best-effort: an unreadable registry surfaces properly through
+// Repositories, and scoped settings simply stay suffixed until then.
+func (s *Store) loadPrimary() {
+	if registry, err := recordAt(s.conn, repositoriesKey); err == nil && registry != nil && len(registry.Repositories) > 0 {
+		s.primary = registry.Repositories[0].GitHubRepo
+		return
+	}
+	if cfg, err := recordAt(s.conn, ConfigKey); err == nil && cfg != nil {
+		s.primary = cfg.GitHubRepo
+	}
 }
 
 func (s *Store) initialize(plan schemaPlan) error {
@@ -110,6 +151,10 @@ func (s *Store) configureJournal() error {
 }
 
 func (s *Store) Close() error {
+	// Scoped handles share the root's connection; only the root closes it.
+	if s.repo != "" {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var first error
@@ -206,7 +251,7 @@ func runTx(c *sql.Conn, begin string, fn func(c *sql.Conn) error) error {
 }
 
 func (s *Store) SaveControl(control model.Control) error {
-	return Put(s, ControlKey, control)
+	return Put(s, s.ControlKey(), control)
 }
 
 func (s *Store) ClearCancel(id string) error { return Put(s, cancelMarkers.Key(id), nil) }
@@ -256,7 +301,7 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 			}
 		}
 		var control model.Control
-		hasControl, err := txGet(c, ControlKey, &control)
+		hasControl, err := txGet(c, s.ControlKey(), &control)
 		if err != nil {
 			return err
 		}
@@ -320,7 +365,7 @@ func (s *Store) CommitPlan(ctx context.Context, cycle model.Cycle, tasks []model
 			}
 		}
 		if controlChanged {
-			return txPut(c, ControlKey, control)
+			return txPut(c, s.ControlKey(), control)
 		}
 		return nil
 	})
@@ -349,9 +394,16 @@ func (s *Store) AppendCycleSession(cycleID string, session model.Session) error 
 func (s *Store) Event(entity string, kind model.EventKind, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return txEvent(s.conn, entity, kind, message)
+	return txRepositoryEvent(s.conn, s.repo, entity, kind, message)
 }
 
+func txRepositoryEvent(c *sql.Conn, repository, entity string, kind model.EventKind, message string) error {
+	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message,repository) VALUES (?1,?2,?3,?4,?5)", model.Now(), entity, kind.String(), redact.Text(message), repository)
+	return err
+}
+
+// txEvent also serves the migration runner on schemas predating event scopes.
+// The current schema's insert trigger attributes these unscoped system events.
 func txEvent(c *sql.Conn, entity string, kind model.EventKind, message string) error {
 	_, err := c.ExecContext(background, "INSERT INTO events(at,entity_id,kind,message) VALUES (?1,?2,?3,?4)", model.Now(), entity, kind.String(), redact.Text(message))
 	return err
@@ -360,7 +412,17 @@ func txEvent(c *sql.Conn, entity string, kind model.EventKind, message string) e
 func (s *Store) Events(entity *string) ([]model.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return queryEvents(s.conn, "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1) ORDER BY id DESC LIMIT 200", entity)
+	return repositoryEvents(s.conn, s.repo, entity)
+}
+
+func repositoryEvents(c *sql.Conn, repo string, entity *string) ([]model.Event, error) {
+	query := "SELECT id,at,entity_id,kind,message FROM events WHERE (?1 IS NULL OR entity_id=?1)"
+	args := []any{entity}
+	if repo != "" {
+		query += " AND repository=?2 COLLATE NOCASE"
+		args = append(args, repo)
+	}
+	return queryEvents(c, query+" ORDER BY id DESC LIMIT 200", args...)
 }
 
 func queryEvents(c *sql.Conn, query string, args ...any) ([]model.Event, error) {
@@ -400,7 +462,7 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transaction(true, func(c *sql.Conn) error {
-		cfg, err := storedConfig(c)
+		cfg, err := storedConfig(c, s.ConfigKey())
 		if err != nil {
 			return err
 		}
@@ -411,11 +473,24 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 		if measuredBytes >= cfg.MaxWorkspaceBytes {
 			return StorageLimitError(measuredBytes)
 		}
+		instance, err := storedInstanceSettings(c)
+		if err != nil {
+			return err
+		}
+		if instance.MaxSessionsPerDay > 0 {
+			total, err := instanceSessionsOn(c, day)
+			if err != nil {
+				return err
+			}
+			if total < 0 || uint64(total) >= instance.MaxSessionsPerDay {
+				return fmt.Errorf("Instance-wide daily session ceiling exhausted; increase the configured ceiling or wait until UTC midnight: %w", model.BlockedBudgetExhausted)
+			}
+		}
 		if limit > uint64(1<<63-1) {
 			limit = 1<<63 - 1
 		}
-		result, err := c.ExecContext(background, `INSERT INTO usage(day,sessions) VALUES (?1,1)
-             ON CONFLICT(day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?2`, day, int64(limit))
+		result, err := c.ExecContext(background, `INSERT INTO usage(repository,day,sessions) VALUES (?1,?2,1)
+             ON CONFLICT(repository,day) DO UPDATE SET sessions=sessions+1 WHERE sessions < ?3`, s.usageRepo(cfg), day, int64(limit))
 		if err != nil {
 			return err
 		}
@@ -423,6 +498,13 @@ func (s *Store) ReserveSession(measuredBytes uint64, admission Admission) error 
 			return err
 		} else if changed != 1 {
 			return fmt.Errorf("Daily session budget exhausted; increase the configured limit or wait until UTC midnight: %w", model.BlockedBudgetExhausted)
+		}
+		if admission.Repository == "" {
+			if s.repo != "" {
+				admission.Repository = s.repo
+			} else {
+				admission.Repository = cfg.GitHubRepo
+			}
 		}
 		data, err := wirejson.Marshal(admission)
 		if err != nil {
@@ -439,29 +521,52 @@ type DaySessions struct {
 	Sessions uint64
 }
 
-func sessionsOn(c *sql.Conn, day string) (int64, error) {
+// usageRepo is the lowercase usage-counter identity for this handle: its own
+// scope, or for the root handle the saved configuration's repository.
+func (s *Store) usageRepo(cfg config.Config) string {
+	if s.repo != "" {
+		return strings.ToLower(s.repo)
+	}
+	return strings.ToLower(cfg.GitHubRepo)
+}
+
+// sessionsOn reads one repository's day counter; an empty repository reads the
+// instance total across every repository.
+func sessionsOn(c *sql.Conn, repository, day string) (int64, error) {
+	if repository == "" {
+		return instanceSessionsOn(c, day)
+	}
 	var sessions int64
-	err := c.QueryRowContext(background, "SELECT sessions FROM usage WHERE day=?1", day).Scan(&sessions)
+	err := c.QueryRowContext(background, "SELECT sessions FROM usage WHERE repository=?1 AND day=?2", strings.ToLower(repository), day).Scan(&sessions)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
 	return sessions, err
 }
 
+func instanceSessionsOn(c *sql.Conn, day string) (int64, error) {
+	var sessions sql.NullInt64
+	if err := c.QueryRowContext(background, "SELECT SUM(sessions) FROM usage WHERE day=?1", day).Scan(&sessions); err != nil {
+		return 0, err
+	}
+	return sessions.Int64, nil
+}
+
 func (s *Store) PlanningCapacity(at time.Time) (model.PlanningCapacity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return planningCapacityAt(s.conn, at)
+	return s.planningCapacityAt(s.conn, at)
 }
 
-func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, error) {
+func (s *Store) planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, error) {
 	at = at.UTC()
 	day := model.UTCDay(at)
-	cfg, err := storedConfig(c)
+	cfg, err := storedConfig(c, s.ConfigKey())
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}
-	used, err := sessionsOn(c, day)
+	repo := s.usageRepo(cfg)
+	used, err := sessionsOn(c, repo, day)
 	if err != nil {
 		return model.PlanningCapacity{}, err
 	}
@@ -473,6 +578,24 @@ func planningCapacityAt(c *sql.Conn, at time.Time) (model.PlanningCapacity, erro
 	remaining := uint64(0)
 	if limit > uint64(used) {
 		remaining = limit - uint64(used)
+	}
+	// The instance ceiling bounds every repository's remaining room.
+	instance, err := storedInstanceSettings(c)
+	if err != nil {
+		return model.PlanningCapacity{}, err
+	}
+	if instance.MaxSessionsPerDay > 0 {
+		total, err := instanceSessionsOn(c, day)
+		if err != nil {
+			return model.PlanningCapacity{}, err
+		}
+		instanceRemaining := uint64(0)
+		if total >= 0 && instance.MaxSessionsPerDay > uint64(total) {
+			instanceRemaining = instance.MaxSessionsPerDay - uint64(total)
+		}
+		if instanceRemaining < remaining {
+			remaining = instanceRemaining
+		}
 	}
 	nextReset := time.Date(at.Year(), at.Month(), at.Day()+1, 0, 0, 0, 0, time.UTC).Unix()
 	status := model.CapacityReady
@@ -510,9 +633,9 @@ func (s *Store) CancelTask(id string) (bool, error) {
 	return changed && err == nil, err
 }
 
-func storedConfig(c *sql.Conn) (config.Config, error) {
+func storedConfig(c *sql.Conn, key Key[config.Config]) (config.Config, error) {
 	cfg := config.Default()
-	if _, err := txGet(c, ConfigKey, &cfg); err != nil {
+	if _, err := txGet(c, key, &cfg); err != nil {
 		return config.Config{}, err
 	}
 	return cfg, nil

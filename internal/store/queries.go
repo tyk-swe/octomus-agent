@@ -24,17 +24,17 @@ func statusList(statuses []model.Status) string {
 const PageLimit = 500
 
 func (s *Store) SchedulingTasks(runID *string) ([]model.Task, error) {
-	return listRecords[model.Task](s, schedulingTasksSQL(), runID, PageLimit)
+	return listRecords[model.Task](s, schedulingTasksSQL(), runID, PageLimit, s.repo)
 }
 
 func schedulingTasksSQL() string {
 	return fmt.Sprintf(`WITH candidates AS (
-                SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL
+                SELECT id,seq FROM record_meta WHERE kind='task' AND archived IS NULL AND (?3='' OR repository=?3 COLLATE NOCASE)
                     AND status IN (%s)
                 UNION ALL
                 SELECT id,seq FROM (
                     SELECT m.id,m.seq FROM `+fromMeta+`
-                        WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
+                        WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued' AND (?3='' OR m.repository=?3 COLLATE NOCASE)
                             AND (?1 IS NULL OR m.run_id=?1)
                             AND (json_extract(r.data,'$.proposal.target') != json_extract(r.data,'$.config.default_branch')
                                 OR EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id))
@@ -43,7 +43,7 @@ func schedulingTasksSQL() string {
                 UNION ALL
                 SELECT id,seq FROM (
                     SELECT m.id,m.seq FROM `+fromMeta+`
-                        WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued'
+                        WHERE m.kind='task' AND m.archived IS NULL AND m.status='queued' AND (?3='' OR m.repository=?3 COLLATE NOCASE)
                             AND (?1 IS NULL OR m.run_id=?1)
                             AND json_extract(r.data,'$.proposal.target') = json_extract(r.data,'$.config.default_branch')
                             AND NOT EXISTS(SELECT 1 FROM pr_reservations p WHERE p.task_id=m.id)
@@ -56,7 +56,7 @@ func schedulingTasksSQL() string {
 
 // ActiveTasks returns the unarchived tasks whose status is still active, oldest first.
 func (s *Store) ActiveTasks() ([]model.Task, error) {
-	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN ("+statusList(model.ActiveStatuses())+") AND m.archived IS NULL ORDER BY m.seq ASC LIMIT ?1", PageLimit)
+	return listRecords[model.Task](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='task' AND m.status IN ("+statusList(model.ActiveStatuses())+") AND m.archived IS NULL AND (?2='' OR m.repository=?2 COLLATE NOCASE) ORDER BY m.seq ASC LIMIT ?1", PageLimit, s.repo)
 }
 
 // CancelledWithLiveSessions returns unfinished cancellation evidence
@@ -68,10 +68,10 @@ func (s *Store) CancelledWithLiveSessions(excludedIDs []string) ([]model.Task, e
 		return nil, err
 	}
 	return listRecords[model.Task](s, `SELECT r.data FROM `+fromMeta+`
-        WHERE m.kind='task' AND m.status='cancelled'
+        WHERE m.kind='task' AND m.status='cancelled' AND (?3='' OR m.repository=?3 COLLATE NOCASE)
             AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id)
             AND EXISTS (SELECT 1 FROM json_each(r.data,'$.sessions') WHERE json_extract(value,'$.status')='running')
-        ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit)
+        ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit, s.repo)
 }
 
 // ActiveTasksExcept excludes live workers and cleanup claims before decoding
@@ -83,27 +83,27 @@ func (s *Store) ActiveTasksExcept(excludedIDs []string) ([]model.Task, error) {
 		return nil, err
 	}
 	return listRecords[model.Task](s, `SELECT r.data FROM `+fromMeta+`
-        WHERE m.kind='task' AND m.status IN (`+statusList(model.ActiveStatuses())+`) AND m.archived IS NULL AND m.discarded IS NULL
+        WHERE m.kind='task' AND m.status IN (`+statusList(model.ActiveStatuses())+`) AND m.archived IS NULL AND m.discarded IS NULL AND (?3='' OR m.repository=?3 COLLATE NOCASE)
             AND NOT EXISTS (SELECT 1 FROM json_each(?1) WHERE value=m.id)
-        ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit)
+        ORDER BY m.seq ASC LIMIT ?2`, string(ids), PageLimit, s.repo)
 }
 
 // RunningCycles returns the running cycles other than except, the live worker's own, so its evidence is excluded before
 // reading and decoding.
 func (s *Store) RunningCycles(except string) ([]model.Cycle, error) {
-	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1", except)
+	return listRecords[model.Cycle](s, "SELECT r.data FROM "+fromMeta+" WHERE m.kind='cycle' AND m.status='running' AND m.id!=?1 AND (?2='' OR m.repository=?2 COLLATE NOCASE)", except, s.repo)
 }
 
 func (s *Store) RunningBaselines() ([]model.BaselineCheck, error) {
-	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running'")
+	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')='running' AND (?1='' OR json_extract(data,'$.config.github_repo')=?1 COLLATE NOCASE)", s.repo)
 }
 
 func (s *Store) StaleBaselines(after string) ([]model.BaselineCheck, error) {
-	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 ORDER BY rowid<=COALESCE((SELECT rowid FROM records WHERE kind='baseline' AND id=?1),0),rowid LIMIT 100", after)
+	return listRecords[model.BaselineCheck](s, "SELECT data FROM records WHERE kind='baseline' AND json_extract(data,'$.status')!='running' AND json_extract(data,'$.workspace_removed')=0 AND (?2='' OR json_extract(data,'$.config.github_repo')=?2 COLLATE NOCASE) ORDER BY rowid<=COALESCE((SELECT rowid FROM records WHERE kind='baseline' AND id=?1),0),rowid LIMIT 100", after, s.repo)
 }
 
 func (s *Store) LatestBaseline() (*model.BaselineCheck, error) {
-	id, err := Get(s, latestBaselineKey)
+	id, err := Get(s, s.latestBaselineKey())
 	if err != nil || id == nil {
 		return nil, err
 	}
@@ -193,29 +193,35 @@ func (s *Store) HasUnresolvedTasks() (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var exists bool
-	err := s.conn.QueryRowContext(background, fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM record_counts WHERE kind='task' AND status NOT IN (%s) AND archived=0 AND count>0)", statusList(model.TerminalStatuses()))).Scan(&exists)
+	query := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM record_counts WHERE kind='task' AND status NOT IN (%s) AND archived=0 AND count>0)", statusList(model.TerminalStatuses()))
+	var args []any
+	if s.repo != "" {
+		query = fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM record_meta WHERE kind='task' AND repository=?1 COLLATE NOCASE AND status NOT IN (%s) AND archived IS NULL)", statusList(model.TerminalStatuses()))
+		args = []any{s.repo}
+	}
+	err := s.conn.QueryRowContext(background, query, args...).Scan(&exists)
 	return exists, err
 }
 
-func txStartBatch(c *sql.Conn, control model.Control) (model.Control, error) {
+func txStartBatch(c *sql.Conn, key Key[model.Control], repository string, control model.Control) (model.Control, error) {
 	id := model.ID()
 	next := control.Clone()
 	next.SetMode(model.OperatingModeRunOnce)
 	next.Batch = &model.RunBatch{ID: id, Phase: model.BatchPhaseDraining, CycleID: nil}
 	next.Error = nil
 	next.NextCycleAt = 0
-	if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL)", id); err != nil {
+	if _, err := c.ExecContext(background, "UPDATE records SET data=json_set(data,'$.run_id',?1) WHERE kind='task' AND id IN (SELECT id FROM record_meta WHERE kind='task' AND status='queued' AND archived IS NULL AND (?2='' OR repository=?2 COLLATE NOCASE))", id, repository); err != nil {
 		return model.Control{}, err
 	}
-	if err := txPut(c, ControlKey, next); err != nil {
+	if err := txPut(c, key, next); err != nil {
 		return model.Control{}, err
 	}
 	return next, nil
 }
 
-func liveControl(c *sql.Conn) (model.Control, error) {
+func liveControl(c *sql.Conn, key Key[model.Control]) (model.Control, error) {
 	var live model.Control
-	found, err := txGet(c, ControlKey, &live)
+	found, err := txGet(c, key, &live)
 	if err == nil && !found {
 		live = model.DefaultControl()
 	}
@@ -228,18 +234,18 @@ func (s *Store) StartBatch(control *model.Control, at time.Time) (model.Planning
 	var capacity model.PlanningCapacity
 	var next model.Control
 	started, err := s.conditional(func(c *sql.Conn) error {
-		live, err := liveControl(c)
+		live, err := liveControl(c, s.ControlKey())
 		if err != nil {
 			return err
 		}
-		capacity, err = planningCapacityAt(c, at)
+		capacity, err = s.planningCapacityAt(c, at)
 		if err != nil {
 			return err
 		}
 		if !wirejson.Equal(live, *control) || !capacity.Available() {
 			return errRollback
 		}
-		next, err = txStartBatch(c, *control)
+		next, err = txStartBatch(c, s.ControlKey(), s.repo, *control)
 		return err
 	})
 	if started {
@@ -253,7 +259,7 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 	defer s.mu.Unlock()
 	var capacity model.PlanningCapacity
 	started, err := s.conditional(func(c *sql.Conn) error {
-		cfg, err := storedConfig(c)
+		cfg, err := storedConfig(c, s.ConfigKey())
 		if err != nil {
 			return err
 		}
@@ -261,11 +267,11 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 		if err != nil {
 			return err
 		}
-		live, err := liveControl(c)
+		live, err := liveControl(c, s.ControlKey())
 		if err != nil {
 			return err
 		}
-		capacity, err = planningCapacityAt(c, at)
+		capacity, err = s.planningCapacityAt(c, at)
 		if err != nil {
 			return err
 		}
@@ -275,7 +281,7 @@ func (s *Store) BeginCycle(cycle model.Cycle, control model.Control, expected mo
 		if err := txPut(c, Cycles.Key(cycle.ID), cycle); err != nil {
 			return err
 		}
-		return txPut(c, ControlKey, control)
+		return txPut(c, s.ControlKey(), control)
 	})
 	return capacity, started, err
 }
@@ -289,7 +295,7 @@ func (s *Store) BatchCounts(id string) (uint64, uint64, error) {
 	return uint64(p), uint64(u), err
 }
 
-const cleanupEligible = `kind=?1 AND discarded IS NULL
+const cleanupEligible = `kind=?1 AND discarded IS NULL AND (?4='' OR repository=?4 COLLATE NOCASE)
     AND (archived IS NOT NULL OR (?1='task' AND status='published') OR (?1='cycle' AND status IN ('completed','idle')))
     AND julianday(COALESCE(archived,json_extract(summary,'$.completed_at'),json_extract(summary,'$.updated_at'),json_extract(summary,'$.started_at')))<julianday(?2)`
 
@@ -315,7 +321,7 @@ SELECT id FROM (
 func (s *Store) CleanupCandidates(kind, cutoff, after string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return queryStrings(s.conn, cleanupCandidatesSQL, kind, cutoff, after)
+	return queryStrings(s.conn, cleanupCandidatesSQL, kind, cutoff, after, s.repo)
 }
 
 // CleanupEligible rechecks a candidate after the retention pass released the operator gate.
@@ -324,7 +330,7 @@ func (s *Store) CleanupEligible(kind, id, cutoff string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var eligible bool
-	err := s.conn.QueryRowContext(background, "SELECT EXISTS(SELECT 1 FROM record_meta WHERE id=?3 AND "+cleanupEligible+")", kind, cutoff, id).Scan(&eligible)
+	err := s.conn.QueryRowContext(background, "SELECT EXISTS(SELECT 1 FROM record_meta WHERE id=?3 AND "+cleanupEligible+")", kind, cutoff, id, s.repo).Scan(&eligible)
 	return eligible, err
 }
 

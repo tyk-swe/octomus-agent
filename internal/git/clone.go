@@ -102,7 +102,11 @@ func CloneReviewed(ctx context.Context, c config.Config, source, path, revision 
 
 // CloneRemote clones url into path as an ordinary checkout with the ambient git configuration, where a credential
 // helper may live: the deployment's own trusted checkout, which every later command pins its own configuration on.
-func CloneRemote(ctx context.Context, url, path string, seconds uint64) error {
-	_, err := process.RunMachine(ctx, "git", []string{"clone", "--origin", "origin", url, path}, filepath.Dir(path), seconds, nil)
+func CloneRemote(ctx context.Context, repo, url, path string, seconds uint64) error {
+	var env []string
+	if token, ok := config.GitHubTokenFor(repo); ok {
+		env = []string{"GH_TOKEN=" + token}
+	}
+	_, err := process.RunMachine(ctx, "git", []string{"clone", "--origin", "origin", url, path}, filepath.Dir(path), seconds, env)
 	return err
 }

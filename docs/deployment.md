@@ -1,6 +1,6 @@
 # Deployment
 
-Octomus is a single-operator, single-repository service. The recommended deployment is
+Octomus is a single-operator service for one or more repositories. The recommended deployment is
 Docker Compose on a Linux host you already run: every agent turn and verification command
 runs in its own [sandbox](sandbox.md), and the control plane holding your GitHub token never
 runs repository code. An unsandboxed deployment on a
@@ -10,8 +10,8 @@ runs repository code. An unsandboxed deployment on a
 
 You need:
 - Docker Engine 28 or later with the Compose plugin, on x86_64 or aarch64;
-- a GitHub fine-grained token for the one repository, with Contents and Pull requests
-  read/write, and Checks and Commit statuses read;
+- a GitHub fine-grained token per repository, each scoped to its one repository, with
+  Contents and Pull requests read/write, and Checks and Commit statuses read;
 - Codex or OpenCode provider access.
 
 Nothing else is installed on the host.
@@ -39,6 +39,43 @@ prompt names the repository the containers will use.
 
 On first start the control plane clones the repository into its data volume. That clone
 is the trusted checkout, and the dashboard cannot repoint it.
+
+### Serving several repositories
+
+One instance can serve several repositories for the one operator. Each repository keeps
+its own saved policy, pause state, cycle schedule, daily session cap, workspaces (under
+`repos/<owner>%2F<name>` in the data directory; the primary keeps the root, so existing
+state needs no move) and trusted checkout. The scheduler rotates between repositories
+with work due, and an optional **Instance-wide sessions per day** ceiling in Settings
+bounds the total across all of them on top of each repository's own cap.
+
+In the Docker deployment, pin the primary repository with `OCTOMUS_GITHUB_REPO` as today
+(checkout `checkout/` in the data volume, token `secrets/github_token`) and list the rest
+in `OCTOMUS_GITHUB_REPOS` (comma-separated `OWNER/REPOSITORY`). Every added repository
+requires its own fine-grained token, never the primary's. Token filenames and new
+workspace/checkouts directory names use the lowercase repository with `/` escaped as
+`%2F` (for example, `acme-tools/service` becomes `acme-tools%2Fservice`):
+
+```bash
+# From deploy/docker. /path/to/token holds the token, not shell syntax.
+sudo install -d -o 10001 -g 10001 -m 0700 secrets/github_tokens
+sudo install -o 10001 -g 10001 -m 0600 /path/to/token secrets/github_tokens/owner%2Frepository
+# Set OCTOMUS_GITHUB_REPOS=OWNER/REPOSITORY in .env, then recreate the control plane.
+docker compose up -d --force-recreate octomus
+```
+
+On a dedicated VM (`--sandbox off`) repositories are not deployment-pinned: add each one
+from **Settings → Repositories & instance**, then select it in the sidebar and save its
+own settings. Per-repository tokens can also be given directly as
+`OCTOMUS_GITHUB_TOKEN__OWNER_2FNAME` environment variables (and per-repository merger
+tokens and rulesets as `OCTOMUS_MERGE_TOKEN__OWNER_2FNAME` /
+`OCTOMUS_MERGE_RULESET_ID__OWNER_2FNAME`); the suffixed variables are stripped from runner
+children, and only the owning repository's orchestrator git/gh calls receive its token.
+Environment suffixes uppercase letters and encode punctuation as `_XX`: `/` is `_2F`,
+`-` is `_2D`, `_` is `_5F`, and `.` is `_2E`. For example, `acme/one-two` uses
+`OCTOMUS_GITHUB_TOKEN__ACME_2FONE_2DTWO`, distinct from `acme/one_two`.
+Removing a previously registered repository from the deployment pins refuses startup;
+restore its pin before restarting.
 
 Then sign in a runner. The login is stored in the `octomus-runner` volume, which only
 runner sandboxes mount:

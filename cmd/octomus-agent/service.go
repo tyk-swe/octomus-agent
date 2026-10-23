@@ -13,7 +13,7 @@ import (
 )
 
 type serviceComponents struct {
-	app           *engine.App
+	fleet         *engine.Fleet
 	http          *http.Server
 	prepareWorker func() error
 	startWorker   func() (stop func(), err error)
@@ -22,19 +22,19 @@ type serviceComponents struct {
 func (c serviceComponents) run(ctx context.Context, address string, stderr io.Writer) error {
 	if c.prepareWorker != nil {
 		if err := c.prepareWorker(); err != nil {
-			c.app.Shutdown()
+			c.fleet.Shutdown()
 			return err
 		}
 	}
-	if err := c.app.Recover(); err != nil {
-		c.app.Shutdown()
+	if err := c.fleet.Recover(); err != nil {
+		c.fleet.Shutdown()
 		return err
 	}
 	stopWorker := func() {}
 	if c.startWorker != nil {
 		stop, err := c.startWorker()
 		if err != nil {
-			c.app.Shutdown()
+			c.fleet.Shutdown()
 			return err
 		}
 		if stop != nil {
@@ -43,7 +43,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		c.app.Shutdown()
+		c.fleet.Shutdown()
 		stopWorker()
 		return err
 	}
@@ -52,7 +52,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 	defer cancelService()
 	runDone := make(chan error, 1)
 	serveDone := make(chan error, 1)
-	go func() { runDone <- c.app.Run(serviceCtx) }()
+	go func() { runDone <- c.fleet.Run(serviceCtx) }()
 	go func() { serveDone <- c.http.Serve(listener) }()
 
 	var cause error
@@ -82,7 +82,7 @@ func (c serviceComponents) run(ctx context.Context, address string, stderr io.Wr
 		}
 		close(httpStopped)
 	}()
-	c.app.Shutdown()
+	c.fleet.Shutdown()
 	<-httpStopped
 	if !runFinished {
 		<-runDone

@@ -58,6 +58,12 @@ type App struct {
 	// fsLock excludes admission scans from trusted planning filesystem changes. Hold it only during
 	// filesystem work, never across store calls, gate acquisition, runner work, or another acquisition of this lock.
 	fsLock sync.RWMutex
+
+	// nested names other repositories' roots below this App's data directory
+	// (the primary App's), excluded from its storage measurement. Fleet replaces
+	// this immutable snapshot under nestedMu; measurement may hold fsLock already.
+	nestedMu sync.RWMutex
+	nested   []string
 }
 
 func New(state *store.Store, dataDir string, options ...Option) *App {
@@ -140,7 +146,7 @@ func (a *App) notify() {
 }
 
 func (a *App) Config() (config.Config, error) {
-	cfg, err := store.Get(a.store, store.ConfigKey)
+	cfg, err := store.Get(a.store, a.store.ConfigKey())
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -151,7 +157,7 @@ func (a *App) Config() (config.Config, error) {
 }
 
 func (a *App) Control() (model.Control, error) {
-	control, err := store.Get(a.store, store.ControlKey)
+	control, err := store.Get(a.store, a.store.ControlKey())
 	if err != nil {
 		return model.Control{}, err
 	}

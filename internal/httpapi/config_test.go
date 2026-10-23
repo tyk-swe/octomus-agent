@@ -59,8 +59,12 @@ func transformKinds(t *testing.T, fields []map[string]any, field string) []any {
 func TestConfigAPIRevisionGate(t *testing.T) {
 	dir := t.TempDir()
 	state := openStore(t, dir)
-	app := engine.New(state, dir)
-	router := Router(app, token, "", "test")
+	fleet, err := engine.NewFleet(state, dir, engine.FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fleet.Shutdown()
+	router := Router(fleet, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
 	cfg.VerificationCommands = []string{"echo ghp_syntheticsecrettoken123", "true"}
@@ -209,8 +213,8 @@ func TestConfigAPIRevisionGate(t *testing.T) {
 
 func TestConfigConflicts(t *testing.T) {
 
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, app, state := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	cfg := config.Default()
 	cfg.GitHubRepo = "fixture/project"
 	if err := store.Put(state, store.ConfigKey, cfg); err != nil {

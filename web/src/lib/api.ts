@@ -17,6 +17,7 @@ import type {
   ProposalDetail,
   ProposalRow,
   RunEvidenceV1,
+  RepositoriesView,
   RequestsView,
   Insights,
   OperatorRequest,
@@ -30,12 +31,26 @@ import type {
 } from './types';
 
 let token = '';
+let repository = '';
 let session = new AbortController();
 let unauthorized: (() => void) | null = null;
 export function setToken(value: string) {
   session.abort();
   session = new AbortController();
   token = value;
+}
+// The selected repository scopes every request except the fleet-level ones
+// (the repository list itself and the instance ceiling). Empty selects the
+// instance's primary repository, matching the service default.
+export function setRepository(value: string) {
+  repository = value;
+}
+export function getRepository() {
+  return repository;
+}
+function scoped(path: string): string {
+  if (!repository || path.startsWith('/repositories') || path.startsWith('/instance')) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}repository=${encodeURIComponent(repository)}`;
 }
 export function onUnauthorized(handler: () => void) {
   unauthorized = handler;
@@ -64,7 +79,7 @@ async function request<T>(
     AbortSignal.timeout(90000),
     ...(signal ? [signal] : [])
   ]);
-  const response = await fetch(`/api${path}`, {
+  const response = await fetch(`/api${scoped(path)}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     ...(method !== 'GET' ? { body: JSON.stringify(body ?? {}) } : {}),
@@ -114,6 +129,12 @@ type Acknowledgement = { ok: boolean };
 // assertion is private; components cannot select a response type for any URL.
 export const client = {
   state: (signal?: AbortSignal) => request<Snapshot>('/state', 'GET', undefined, signal),
+  repositories: (signal?: AbortSignal) =>
+    request<RepositoriesView>('/repositories', 'GET', undefined, signal),
+  addRepository: (githubRepo: string) =>
+    request<RepositoriesView>('/repositories', 'POST', { github_repo: githubRepo }),
+  saveInstance: (maxSessionsPerDay: number) =>
+    request<RepositoriesView>('/instance', 'PUT', { max_sessions_per_day: maxSessionsPerDay }),
   tasks: (parameters?: URLSearchParams, signal?: AbortSignal) =>
     request<Page<TaskRow>>(`/tasks${query(parameters)}`, 'GET', undefined, signal),
   cycles: (parameters?: URLSearchParams, signal?: AbortSignal) =>

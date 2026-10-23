@@ -117,7 +117,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 	defer s.mu.Unlock()
 	err := s.transaction(false, func(c *sql.Conn) error {
 		each := func(query string, scan func(*sql.Rows) error) error {
-			rows, err := c.QueryContext(background, query, since)
+			rows, err := c.QueryContext(background, query, since, s.repo)
 			if err != nil {
 				return err
 			}
@@ -129,7 +129,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 			}
 			return rows.Err()
 		}
-		if err := each("SELECT day, sessions FROM usage WHERE day >= ?1", func(rows *sql.Rows) error {
+		if err := each("SELECT day, SUM(sessions) FROM usage WHERE day >= ?1 AND (?2='' OR repository=lower(?2)) GROUP BY day", func(rows *sql.Rows) error {
 			var day string
 			var sessions uint64
 			if err := rows.Scan(&day, &sessions); err != nil {
@@ -142,7 +142,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 		}); err != nil {
 			return err
 		}
-		if err := each("SELECT day, sum(json_extract(data,'$.task_id') IS NULL), sum(json_extract(data,'$.task_id') IS NOT NULL) FROM admissions WHERE day >= ?1 GROUP BY day", func(rows *sql.Rows) error {
+		if err := each("SELECT day, sum(json_extract(data,'$.task_id') IS NULL), sum(json_extract(data,'$.task_id') IS NOT NULL) FROM admissions WHERE day >= ?1 AND (?2='' OR json_extract(data,'$.repository')=?2 COLLATE NOCASE) GROUP BY day", func(rows *sql.Rows) error {
 			var day string
 			var planning, task uint64
 			if err := rows.Scan(&day, &planning, &task); err != nil {
@@ -156,7 +156,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 		}); err != nil {
 			return err
 		}
-		if err := each("SELECT substr(json_extract(summary,'$.started_at'),1,10), json_extract(summary,'$.mode'), status, count(*) FROM record_meta WHERE kind='cycle' AND json_extract(summary,'$.started_at') >= ?1 GROUP BY 1,2,3", func(rows *sql.Rows) error {
+		if err := each("SELECT substr(json_extract(summary,'$.started_at'),1,10), json_extract(summary,'$.mode'), status, count(*) FROM record_meta WHERE kind='cycle' AND json_extract(summary,'$.started_at') >= ?1 AND (?2='' OR repository=?2 COLLATE NOCASE) GROUP BY 1,2,3", func(rows *sql.Rows) error {
 			var day, mode, status string
 			var count uint64
 			if err := rows.Scan(&day, &mode, &status, &count); err != nil {
@@ -175,7 +175,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 		}); err != nil {
 			return err
 		}
-		if err := each("SELECT substr(json_extract(summary,'$.created_at'),1,10), json_extract(summary,'$.category'), json_extract(summary,'$.tier'), status, count(*) FROM record_meta WHERE kind='task' AND json_extract(summary,'$.created_at') >= ?1 GROUP BY 1,2,3,4", func(rows *sql.Rows) error {
+		if err := each("SELECT substr(json_extract(summary,'$.created_at'),1,10), json_extract(summary,'$.category'), json_extract(summary,'$.tier'), status, count(*) FROM record_meta WHERE kind='task' AND json_extract(summary,'$.created_at') >= ?1 AND (?2='' OR repository=?2 COLLATE NOCASE) GROUP BY 1,2,3,4", func(rows *sql.Rows) error {
 			var day, category, tier, status string
 			var count uint64
 			if err := rows.Scan(&day, &category, &tier, &status, &count); err != nil {
@@ -214,7 +214,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 		}); err != nil {
 			return err
 		}
-		if err := each("SELECT COALESCE(json_extract(p.data,'$.category'),''), p.decision, count(*) FROM proposal_records p JOIN record_meta m ON m.kind='cycle' AND m.id=p.cycle_id WHERE p.mode='execution' AND json_extract(m.summary,'$.started_at') >= ?1 AND p.decision IN ('accepted','rejected','deferred') GROUP BY 1,2", func(rows *sql.Rows) error {
+		if err := each("SELECT COALESCE(json_extract(p.data,'$.category'),''), p.decision, count(*) FROM proposal_records p JOIN record_meta m ON m.kind='cycle' AND m.id=p.cycle_id WHERE p.mode='execution' AND json_extract(m.summary,'$.started_at') >= ?1 AND (?2='' OR m.repository=?2 COLLATE NOCASE) AND p.decision IN ('accepted','rejected','deferred') GROUP BY 1,2", func(rows *sql.Rows) error {
 			var category, decision string
 			var count uint64
 			if err := rows.Scan(&category, &decision, &count); err != nil {
@@ -236,7 +236,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 		}); err != nil {
 			return err
 		}
-		if err := each("SELECT json_extract(m.summary,'$.tier'), count(*), sum(CASE WHEN json_extract(m.summary,'$.created_at') >= ?1 THEN 1 ELSE 0 END) FROM admissions a JOIN record_meta m ON m.kind='task' AND m.id=json_extract(a.data,'$.task_id') WHERE a.day >= ?1 GROUP BY 1", func(rows *sql.Rows) error {
+		if err := each("SELECT json_extract(m.summary,'$.tier'), count(*), sum(CASE WHEN json_extract(m.summary,'$.created_at') >= ?1 THEN 1 ELSE 0 END) FROM admissions a JOIN record_meta m ON m.kind='task' AND m.id=json_extract(a.data,'$.task_id') WHERE a.day >= ?1 AND (?2='' OR m.repository=?2 COLLATE NOCASE) GROUP BY 1", func(rows *sql.Rows) error {
 			var tier string
 			var count, createdTaskCount uint64
 			if err := rows.Scan(&tier, &count, &createdTaskCount); err != nil {
@@ -258,7 +258,7 @@ func (s *Store) Insights(now time.Time, days int) (Insights, error) {
 			), ''), count(*) FROM (
 				SELECT DISTINCT m.repository COLLATE NOCASE AS repository, json_extract(m.summary,'$.pr_number') AS number
 				FROM record_meta m
-				WHERE m.kind='task' AND m.status='published' AND json_extract(m.summary,'$.created_at') >= ?1
+				WHERE m.kind='task' AND m.status='published' AND json_extract(m.summary,'$.created_at') >= ?1 AND (?2='' OR m.repository=?2 COLLATE NOCASE)
 					AND json_extract(m.summary,'$.pr_number') IS NOT NULL
 			) delivered GROUP BY 1`, func(rows *sql.Rows) error {
 			var state string

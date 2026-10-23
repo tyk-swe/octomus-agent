@@ -18,6 +18,9 @@ func Command(binary string, cwd string) *exec.Cmd {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
+		if config.IsPerRepoSecretEnv(key) {
+			continue
+		}
 		switch key {
 		case config.TokenEnv, config.WebhookEnv, config.MergeTokenEnv, config.MergeRulesetEnv, "OCTOMUS_MERGE_TOKEN_FILE", "GIT_TERMINAL_PROMPT":
 			continue

@@ -61,7 +61,7 @@ func (s *Snapshot) Admissions() ([]Admission, error) {
 }
 
 func (s *Snapshot) DailySessions() ([]DaySessions, error) {
-	rows, err := s.conn.QueryContext(background, "SELECT day,sessions FROM usage ORDER BY day")
+	rows, err := s.conn.QueryContext(background, "SELECT day,SUM(sessions) FROM usage GROUP BY day ORDER BY day")
 	if err != nil {
 		return nil, err
 	}

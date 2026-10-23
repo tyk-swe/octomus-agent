@@ -11,8 +11,8 @@ import (
 
 func TestPRContextPresentationDropsLegacyCutFragments(t *testing.T) {
 	t.Parallel()
-	app, state := testApp(t)
-	router := Router(app, token, "", "test")
+	fleet, _, state := testFleet(t, nil)
+	router := Router(fleet, token, "", "test")
 	cycle := model.Cycle{ID: model.ID(), Mode: model.CycleModeAudit, Status: model.CycleCompleted,
 		StartedAt: model.Now(), CompletedAt: new(model.Now()), Grounding: &model.Grounding{Revision: "recorded"}}
 	fragments := []string{"ghp_abcdef", "https://owner:partial-password", "unknown-old-credential-prefix"}
@@ -52,14 +52,14 @@ func TestPRContextPresentationDropsLegacyCutFragments(t *testing.T) {
 
 func TestPRHistoryRedactsCompleteTitlesBeforeBounds(t *testing.T) {
 	t.Parallel()
-	app, state := testApp(t)
+	fleet, _, state := testFleet(t, nil)
 	const credential = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
 	pr := model.PRObservation{PR: model.PullRequest{Number: 42, State: "open",
 		Title: strings.Repeat("x", 190) + credential + " tail"}}
 	if err := store.Put(state, store.PRs.Key("42"), pr); err != nil {
 		t.Fatal(err)
 	}
-	response := call(t, Router(app, token, "", "test"), "GET", "/api/prs", "")
+	response := call(t, Router(fleet, token, "", "test"), "GET", "/api/prs", "")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "ghp_abcdef") || !strings.Contains(response.Body.String(), "[redacted]") {
 		t.Fatalf("unsafe PR title presentation: %d %s", response.Code, response.Body)
 	}

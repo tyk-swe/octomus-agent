@@ -19,7 +19,18 @@ import (
 func gh(ctx context.Context, c config.Config, args []string) (string, error) {
 	// Origin validation only accepts github.com. Pin the matching API host,
 	// including commands such as pr create that do not accept --hostname.
-	return process.RunMachine(ctx, "gh", args, c.Repository, c.CommandTimeoutSeconds, []string{"GH_HOST=github.com"})
+	env := append(repoTokenEnv(c), "GH_HOST=github.com")
+	return process.RunMachine(ctx, "gh", args, c.Repository, c.CommandTimeoutSeconds, env)
+}
+
+// repoTokenEnv carries this repository's GitHub token into an orchestrator
+// git/gh child as GH_TOKEN. Extra environment entries override the inherited
+// ones, and git's credential helper inherits them from git in turn.
+func repoTokenEnv(c config.Config) []string {
+	if token, ok := config.GitHubTokenFor(c.GitHubRepo); ok {
+		return []string{"GH_TOKEN=" + token}
+	}
+	return nil
 }
 
 func ghPages(out string, each func(page []map[string]any) error) error {

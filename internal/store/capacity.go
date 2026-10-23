@@ -55,9 +55,9 @@ func releaseReservation(c *sql.Conn, taskID string) error {
 	return err
 }
 
-func savedInventory(c *sql.Conn) (*model.OpenPRInventory, error) {
+func savedInventory(c *sql.Conn, key Key[model.OpenPRInventory]) (*model.OpenPRInventory, error) {
 	var inventory model.OpenPRInventory
-	found, err := txGet(c, prInventoryKey, &inventory)
+	found, err := txGet(c, key, &inventory)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func savedInventory(c *sql.Conn) (*model.OpenPRInventory, error) {
 func (s *Store) OpenPRInventory() (*model.OpenPRInventory, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return savedInventory(s.conn)
+	return savedInventory(s.conn, s.prInventoryKey())
 }
 
 func PRUnion(inventory model.OpenPRInventory, reservations []PRReservation, limit uint64) (uint64, uint64, uint64) {
@@ -111,10 +111,10 @@ func (s *Store) PRReservations(repository string) ([]PRReservation, error) {
 
 func (s *Store) ReservableTasks() ([]model.Task, error) {
 	return listRecords[model.Task](s, fmt.Sprintf(`SELECT r.data FROM `+fromMeta+`
-                WHERE m.kind='task' AND (
+                WHERE m.kind='task' AND (?1='' OR m.repository=?1 COLLATE NOCASE) AND (
                     m.status IN (%s)
                     OR (m.status!='published' AND json_extract(r.data,'$.output_commit') IS NOT NULL)
-                )`, statusList(model.ActiveStatuses())))
+                )`, statusList(model.ActiveStatuses())), s.repo)
 }
 
 func (s *Store) SeedPRReservation(task model.Task) error {
@@ -128,14 +128,14 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 	defer s.mu.Unlock()
 	var next model.Task
 	admitted, err := s.conditional(func(c *sql.Conn) error {
-		cfg, err := storedConfig(c)
+		cfg, err := storedConfig(c, s.ConfigKey())
 		if err != nil {
 			return err
 		}
 		if !config.EqualASCII(inventory.Repository, cfg.GitHubRepo) {
 			return errRollback
 		}
-		saved, err := savedInventory(c)
+		saved, err := savedInventory(c, s.prInventoryKey())
 		if err != nil {
 			return err
 		}
@@ -169,7 +169,7 @@ func (s *Store) AdmitNewPRTask(task *model.Task, inventory model.OpenPRInventory
 		if err := insertReservation(c, next.ID, strings.ToLower(cfg.GitHubRepo), next.Branch, model.Now(), false); err != nil {
 			return err
 		}
-		return txEvent(c, next.ID, model.EventStatus, "Executing")
+		return txRepositoryEvent(c, s.repo, next.ID, model.EventStatus, "Executing")
 	})
 	if admitted {
 		*task = next
@@ -181,14 +181,14 @@ func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.conditional(func(c *sql.Conn) error {
-		cfg, err := storedConfig(c)
+		cfg, err := storedConfig(c, s.ConfigKey())
 		if err != nil {
 			return err
 		}
 		if !config.EqualASCII(inventory.Repository, cfg.GitHubRepo) {
 			return errRollback
 		}
-		existing, err := savedInventory(c)
+		existing, err := savedInventory(c, s.prInventoryKey())
 		if err != nil {
 			return err
 		}
@@ -205,7 +205,7 @@ func (s *Store) PersistPRInventory(inventory model.OpenPRInventory, released []s
 				return errRollback
 			}
 		}
-		if err := txPut(c, prInventoryKey, inventory); err != nil {
+		if err := txPut(c, s.prInventoryKey(), inventory); err != nil {
 			return err
 		}
 		represented := inventory.OwnedBranches()
