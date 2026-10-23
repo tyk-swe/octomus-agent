@@ -317,22 +317,21 @@
     error = '';
     setToken(accessToken.trim());
     try {
-      const fleet = await client.repositories().catch(() => null);
-      repositories = fleet?.repositories ?? [];
+      const fleet = await client.repositories();
+      repositories = fleet.repositories;
       const remembered = localStorage.getItem('octomus-repository') ?? '';
       selectedRepository = repositories.some((entry) => entry.github_repo === remembered)
         ? remembered
         : (repositories[0]?.github_repo ?? '');
       setRepository(selectedRepository);
-      data = await client.state();
       view = viewFromHash(location.hash) ?? 'overview';
       settingsVisited = view === 'settings';
       connected = true;
       connectionError = '';
       accessToken = '';
+      await refresh();
       await tick();
       window.scrollTo(0, 0);
-      lastUpdated = clockTime();
     } catch (e) {
       error = (e as Error).message;
     } finally {

@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { deferred, login, openNavigation, test } from './synthetic';
+import { deferred, login, openNavigation, test, token } from './synthetic';
 import type { Snapshot } from '../src/lib/types';
 
 test('switching repositories reloads state and scopes subsequent settings requests', async ({
@@ -102,6 +102,12 @@ test('a failed repository switch can recover by selecting another repository', a
   await expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Disconnect', exact: true })).toBeVisible();
+  // A reload remembers the unavailable selection. Authentication must still
+  // expose recovery controls for reaching the healthy repository.
+  await page.reload();
+  await page.getByLabel('Operator access token').fill(token);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
   await selection.selectOption(repositories[0]);
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
 });
