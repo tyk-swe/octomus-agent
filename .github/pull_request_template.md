@@ -4,8 +4,8 @@ Describe the concrete trigger and what changes for the operator.
 
 ## Validation
 
-List the behavior tests you ran, including full `make check` and `make test` results.
-Distinguish fixture results from live evidence.
+List the smallest checks you ran per [Build and verify](../AGENTS.md#build-and-verify); leave broad suites to CI.
+Distinguish fixture results from live evidence and name any deferred check.
 
 ## Risks and compatibility
 

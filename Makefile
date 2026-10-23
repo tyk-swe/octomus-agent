@@ -1,5 +1,10 @@
 .PHONY: dashboard build check fmt test test-go test-go-race test-ui-logic test-python test-integration test-browser test-sandbox production-image-driver test-production-images package audit
 
+# Tiers (see AGENTS.md "Build and verify"): CI is the gate, local is the loop.
+# Local loop: dashboard build check fmt test-go test-ui-logic test-python
+# CI parity (leave to CI locally unless requested): test test-go-race test-integration test-browser package audit
+# Opt-in (Docker/disposable host): test-sandbox test-production-images production-image-driver
+
 # PYTHONUNBUFFERED streams Python's otherwise pipe-buffered PASS lines under make and CI.
 # Scenarios run with up to four workers; OCTOMUS_TEST_JOBS overrides the limit.
 E2E_ENV = OCTOMUS_TEST_BINARY="$(CURDIR)/bin/octomus-agent" PYTHONUNBUFFERED=1

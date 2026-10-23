@@ -78,7 +78,7 @@ Use the smallest existing check that covers the change:
 - Go: `gofmt` changed files and run the affected package or test with `go test`.
 - Dashboard: `npm run check --prefix web` and the relevant spec via
   `npm run test:unit --prefix web -- tests/<name>.spec.ts`.
-- Shell: `shellcheck` on changed scripts.
+- Shell: `shellcheck install.sh scripts/*.sh deploy/docker/*.sh` on changed scripts.
 
 Inspect Makefile targets and package scripts before running them; they can build the
 dashboard or run multiple suites. Use installed dependencies and real dashboard assets

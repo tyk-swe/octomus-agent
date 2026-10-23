@@ -15,5 +15,6 @@ generated-file rules and boundaries. Read the owning design reference before cha
 
 Explain the concrete problem, resulting behavior, validation and limitations. Keep changes
 cohesive, add behavior tests, and keep Go types, `web/src/lib/types.ts`, saved records,
-checked-in golden databases and documentation aligned. Follow the branch naming,
-publication, sandbox and secret-handling rules in [AGENTS.md](AGENTS.md).
+checked-in golden databases and documentation aligned. Validate with the smallest check in
+[Build and verify](AGENTS.md#build-and-verify) and leave broad suites to CI. Follow the branch
+naming, publication, sandbox and secret-handling rules in [AGENTS.md](AGENTS.md).
