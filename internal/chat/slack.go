@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,7 +40,10 @@ type apiError struct {
 	// {"ok":false} body. It classifies separately from the HTTP status:
 	// a transient code must keep its retries despite the 200.
 	Code string
-	Msg  string
+	// RetryAfter preserves the provider's own rate-limit delay (Slack
+	// and Discord Retry-After headers, or Discord's JSON retry_after).
+	RetryAfter time.Duration
+	Msg        string
 }
 
 func (e *apiError) Error() string { return e.Msg }
@@ -61,6 +65,32 @@ func transportMessage(prefix string, err error) string {
 	}
 	return prefix + ": " + err.Error()
 }
+
+// retryAfterDelay parses an HTTP Retry-After header in delta-seconds
+// (including Discord's fractional form) or HTTP-date form.
+func retryAfterDelay(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds > 0 {
+		return time.Duration(seconds * float64(time.Second))
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
+		}
+	}
+	return 0
+}
+
+func (e *apiError) rateLimited() bool {
+	return e.Status == http.StatusTooManyRequests || e.Code == "ratelimited" || e.Code == "rate_limited"
+}
+
 func (e *apiError) retryable() bool {
 	switch e.Code {
 	case "internal_error", "fatal_error", "ratelimited", "rate_limited",
@@ -173,6 +203,13 @@ func (a *slackAdapter) serveOnce(ctx context.Context) error {
 // (possibly slow) engine call in the background and posts the real answer.
 func (a *slackAdapter) handleEnvelope(ctx context.Context, conn *wsConn, env slackEnvelope) error {
 	inv, ackPayload, respond, ok := a.decode(env)
+	authorized := ok && a.svc != nil && a.svc.Authorized(inv.Provider, inv.UserID)
+	if ok && !authorized {
+		// The envelope still needs its acknowledgement, but a
+		// non-allowlisted sender must receive no visible response
+		// payload (not even "Working on it…").
+		ackPayload = nil
+	}
 	ack := map[string]any{"envelope_id": env.EnvelopeID}
 	if ackPayload != nil {
 		ack["payload"] = ackPayload
@@ -180,7 +217,7 @@ func (a *slackAdapter) handleEnvelope(ctx context.Context, conn *wsConn, env sla
 	if err := conn.WriteJSON(ack); err != nil {
 		return err
 	}
-	if !ok {
+	if !ok || !authorized {
 		return nil
 	}
 	a.svc.goHandle(func() {
@@ -375,20 +412,28 @@ func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body 
 		return &apiError{Status: 0, Msg: transportMessage("slack request failed", err)}
 	}
 	defer resp.Body.Close()
+	retryAfter := retryAfterDelay(resp)
 	got, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {
 		return &apiError{Status: 0, Msg: transportMessage("slack response unreadable", err)}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Status: resp.StatusCode, Msg: fmt.Sprintf("slack request refused: %s", resp.Status)}
-	}
 	var out struct {
-		OK    *bool  `json:"ok"`
-		Error string `json:"error"`
+		OK         *bool   `json:"ok"`
+		Error      string  `json:"error"`
+		RetryAfter float64 `json:"retry_after"`
+	}
+	if json.Unmarshal(got, &out) == nil && out.RetryAfter > 0 {
+		retryAfter = max(retryAfter, time.Duration(out.RetryAfter*float64(time.Second)))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &apiError{Status: resp.StatusCode, RetryAfter: retryAfter, Msg: fmt.Sprintf("slack request refused: %s", resp.Status)}
 	}
 	if json.Unmarshal(got, &out) == nil && out.OK != nil {
 		if !*out.OK {
-			return &apiError{Status: resp.StatusCode, Code: out.Error, Msg: "slack refused: " + out.Error}
+			if out.RetryAfter > 0 {
+				retryAfter = max(retryAfter, time.Duration(out.RetryAfter*float64(time.Second)))
+			}
+			return &apiError{Status: resp.StatusCode, Code: out.Error, RetryAfter: retryAfter, Msg: "slack refused: " + out.Error}
 		}
 		return nil
 	}

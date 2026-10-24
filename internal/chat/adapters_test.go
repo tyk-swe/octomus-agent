@@ -53,6 +53,72 @@ func TestSlackSlashDecode(t *testing.T) {
 	}
 }
 
+func TestSlackUnauthorizedSlashAcknowledgesWithoutPayload(t *testing.T) {
+	svc, _ := testService(t)
+	a := newSlackAdapter(svc, &ProviderConfig{Provider: SlackProvider})
+
+	for _, tc := range []struct {
+		name        string
+		userID      string
+		eventID     string
+		wantPayload bool
+	}{
+		{name: "authorized operator", userID: testSlackUser, eventID: "ack-authorized", wantPayload: true},
+		{name: "stranger", userID: "U-STRANGER", eventID: "ack-stranger", wantPayload: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+			ackSeen := make(chan string, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				frame, err := readClientFrame(bufio.NewReader(conn))
+				if err == nil {
+					ackSeen <- frame
+				}
+			}()
+			client, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn := &wsConn{conn: client, br: bufio.NewReader(client)}
+			defer conn.Close()
+
+			payload, _ := json.Marshal(map[string]any{
+				"command": "/octomus", "text": "help", "user_id": tc.userID, "channel_id": "C1",
+			})
+			env := slackEnvelope{EnvelopeID: tc.eventID, Type: "slash_commands", Payload: payload}
+			if err := a.handleEnvelope(context.Background(), conn, env); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case frame := <-ackSeen:
+				var ack map[string]any
+				if err := json.Unmarshal([]byte(frame), &ack); err != nil {
+					t.Fatal(err)
+				}
+				if ack["envelope_id"] != tc.eventID {
+					t.Fatalf("ack = %+v; want envelope %q acknowledged", ack, tc.eventID)
+				}
+				if _, hasPayload := ack["payload"]; hasPayload != tc.wantPayload {
+					t.Fatalf("ack payload present = %v; want %v in %+v", hasPayload, tc.wantPayload, ack)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("slash envelope was not acknowledged")
+			}
+			svc.waitInflight()
+		})
+	}
+}
+
 func TestSlackMentionDecode(t *testing.T) {
 	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider})
 	payload, _ := json.Marshal(map[string]any{
@@ -232,6 +298,47 @@ func TestSlackTransientAPIErrorIsRetryable(t *testing.T) {
 	err = a.postJSON(context.Background(), srv.URL+"/permanent", "tok", map[string]any{"text": "x"})
 	if !errors.As(err, &apiErr) || apiErr.retryable() {
 		t.Fatalf("permanent slack error = %v; want non-retryable apiError", err)
+	}
+}
+
+func TestProviderRateLimitDelayPreserved(t *testing.T) {
+	slackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "header") {
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"ok":false,"error":"ratelimited","retry_after":4}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":false,"error":"ratelimited","retry_after":3}`)
+	}))
+	defer slackSrv.Close()
+	slack := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider})
+	for _, tc := range []struct {
+		path string
+		want time.Duration
+	}{
+		{path: "/header", want: 4 * time.Second},
+		{path: "/json", want: 3 * time.Second},
+	} {
+		err := slack.postJSON(context.Background(), slackSrv.URL+tc.path, "tok", map[string]any{"text": "x"})
+		var apiErr *apiError
+		if !errors.As(err, &apiErr) || !apiErr.rateLimited() || apiErr.RetryAfter != tc.want {
+			t.Fatalf("slack %s rate limit = %v; want retry after %v", tc.path, err, tc.want)
+		}
+	}
+
+	discordSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"message":"You are being rate limited.","retry_after":1.5,"global":false}`)
+	}))
+	defer discordSrv.Close()
+	discord := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok"})
+	discord.apiBase = discordSrv.URL
+	err := discord.postMessage(context.Background(), "123", Response{Text: "x"})
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || !apiErr.rateLimited() || apiErr.RetryAfter != 1500*time.Millisecond {
+		t.Fatalf("discord rate limit = %v; want retry after 1.5s", err)
 	}
 }
 

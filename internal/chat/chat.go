@@ -57,6 +57,10 @@ type Service struct {
 	store    *store.Store
 	warnings io.Writer
 	now      func() time.Time
+	// digestPageInterval paces proactive pages to one channel. It is a
+	// field so tests can use provider-scale delays without waiting a
+	// real second per page.
+	digestPageInterval time.Duration
 
 	mu       sync.Mutex
 	pending  map[string]*pendingAction
@@ -94,7 +98,7 @@ func NewService(cfg Config, fleet Fleet, st *store.Store, warnings io.Writer) *S
 	if warnings == nil {
 		warnings = io.Discard
 	}
-	return &Service{cfg: cfg, fleet: fleet, store: st, warnings: warnings, now: time.Now, pending: map[string]*pendingAction{}}
+	return &Service{cfg: cfg, fleet: fleet, store: st, warnings: warnings, now: time.Now, digestPageInterval: time.Second, pending: map[string]*pendingAction{}}
 }
 
 func (s *Service) warn(err error) {

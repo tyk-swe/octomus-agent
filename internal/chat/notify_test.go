@@ -146,6 +146,77 @@ func TestRunnerPostHonoursCancellation(t *testing.T) {
 	}
 }
 
+func TestDeliverDigestMessagesPacesAndRetriesRateLimitedPage(t *testing.T) {
+	svc, _ := testService(t)
+	svc.cfg.Slack.AlertChannel = "C-ALERT"
+	svc.cfg.Discord = nil
+	svc.digestPageInterval = 20 * time.Millisecond
+	messages := []string{"page 1", "page 2", "page 3"}
+	type call struct {
+		text string
+		at   time.Time
+	}
+	var calls []call
+	var posted []string
+	attempts := map[string]int{}
+	svc.deliverDigestMessages(context.Background(), func(_ context.Context, provider Provider, channel string, resp Response) error {
+		if provider != SlackProvider || channel != "C-ALERT" {
+			t.Fatalf("digest posted to %s/%s; want slack C-ALERT", provider, channel)
+		}
+		calls = append(calls, call{text: resp.Text, at: time.Now()})
+		attempts[resp.Text]++
+		if resp.Text == "page 2" && attempts[resp.Text] == 1 {
+			return &apiError{Status: 429, RetryAfter: 45 * time.Millisecond, Msg: "slow down"}
+		}
+		posted = append(posted, resp.Text)
+		return nil
+	}, messages)
+
+	if len(calls) != 4 || calls[0].text != "page 1" || calls[1].text != "page 2" || calls[2].text != "page 2" || calls[3].text != "page 3" {
+		t.Fatalf("digest calls = %+v; want page 2 retried before page 3", calls)
+	}
+	if len(posted) != len(messages) {
+		t.Fatalf("posted digest pages = %v; want %v", posted, messages)
+	}
+	for i := range messages {
+		if posted[i] != messages[i] {
+			t.Fatalf("posted digest pages = %v; want %v", posted, messages)
+		}
+	}
+	if gap := calls[1].at.Sub(calls[0].at); gap < 15*time.Millisecond {
+		t.Fatalf("gap before page 2 = %v; want pacing interval honored", gap)
+	}
+	if gap := calls[2].at.Sub(calls[1].at); gap < 40*time.Millisecond {
+		t.Fatalf("retry gap for page 2 = %v; want provider RetryAfter honored", gap)
+	}
+	if gap := calls[3].at.Sub(calls[2].at); gap < 15*time.Millisecond {
+		t.Fatalf("gap before page 3 = %v; want pacing interval honored", gap)
+	}
+}
+
+func TestDeliverDigestMessagesBoundsRateLimitRetries(t *testing.T) {
+	svc, _ := testService(t)
+	svc.cfg.Slack.AlertChannel = "C-ALERT"
+	svc.cfg.Discord = nil
+	svc.digestPageInterval = time.Millisecond
+	attempts := map[string]int{}
+	var posted []string
+	svc.deliverDigestMessages(context.Background(), func(_ context.Context, _ Provider, _ string, resp Response) error {
+		attempts[resp.Text]++
+		if resp.Text == "page 1" {
+			return &apiError{Status: 429, RetryAfter: time.Millisecond, Msg: "slow down"}
+		}
+		posted = append(posted, resp.Text)
+		return nil
+	}, []string{"page 1", "page 2"})
+	if attempts["page 1"] != maxDigestPageAttempts {
+		t.Fatalf("page 1 attempts = %d; want bounded retry at %d", attempts["page 1"], maxDigestPageAttempts)
+	}
+	if len(posted) != 1 || posted[0] != "page 2" {
+		t.Fatalf("posted after retry exhaustion = %v; want page 2 still attempted", posted)
+	}
+}
+
 func TestDigestRenders(t *testing.T) {
 	svc, _ := testService(t)
 	messages := svc.DigestMessages(context.Background())
@@ -271,10 +342,16 @@ func TestDigestIncludesEveryRepository(t *testing.T) {
 	// A scheduled digest posts every generated page to alert channels.
 	svc.cfg.Slack.AlertChannel = "C-ALERT"
 	svc.cfg.Discord = nil
+	svc.digestPageInterval = time.Millisecond
 	var posted []string
+	attempts := map[string]int{}
 	svc.sendDigest(context.Background(), func(_ context.Context, provider Provider, channel string, resp Response) error {
 		if provider != SlackProvider || channel != "C-ALERT" {
 			t.Fatalf("scheduled digest posted to %s/%s; want slack C-ALERT", provider, channel)
+		}
+		attempts[resp.Text]++
+		if resp.Text == messages[1] && attempts[resp.Text] == 1 {
+			return &apiError{Status: 429, RetryAfter: time.Millisecond, Msg: "slow down"}
 		}
 		posted = append(posted, resp.Text)
 		return nil

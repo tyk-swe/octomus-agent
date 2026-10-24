@@ -460,9 +460,16 @@ func (a *discordAdapter) rest(ctx context.Context, method, path string, body map
 		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	retryAfter := retryAfterDelay(resp)
+	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Status: resp.StatusCode, Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
+		var out struct {
+			RetryAfter float64 `json:"retry_after"`
+		}
+		if json.Unmarshal(got, &out) == nil && out.RetryAfter > 0 {
+			retryAfter = max(retryAfter, time.Duration(out.RetryAfter*float64(time.Second)))
+		}
+		return &apiError{Status: resp.StatusCode, RetryAfter: retryAfter, Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
 	}
 	return nil
 }

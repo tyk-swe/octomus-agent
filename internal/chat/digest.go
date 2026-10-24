@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -180,18 +181,78 @@ func (s *Service) runDigest(ctx context.Context, post func(context.Context, Prov
 
 // sendDigest posts every digest page, in order, to every alert channel.
 func (s *Service) sendDigest(ctx context.Context, post func(context.Context, Provider, string, Response) error) {
-	messages := s.DigestMessages(ctx)
+	s.deliverDigestMessages(ctx, post, s.DigestMessages(ctx))
+}
+
+const maxDigestPageAttempts = 5
+
+func (s *Service) digestInterval() time.Duration {
+	if s.digestPageInterval > 0 {
+		return s.digestPageInterval
+	}
+	return time.Second
+}
+
+func waitForDigest(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// deliverDigestMessages paces pages to each channel and retries the
+// same page when the provider rate-limits it. Digest pages have no
+// durable outbox, so advancing after a 429 would lose that page's
+// repositories until the next scheduled digest.
+func (s *Service) deliverDigestMessages(ctx context.Context, post func(context.Context, Provider, string, Response) error, messages []string) {
 	for _, pc := range []*ProviderConfig{s.cfg.Slack, s.cfg.Discord} {
 		if pc == nil || pc.AlertChannel == "" {
 			continue
 		}
-		for _, text := range messages {
+		for i, text := range messages {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := post(ctx, pc.Provider, pc.AlertChannel, Response{Text: text}); err != nil {
+			if i > 0 && !waitForDigest(ctx, s.digestInterval()) {
+				return
+			}
+			if err := s.postDigestPage(ctx, post, pc.Provider, pc.AlertChannel, text); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				s.warn(err)
 			}
+		}
+	}
+}
+
+func (s *Service) postDigestPage(ctx context.Context, post func(context.Context, Provider, string, Response) error, provider Provider, channel, text string) error {
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := post(ctx, provider, channel, Response{Text: text})
+		if err == nil {
+			return nil
+		}
+		var apiErr *apiError
+		if !errors.As(err, &apiErr) || !apiErr.rateLimited() || attempt >= maxDigestPageAttempts {
+			return err
+		}
+		delay := apiErr.RetryAfter
+		if delay <= 0 {
+			delay = backoffDelay(attempt)
+		}
+		delay = max(delay, s.digestInterval())
+		if !waitForDigest(ctx, delay) {
+			return ctx.Err()
 		}
 	}
 }
