@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -64,8 +65,9 @@ func taskActionValue(verb, id string) string {
 	return "task:" + verb + ":" + id
 }
 
-// handleAction runs button clicks: pending confirmations and the stateless
-// task:<verb>:<id> buttons attached to alerts and task views.
+// handleAction runs button clicks: pending confirmations, digest page
+// navigation, and the stateless task:<verb>:<id> buttons attached to
+// alerts and task views.
 func (s *Service) handleAction(ctx context.Context, inv Invocation) (string, []Button, error) {
 	kind, rest, _ := strings.Cut(inv.Action, ":")
 	switch kind {
@@ -79,6 +81,12 @@ func (s *Service) handleAction(ctx context.Context, inv Invocation) (string, []B
 		}
 		text, err := p.run(ctx)
 		return text, nil, err
+	case "digest":
+		page, err := strconv.Atoi(rest)
+		if err != nil {
+			return "", nil, fmt.Errorf("Malformed digest action")
+		}
+		return s.digestPage(ctx, page)
 	case "task":
 		parts := strings.Split(rest, ":")
 		var verb, repo, id string

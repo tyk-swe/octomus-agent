@@ -158,10 +158,22 @@ func operatorError(err error) string {
 	return redact.Error(err)
 }
 
-func boundText(text string) string {
-	text = strings.TrimSpace(redact.Secrets(text))
-	if len(text) > maxTextLen {
-		text = text[:maxTextLen] + "\n… (truncated)"
+func cleanText(text string) string {
+	return strings.TrimSpace(redact.Secrets(text))
+}
+
+func boundTextLimit(text string, limit int) string {
+	text = cleanText(text)
+	if len(text) <= limit {
+		return text
 	}
-	return text
+	const suffix = "\n… (truncated)"
+	if limit <= len(suffix) {
+		return suffix[:limit]
+	}
+	return text[:limit-len(suffix)] + suffix
+}
+
+func boundText(text string) string {
+	return boundTextLimit(text, maxTextLen)
 }

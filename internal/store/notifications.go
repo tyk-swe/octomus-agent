@@ -52,7 +52,11 @@ func (s *Store) SetNotifyPolicy(destination *string, state string, errorText *st
                  AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE kind='webhook')`, enabled, destination); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "DELETE FROM notification_destinations WHERE kind='webhook' AND (?1=0 OR destination_id IS NOT ?2)", enabled, destination); err != nil {
+		// Keep superseded webhook destinations as disabled tombstones.
+		// Their kind still classifies retained delivery history for
+		// NotificationHealth after rotation or disablement, while
+		// enabled=0 excludes them from fan-out and delivery claims.
+		if _, err := c.ExecContext(background, "UPDATE notification_destinations SET enabled=0 WHERE kind='webhook' AND (?1=0 OR destination_id IS NOT ?2)", enabled, destination); err != nil {
 			return err
 		}
 		if enabled == 1 {

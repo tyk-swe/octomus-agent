@@ -817,3 +817,75 @@ func TestDiscordTaskIDOptionIsOptional(t *testing.T) {
 	}
 	t.Fatal("task subcommand not registered")
 }
+
+func TestDiscordInvalidSessionPreservesResumableSession(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resumable bool
+	}{
+		{name: "resumable", resumable: true},
+		{name: "not resumable", resumable: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := testService(t)
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+
+			a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+			seq := int64(41)
+			resumeURL := "ws://" + ln.Addr().String()
+			a.sessionID = "session-123"
+			a.resumeURL = resumeURL
+			a.seq = &seq
+
+			initialFrame := make(chan string, 1)
+			go wsHandshake(t, ln, func(conn net.Conn) {
+				br := bufio.NewReader(conn)
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				writeServerText(conn, `{"op":10,"d":{"heartbeat_interval":60000}}`)
+				frame, err := readClientFrame(br)
+				if err != nil {
+					return
+				}
+				initialFrame <- frame
+				writeServerText(conn, fmt.Sprintf(`{"op":9,"d":%t}`, tc.resumable))
+			})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			serveDone := make(chan error, 1)
+			go func() { serveDone <- a.serveOnce(ctx) }()
+
+			select {
+			case frame := <-initialFrame:
+				if !strings.Contains(frame, `"op":6`) || !strings.Contains(frame, `"session_id":"session-123"`) {
+					t.Fatalf("initial gateway frame = %q; want resume for the preset session", frame)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("gateway client did not resume the preset session")
+			}
+			select {
+			case err := <-serveDone:
+				if err == nil || !strings.Contains(err.Error(), "discord session invalid") {
+					t.Fatalf("serveOnce error = %v; want invalid-session reconnect", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("serveOnce did not end after invalid session")
+			}
+
+			a.mu.Lock()
+			gotSession, gotResumeURL, gotSeq := a.sessionID, a.resumeURL, a.seq
+			a.mu.Unlock()
+			if tc.resumable {
+				if gotSession != "session-123" || gotResumeURL != resumeURL || gotSeq == nil || *gotSeq != 41 {
+					t.Fatalf("session after resumable invalid-session = %q, %q, %v; want all preserved", gotSession, gotResumeURL, gotSeq)
+				}
+			} else if gotSession != "" || gotResumeURL != "" || gotSeq != nil {
+				t.Fatalf("session after non-resumable invalid-session = %q, %q, %v; want all cleared", gotSession, gotResumeURL, gotSeq)
+			}
+		})
+	}
+}

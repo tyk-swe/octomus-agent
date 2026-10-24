@@ -17,6 +17,13 @@ CREATE TABLE chat_context (
 INSERT OR IGNORE INTO notification_destinations(destination_id,kind,target,enabled)
 SELECT destination_id,'webhook','',enabled FROM notification_policy WHERE id=1 AND destination_id IS NOT NULL;
 
+-- Every pre-v14 outbox row belonged to the sole webhook destination.
+-- Disabled tombstones retain that classification for deliveries made
+-- to webhook destinations superseded before this migration.
+INSERT OR IGNORE INTO notification_destinations(destination_id,kind,target,enabled)
+SELECT DISTINCT destination_id,'webhook','',0 FROM notification_outbox
+WHERE destination_id IS NOT NULL AND destination_id <> '';
+
 DROP TRIGGER notify_control_insert;
 
 CREATE TRIGGER notify_control_insert AFTER INSERT ON records

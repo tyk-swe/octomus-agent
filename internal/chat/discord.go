@@ -180,11 +180,21 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 			}
 		case 7: // Reconnect.
 			return errors.New("discord asked for a reconnect")
-		case 9: // Invalid session: forget it and re-identify fresh.
+		case 9: // Invalid session: d says whether this session may resume.
+			if invalidSessionResumable(p.D) {
+				return errors.New("discord session invalid; resuming")
+			}
 			a.clearSession()
 			return errors.New("discord session invalid; re-identifying")
 		}
 	}
+}
+
+// invalidSessionResumable decodes opcode 9's boolean payload. A missing
+// or malformed payload fails closed to a fresh Identify.
+func invalidSessionResumable(raw json.RawMessage) bool {
+	var resumable bool
+	return json.Unmarshal(raw, &resumable) == nil && resumable
 }
 
 func (a *discordAdapter) clearSession() {
@@ -497,7 +507,7 @@ func (a *discordAdapter) registerCommands(ctx context.Context) error {
 		"name": "octomus", "description": "Octomus repository maintainer", "type": 1,
 		"options": []map[string]any{
 			sub("status", "Mode, cycle, active tasks, today's sessions"),
-			sub("digest", "7-day summary for every repository"),
+			sub("digest", "7-day summary for every repository", strOpt("page", "Digest page (default 1)", false)),
 			sub("tasks", "Latest tasks", strOpt("count", "How many (default 5)", false)),
 			sub("task", "One task's detail (default: the remembered task)", strOpt("id", "Task ID (default: the remembered task)", false)),
 			sub("cycles", "Latest cycles", strOpt("count", "How many (default 5)", false)),

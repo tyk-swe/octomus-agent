@@ -102,7 +102,7 @@ channel; slash-command answers are ephemeral). Discord: `/octomus
 | Command | What it does |
 | --- | --- |
 | `status` | Mode, cycle number, active and attention tasks, pending requests, today's sessions |
-| `digest` | The 7-day fleet summary on demand |
+| `digest [page]` | The 7-day fleet summary on demand; large fleets are paged at repository boundaries |
 | `tasks [N]`, `task [id]` | Latest tasks (default 5, at most 20); one task's detail (default: the remembered task), with Retry/Cancel buttons when allowed |
 | `cycles [N]`, `prs [N]` | Latest cycles; observed pull requests |
 | `requests` | Pending and recent work requests |
@@ -132,8 +132,10 @@ are unaffected.
 
 With `OCTOMUS_CHAT_DIGEST_TIME` set, a daily digest goes to every
 configured alert channel: each repository's mode, cycle, attention and
-pending-request counts, and its 7-day task/cycle/PR outcome counts. A
-missing digest means the service is down — treat it as the heartbeat.
+pending-request counts, and its 7-day task/cycle/PR outcome counts.
+Large fleets are split into consecutive messages at repository
+boundaries. A missing digest means the service is down — treat it as
+the heartbeat.
 
 Chat failures never stop the maintainer: connections reconnect with
 backoff, delivery problems appear as `WARN chat: …` in the service log,

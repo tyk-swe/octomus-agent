@@ -13,7 +13,7 @@ import (
 
 const helpText = `Octomus commands (add --repo OWNER/REPO anywhere to pick a repository):
 status — mode, cycle, active tasks, today's sessions
-digest — 7-day summary for every repository
+digest [page] — 7-day summary for every repository
 tasks [N] — latest tasks · task [id] — one task's detail (default: the remembered task)
 cycles [N] — latest cycles · prs [N] — observed pull requests
 requests — pending work requests
@@ -186,7 +186,7 @@ func (s *Service) handleCommand(ctx context.Context, inv Invocation) (string, []
 	case "repos":
 		return s.reposText(), nil, nil
 	case "digest":
-		return s.Digest(ctx), nil, nil
+		return s.digestCommand(ctx, fields)
 	}
 	app, err := s.resolveCommandApp(inv, verb, fields, repoFlag)
 	if err != nil {

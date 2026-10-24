@@ -4,39 +4,126 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tyk-swe/octomus-agent/internal/engine"
 )
 
-// Digest builds the fleet-wide 7-day summary. On a schedule it doubles as
-// the heartbeat: a missing digest means the service is down.
-func (s *Service) Digest(_ context.Context) string {
+// DigestMessages builds the fleet-wide 7-day summary as provider-sized
+// messages split at repository boundaries, so a large fleet never loses
+// later repositories to one aggregate truncation limit. On a schedule it
+// doubles as the heartbeat: a missing digest means the service is down.
+func (s *Service) DigestMessages(_ context.Context) []string {
 	apps := s.fleet.Apps()
 	if len(apps) == 0 {
-		return "Octomus digest: no repositories registered."
+		return []string{"Octomus digest: no repositories registered."}
+	}
+	sections := make([]string, 0, len(apps))
+	for _, app := range apps {
+		sections = append(sections, digestAppSection(app))
+	}
+	return packDigestSections(sections)
+}
+
+func digestAppSection(app *engine.App) string {
+	view, err := app.StateView()
+	if err != nil {
+		return fmt.Sprintf("%s — status unavailable: %s", app.Repository(), operatorError(err))
+	}
+	mode := view.Control.Mode.String()
+	if view.Control.Paused {
+		mode = "paused"
 	}
 	var b strings.Builder
-	b.WriteString("Octomus digest (7 days)")
-	for _, app := range apps {
-		b.WriteString("\n\n")
-		view, err := app.StateView()
-		if err != nil {
-			fmt.Fprintf(&b, "%s — status unavailable: %s", app.Repository(), operatorError(err))
+	fmt.Fprintf(&b, "%s — %s, cycle #%d, %d active, %d need attention, %d pending requests",
+		view.Repository, mode, view.Control.CycleNumber, view.ActiveTasks, attentionCount(view), view.PendingRequests)
+	if ins, err := app.Insights(7); err == nil {
+		fmt.Fprintf(&b, "\n  Tasks: %s · Cycles: %s · PRs: %s",
+			countLine(ins.Tasks), countLine(ins.Cycles), countLine(ins.PRs))
+	}
+	return b.String()
+}
+
+// packDigestSections packs whole repository sections into messages no
+// longer than maxTextLen. A single oversized section is bounded on its
+// own rather than crowding out every following repository.
+func packDigestSections(sections []string) []string {
+	const (
+		header    = "Octomus digest (7 days)"
+		continued = header + " (continued)"
+		// Enough for "\n\nPage 999 of 999" and then some.
+		pageReserve = 32
+	)
+	limit := maxTextLen - pageReserve
+	messages := []string{}
+	current := header
+	currentSections := 0
+	flush := func() {
+		if currentSections == 0 {
+			return
+		}
+		messages = append(messages, boundTextLimit(current, limit))
+		current = continued
+		currentSections = 0
+	}
+	for _, section := range sections {
+		section = cleanText(section)
+		if section == "" {
 			continue
 		}
-		mode := view.Control.Mode.String()
-		if view.Control.Paused {
-			mode = "paused"
+		candidate := current + "\n\n" + section
+		if len(cleanText(candidate)) > limit && currentSections > 0 {
+			flush()
+			candidate = current + "\n\n" + section
 		}
-		fmt.Fprintf(&b, "%s — %s, cycle #%d, %d active, %d need attention, %d pending requests",
-			view.Repository, mode, view.Control.CycleNumber, view.ActiveTasks, attentionCount(view), view.PendingRequests)
-		ins, err := app.Insights(7)
-		if err == nil {
-			fmt.Fprintf(&b, "\n  Tasks: %s · Cycles: %s · PRs: %s",
-				countLine(ins.Tasks), countLine(ins.Cycles), countLine(ins.PRs))
+		if len(cleanText(candidate)) <= limit {
+			current = candidate
+			currentSections++
+			continue
+		}
+		messages = append(messages, boundTextLimit(candidate, limit))
+		current = continued
+		currentSections = 0
+	}
+	flush()
+	if len(messages) == 0 {
+		messages = append(messages, header)
+	}
+	if len(messages) > 1 {
+		for i := range messages {
+			messages[i] = fmt.Sprintf("%s\n\nPage %d of %d", messages[i], i+1, len(messages))
 		}
 	}
-	return boundText(b.String())
+	return messages
+}
+
+func (s *Service) digestCommand(ctx context.Context, fields []string) (string, []Button, error) {
+	page := 1
+	if len(fields) > 0 {
+		parsed, err := strconv.Atoi(fields[0])
+		if err != nil || parsed < 1 {
+			return "", nil, fmt.Errorf("Name a digest page: `digest [page]`")
+		}
+		page = parsed
+	}
+	return s.digestPage(ctx, page)
+}
+
+func (s *Service) digestPage(ctx context.Context, page int) (string, []Button, error) {
+	messages := s.DigestMessages(ctx)
+	if page < 1 || page > len(messages) {
+		return "", nil, fmt.Errorf("Digest page %d does not exist; it has %d page(s)", page, len(messages))
+	}
+	var buttons []Button
+	if page > 1 {
+		buttons = append(buttons, Button{Label: "Previous page", Value: fmt.Sprintf("digest:%d", page-1)})
+	}
+	if page < len(messages) {
+		buttons = append(buttons, Button{Label: "Next page", Value: fmt.Sprintf("digest:%d", page+1)})
+	}
+	return messages[page-1], buttons, nil
 }
 
 func countLine(counts map[string]uint64) string {
@@ -87,13 +174,20 @@ func (s *Service) runDigest(ctx context.Context, post func(context.Context, Prov
 			return
 		case <-timer.C:
 		}
-		text := s.Digest(ctx)
-		for _, pc := range []*ProviderConfig{s.cfg.Slack, s.cfg.Discord} {
+		s.sendDigest(ctx, post)
+	}
+}
+
+// sendDigest posts every digest page, in order, to every alert channel.
+func (s *Service) sendDigest(ctx context.Context, post func(context.Context, Provider, string, Response) error) {
+	messages := s.DigestMessages(ctx)
+	for _, pc := range []*ProviderConfig{s.cfg.Slack, s.cfg.Discord} {
+		if pc == nil || pc.AlertChannel == "" {
+			continue
+		}
+		for _, text := range messages {
 			if ctx.Err() != nil {
 				return
-			}
-			if pc == nil || pc.AlertChannel == "" {
-				continue
 			}
 			if err := post(ctx, pc.Provider, pc.AlertChannel, Response{Text: text}); err != nil {
 				s.warn(err)

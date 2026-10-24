@@ -116,6 +116,46 @@ func TestNotificationHealthScopesToWebhookDestination(t *testing.T) {
 	}
 }
 
+func TestNotificationHealthRetainsWebhookHistoryAfterRotationAndDisable(t *testing.T) {
+	t.Parallel()
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.SetNotifyPolicy(str(notifyDest), "enabled", nil))
+	db := raw(t, path)
+	seqForTask := func(taskID string) int64 {
+		t.Helper()
+		var seq int64
+		must(t, db.QueryRow("SELECT seq FROM notification_outbox WHERE task_id=? AND destination_id=?", taskID, notifyDest).Scan(&seq))
+		return seq
+	}
+
+	putNotificationTask(t, s, "health-history-delivered", "blocked", "timeout")
+	must(t, s.MarkDelivered(seqForTask("health-history-delivered"), time.Now()))
+	putNotificationTask(t, s, "health-history-failed", "blocked", "timeout")
+	status := uint16(403)
+	must(t, s.MarkFailed(seqForTask("health-history-failed"), "http_status", &status, false))
+
+	assertHistory := func(stage string) {
+		t.Helper()
+		health, err := s.NotificationHealth()
+		must(t, err)
+		if health.LastDeliveredAt == nil {
+			t.Fatalf("%s: health = %+v; want retained last delivery", stage, health)
+		}
+		if health.Failed != 1 || health.Pending != 0 {
+			t.Fatalf("%s: health = %+v; want one retained failure and none pending", stage, health)
+		}
+		if health.LastHTTPStatus == nil || *health.LastHTTPStatus != 403 {
+			t.Fatalf("%s: health last HTTP status = %v; want retained 403", stage, health.LastHTTPStatus)
+		}
+	}
+
+	must(t, s.SetNotifyPolicy(str("destination-b"), "enabled", nil))
+	assertHistory("after rotation")
+	must(t, s.SetNotifyPolicy(nil, "disabled", nil))
+	assertHistory("after disable")
+}
+
 func TestChatDestinationRemovalCancelsPending(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
