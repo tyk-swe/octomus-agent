@@ -442,6 +442,19 @@ func (a *discordAdapter) postMessage(ctx context.Context, channel string, resp R
 	return a.rest(ctx, http.MethodPost, "/channels/"+channel+"/messages", body, true)
 }
 
+// discordRetryAfter combines Discord's Retry-After header with the
+// floating-point retry_after value in its JSON rate-limit body.
+func discordRetryAfter(resp *http.Response, body []byte) time.Duration {
+	retryAfter := retryAfterDelay(resp)
+	var out struct {
+		RetryAfter float64 `json:"retry_after"`
+	}
+	if json.Unmarshal(body, &out) == nil && out.RetryAfter > 0 {
+		retryAfter = max(retryAfter, time.Duration(out.RetryAfter*float64(time.Second)))
+	}
+	return retryAfter
+}
+
 func (a *discordAdapter) rest(ctx context.Context, method, path string, body map[string]any, bot bool) error {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -460,16 +473,9 @@ func (a *discordAdapter) rest(ctx context.Context, method, path string, body map
 		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	defer resp.Body.Close()
-	retryAfter := retryAfterDelay(resp)
 	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var out struct {
-			RetryAfter float64 `json:"retry_after"`
-		}
-		if json.Unmarshal(got, &out) == nil && out.RetryAfter > 0 {
-			retryAfter = max(retryAfter, time.Duration(out.RetryAfter*float64(time.Second)))
-		}
-		return &apiError{Status: resp.StatusCode, RetryAfter: retryAfter, Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
+		return &apiError{Status: resp.StatusCode, RetryAfter: discordRetryAfter(resp, got), Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
 	}
 	return nil
 }
@@ -490,10 +496,17 @@ func (a *discordAdapter) registerLoop(ctx context.Context) {
 			return
 		}
 		attempt++
+		// Discord's provider-mandated cooldown is a floor: ordinary
+		// backoff may be longer, but may never retry sooner than the
+		// rate-limit response allows.
+		delay := backoffDelay(attempt)
+		if apiErr != nil {
+			delay = max(delay, apiErr.RetryAfter)
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoffDelay(attempt)):
+		case <-time.After(delay):
 		}
 	}
 }
@@ -551,9 +564,9 @@ func (a *discordAdapter) registerCommands(ctx context.Context) error {
 		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Status: resp.StatusCode, Msg: "command registration refused: " + resp.Status}
+		return &apiError{Status: resp.StatusCode, RetryAfter: discordRetryAfter(resp, got), Msg: "command registration refused: " + resp.Status}
 	}
 	return nil
 }

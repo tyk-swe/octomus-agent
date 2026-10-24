@@ -559,6 +559,55 @@ func TestDiscordRegistrationRetriesTransientFailure(t *testing.T) {
 	}
 }
 
+func TestDiscordRegistrationPreservesRateLimitDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"message":"You are being rate limited.","retry_after":1.5,"global":false}`)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	err := a.registerCommands(context.Background())
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || !apiErr.rateLimited() || apiErr.RetryAfter != 1500*time.Millisecond {
+		t.Fatalf("registration rate limit = %v; want retry after 1.5s", err)
+	}
+}
+
+func TestDiscordRegistrationRetriesAfterProviderCooldown(t *testing.T) {
+	svc, _ := testService(t)
+	var mu sync.Mutex
+	var calls []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, time.Now())
+		attempt := len(calls)
+		mu.Unlock()
+		if attempt == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"message":"You are being rate limited.","retry_after":3,"global":true}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a.registerLoop(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("registration attempts = %d; want 429 then success", len(calls))
+	}
+	if gap := calls[1].Sub(calls[0]); gap < 2900*time.Millisecond {
+		t.Fatalf("registration retry gap = %v; want provider cooldown of 3s honored", gap)
+	}
+}
+
 func TestTransportErrorsHideCapabilityURLs(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	deadURL := dead.URL
