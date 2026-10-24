@@ -87,6 +87,52 @@ func TestClaimCleanupIsolatedPerDestination(t *testing.T) {
 	}
 }
 
+func TestRateLimitCooldownPersistsPerDestination(t *testing.T) {
+	t.Parallel()
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.SetChatDestinations([]store.ChatDestination{slackDest, discordDest}))
+	putNotificationTask(t, s, "cooldown-1", "blocked", "timeout")
+	putNotificationTask(t, s, "cooldown-2", "blocked", "timeout")
+
+	now := time.Now().Add(time.Second)
+	claimed, err := s.ClaimDelivery(slackDest.ID, now)
+	must(t, err)
+	if claimed == nil {
+		t.Fatal("slack claim found nothing; want the first queued alert")
+	}
+	status := uint16(429)
+	retryAt := now.Add(120 * time.Second)
+	must(t, s.MarkFailedAt(claimed.Seq, "http_status", &status, true, retryAt))
+
+	db := raw(t, path)
+	var nextAttempt, cooldown int64
+	must(t, db.QueryRow("SELECT next_attempt_at FROM notification_outbox WHERE seq=?", claimed.Seq).Scan(&nextAttempt))
+	if nextAttempt != retryAt.Unix() {
+		t.Fatalf("rate-limited row next_attempt_at = %d; want provider deadline %d", nextAttempt, retryAt.Unix())
+	}
+	must(t, db.QueryRow("SELECT cooldown_until FROM notification_destinations WHERE destination_id=?", slackDest.ID).Scan(&cooldown))
+	if cooldown != retryAt.Unix() {
+		t.Fatalf("slack destination cooldown_until = %d; want %d", cooldown, retryAt.Unix())
+	}
+
+	during, err := s.ClaimDelivery(slackDest.ID, now.Add(119*time.Second))
+	must(t, err)
+	if during != nil {
+		t.Fatalf("claimed slack alert %+v during its destination cooldown", during)
+	}
+	other, err := s.ClaimDelivery(discordDest.ID, now.Add(119*time.Second))
+	must(t, err)
+	if other == nil {
+		t.Fatal("discord claim found nothing during slack cooldown; want destinations isolated")
+	}
+	after, err := s.ClaimDelivery(slackDest.ID, retryAt)
+	must(t, err)
+	if after == nil || after.Seq != claimed.Seq || after.Attempts != 2 {
+		t.Fatalf("slack claim after cooldown = %+v; want first alert on attempt 2", after)
+	}
+}
+
 func TestNotificationHealthScopesToWebhookDestination(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)

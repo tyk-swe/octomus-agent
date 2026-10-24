@@ -93,6 +93,60 @@ func TestNotifyWorkerRetriesRetryableFailure(t *testing.T) {
 	}
 }
 
+func TestNotifyWorkerHonoursProviderCooldown(t *testing.T) {
+	svc, st := testService(t)
+	dest := store.ChatDestination{ID: DestinationID(SlackProvider, "C-COOLDOWN"), Kind: "slack", Target: "C-COOLDOWN"}
+	if err := st.SetChatDestinations([]store.ChatDestination{dest}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"alert-cooldown-1", "alert-cooldown-2"} {
+		task := map[string]any{
+			"id": id, "cycle_id": "cycle-1", "status": "blocked",
+			"blocked_reason": "timeout",
+			"config":         map[string]any{"github_repo": "fixture/project"},
+		}
+		data, _ := json.Marshal(task)
+		if err := store.Put(st, store.Tasks.Key(id).Raw(), data); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now := time.Now().Add(time.Second)
+	svc.now = func() time.Time { return now }
+	attempts := 0
+	delivered := 0
+	worker := &notifyWorker{
+		svc: svc, st: st, dest: dest, provider: SlackProvider,
+		post: func(_ context.Context, _ Provider, _ string, _ Response) error {
+			attempts++
+			if attempts == 1 {
+				return &apiError{Status: 429, RetryAfter: 120 * time.Second, Msg: "slow down"}
+			}
+			delivered++
+			return nil
+		},
+	}
+
+	worker.deliverNext(context.Background())
+	if attempts != 1 || delivered != 0 {
+		t.Fatalf("first cooldown delivery attempts=%d delivered=%d; want one rejected attempt", attempts, delivered)
+	}
+	now = now.Add(60 * time.Second)
+	worker.deliverNext(context.Background())
+	if attempts != 1 {
+		t.Fatalf("attempts during provider cooldown = %d; want destination paused", attempts)
+	}
+	now = now.Add(61 * time.Second)
+	worker.deliverNext(context.Background())
+	if attempts != 2 || delivered != 1 {
+		t.Fatalf("after cooldown attempts=%d delivered=%d; want the rejected alert retried successfully", attempts, delivered)
+	}
+	worker.deliverNext(context.Background())
+	if attempts != 3 || delivered != 2 {
+		t.Fatalf("after cooldown attempts=%d delivered=%d; want the queued alert delivered next", attempts, delivered)
+	}
+}
+
 func TestNotifyWorkerWarnsDeliveryError(t *testing.T) {
 	svc, st := testService(t)
 	var warnings bytes.Buffer

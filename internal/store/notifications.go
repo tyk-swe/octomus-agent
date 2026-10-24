@@ -91,7 +91,7 @@ func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationD
 		err := c.QueryRowContext(background, `SELECT seq,event_id,created_at,repository,cycle_id,run_id,task_id,category,action,attempts
                  FROM notification_outbox
                  WHERE status='pending' AND next_attempt_at <= ?1 AND destination_id=?2
-                     AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE enabled=1)
+                     AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE enabled=1 AND cooldown_until<=?1)
                  ORDER BY seq LIMIT 1`, epoch, destination).Scan(&d.Seq, &d.EventID, &d.CreatedAt, &d.Repository, &d.CycleID, &d.RunID, &d.TaskID, &d.Category, &d.Action, &d.Attempts)
 		if err != nil && err != sql.ErrNoRows {
 			return err
@@ -122,6 +122,14 @@ func (s *Store) MarkDelivered(seq int64, now time.Time) error {
 }
 
 func (s *Store) MarkFailed(seq int64, category string, httpStatus *uint16, retryable bool) error {
+	return s.MarkFailedAt(seq, category, httpStatus, retryable, time.Time{})
+}
+
+// MarkFailedAt records a failed attempt and, when retryAt is set, keeps
+// both this delivery and its destination ineligible until that provider
+// deadline. Persisting the destination cooldown prevents queued alerts
+// from burning attempts during throttling, including after a restart.
+func (s *Store) MarkFailedAt(seq int64, category string, httpStatus *uint16, retryable bool, retryAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	retry := int64(0)
@@ -132,8 +140,25 @@ func (s *Store) MarkFailed(seq int64, category string, httpStatus *uint16, retry
 	if httpStatus != nil {
 		status = new(int64(*httpStatus))
 	}
-	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq)
-	return err
+	var retryEpoch int64
+	if !retryAt.IsZero() {
+		retryEpoch = retryAt.Unix()
+	}
+	return s.transaction(false, func(c *sql.Conn) error {
+		result, err := c.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, next_attempt_at=CASE WHEN ?1=1 AND attempts<?2 THEN MAX(next_attempt_at,?6) ELSE next_attempt_at END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq, retryEpoch)
+		if err != nil {
+			return err
+		}
+		if retryEpoch <= 0 {
+			return nil
+		}
+		affected, err := result.RowsAffected()
+		if err != nil || affected == 0 {
+			return err
+		}
+		_, err = c.ExecContext(background, "UPDATE notification_destinations SET cooldown_until=MAX(cooldown_until,?1) WHERE destination_id=(SELECT destination_id FROM notification_outbox WHERE seq=?2)", retryEpoch, seq)
+		return err
+	})
 }
 
 func (s *Store) NotificationHealth() (NotificationHealth, error) {

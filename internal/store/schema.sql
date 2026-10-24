@@ -28,7 +28,8 @@ CREATE TABLE notification_policy (
 
 CREATE TABLE notification_destinations (
             destination_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
-            target TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1
+            target TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+            cooldown_until INTEGER NOT NULL DEFAULT 0
         );
 
 CREATE TABLE chat_events (

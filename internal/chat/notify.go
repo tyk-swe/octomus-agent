@@ -17,6 +17,10 @@ type notifyWorker struct {
 	dest     store.ChatDestination
 	post     func(context.Context, Provider, string, Response) error
 	provider Provider
+	// cooldownUntil mirrors the destination cooldown persisted by the
+	// store, so this worker does not claim queued alerts every second
+	// only to have the store reject them during provider throttling.
+	cooldownUntil time.Time
 }
 
 func (w *notifyWorker) run(ctx context.Context) {
@@ -37,6 +41,9 @@ func (w *notifyWorker) run(ctx context.Context) {
 }
 
 func (w *notifyWorker) deliverNext(ctx context.Context) {
+	if w.svc.now().Before(w.cooldownUntil) {
+		return
+	}
 	delivery, err := w.st.ClaimDelivery(w.dest.ID, w.svc.now())
 	if err != nil {
 		w.svc.warn(err)
@@ -69,7 +76,14 @@ func (w *notifyWorker) deliverNext(ctx context.Context) {
 			s := uint16(apiErr.Status)
 			status = &s
 		}
-		w.svc.warn(w.st.MarkFailed(delivery.Seq, "http_status", status, apiErr.retryable()))
+		var retryAt time.Time
+		if apiErr.rateLimited() && apiErr.RetryAfter > 0 {
+			retryAt = w.svc.now().Add(apiErr.RetryAfter)
+			if retryAt.After(w.cooldownUntil) {
+				w.cooldownUntil = retryAt
+			}
+		}
+		w.svc.warn(w.st.MarkFailedAt(delivery.Seq, "http_status", status, apiErr.retryable(), retryAt))
 		return
 	}
 	w.svc.warn(w.st.MarkFailed(delivery.Seq, "transport_error", nil, true))

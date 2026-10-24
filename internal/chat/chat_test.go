@@ -304,4 +304,12 @@ func TestFromEnvValidation(t *testing.T) {
 	if !cfg.Enabled() || cfg.Discord != nil || cfg.Slack.Bindings["C1"] != "acme/widgets" || !cfg.Slack.Operators["U2"] {
 		t.Fatalf("config = %+v", cfg.Slack)
 	}
+
+	tzCfg, err := FromEnv(env(map[string]string{"OCTOMUS_CHAT_TIMEZONE": "Europe/London"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tzCfg.Timezone == nil || tzCfg.Timezone.String() != "Europe/London" {
+		t.Fatalf("timezone = %v; want Europe/London", tzCfg.Timezone)
+	}
 }
