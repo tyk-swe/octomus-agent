@@ -1,8 +1,11 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +34,7 @@ func TestNotifyWorkerDeliversAlertOnce(t *testing.T) {
 	var posted []Response
 	worker := &notifyWorker{
 		svc: svc, st: st, dest: dest, provider: SlackProvider,
-		post: func(_ Provider, _ string, resp Response) error {
+		post: func(_ context.Context, _ Provider, _ string, resp Response) error {
 			posted = append(posted, resp)
 			return nil
 		},
@@ -67,7 +70,7 @@ func TestNotifyWorkerRetriesRetryableFailure(t *testing.T) {
 	attempts := 0
 	worker := &notifyWorker{
 		svc: svc, st: st, dest: dest, provider: DiscordProvider,
-		post: func(_ Provider, _ string, resp Response) error {
+		post: func(_ context.Context, _ Provider, _ string, resp Response) error {
 			attempts++
 			if attempts == 1 {
 				return &apiError{Status: 429, Msg: "slow down"}
@@ -82,6 +85,59 @@ func TestNotifyWorkerRetriesRetryableFailure(t *testing.T) {
 	worker.deliverNext(context.Background())
 	if attempts != 2 {
 		t.Fatalf("attempts = %d; want failure then success", attempts)
+	}
+}
+
+func TestNotifyWorkerWarnsDeliveryError(t *testing.T) {
+	svc, st := testService(t)
+	var warnings bytes.Buffer
+	svc.warnings = &warnings
+	dest := store.ChatDestination{ID: DestinationID(SlackProvider, "C-BROKEN"), Kind: "slack", Target: "C-BROKEN"}
+	if err := st.SetChatDestinations([]store.ChatDestination{dest}); err != nil {
+		t.Fatal(err)
+	}
+	task := map[string]any{
+		"id": "alert-task-3", "cycle_id": "cycle-1", "status": "blocked",
+		"blocked_reason": "timeout",
+		"config":         map[string]any{"github_repo": "fixture/project"},
+	}
+	data, _ := json.Marshal(task)
+	if err := store.Put(st, store.Tasks.Key("alert-task-3").Raw(), data); err != nil {
+		t.Fatal(err)
+	}
+	worker := &notifyWorker{
+		svc: svc, st: st, dest: dest, provider: SlackProvider,
+		post: func(_ context.Context, _ Provider, _ string, resp Response) error {
+			return &apiError{Status: 403, Msg: "slack refused: channel_not_found"}
+		},
+	}
+	worker.deliverNext(context.Background())
+	if !strings.Contains(warnings.String(), "channel_not_found") {
+		t.Fatalf("warnings = %q; want the original delivery error visible to the operator", warnings.String())
+	}
+}
+
+func TestRunnerPostHonoursCancellation(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+	discord := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok"})
+	discord.apiBase = srv.URL
+	runner := &Runner{discord: discord}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := runner.post(ctx, DiscordProvider, "123", Response{Text: "alert"})
+	if err == nil {
+		t.Fatal("cancelled proactive post reported success")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("proactive post ignored cancellation for %v", elapsed)
 	}
 }
 

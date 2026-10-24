@@ -175,8 +175,11 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 			case "INTERACTION_CREATE":
 				// The REST acknowledgement can take seconds; the read
 				// loop must stay free for heartbeats and the next
-				// interaction's own acknowledgement deadline.
-				go a.handleInteraction(connCtx, p.D)
+				// interaction's own acknowledgement deadline. The work
+				// runs on the adapter-lifetime context, not connCtx: a
+				// gateway reconnect must not cancel an acknowledgement
+				// Discord will never replay.
+				go a.handleInteraction(ctx, p.D)
 			}
 		case 7: // Reconnect.
 			return errors.New("discord asked for a reconnect")

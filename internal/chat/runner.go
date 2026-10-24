@@ -80,8 +80,9 @@ func (r *Runner) Stop() {
 }
 
 // post delivers one proactive message through the provider's REST API.
-func (r *Runner) post(provider Provider, channel string, resp Response) error {
-	ctx := context.Background()
+// The caller's context governs it, so Runner.Stop can interrupt an
+// unresponsive provider instead of waiting out each HTTP timeout.
+func (r *Runner) post(ctx context.Context, provider Provider, channel string, resp Response) error {
 	switch provider {
 	case SlackProvider:
 		if r.slack == nil {

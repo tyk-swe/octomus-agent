@@ -225,6 +225,23 @@ func TestDedupeFailureBlocksDispatch(t *testing.T) {
 	}
 }
 
+func TestTaskButtonRemembersContext(t *testing.T) {
+	svc, st := testService(t)
+	resp, handled := svc.Handle(context.Background(), Invocation{
+		Provider: SlackProvider, UserID: testSlackUser, ChannelID: "C-CTX", Action: "task:retry:task-ctx-1",
+	})
+	if !handled || len(resp.Buttons) != 2 {
+		t.Fatalf("retry button = handled %v resp %+v; want a confirmation prompt", handled, resp)
+	}
+	got, err := st.ChatContext("slack", "C-CTX", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TaskID != "task-ctx-1" {
+		t.Fatalf("remembered context = %+v; want the button's task remembered like a text command", got)
+	}
+}
+
 func TestAttentionCountUsesStatusCountsNotPreview(t *testing.T) {
 	view := &engine.StateView{Dashboard: store.Dashboard{
 		Counts:         map[string]int64{"blocked": 4, "failed": 3, "executing": 9},

@@ -94,14 +94,23 @@ func (s *Service) handleAction(ctx context.Context, inv Invocation) (string, []B
 		if err != nil {
 			return "", nil, err
 		}
+		var text string
+		var buttons []Button
 		switch verb {
 		case "view":
-			text, buttons, _, err := s.taskDetail(ctx, inv, app, []string{id})
-			return text, buttons, err
+			text, buttons, _, err = s.taskDetail(ctx, inv, app, []string{id})
 		case "retry", "cancel":
-			text, buttons, _, err := s.taskConfirm(ctx, inv, app, verb, []string{id})
-			return text, buttons, err
+			text, buttons, _, err = s.taskConfirm(ctx, inv, app, verb, []string{id})
+		default:
+			return "", nil, fmt.Errorf("Unknown action; try `help`")
 		}
+		if err == nil {
+			// Button flows update thread context exactly like the
+			// equivalent text commands, so follow-ups keep addressing
+			// the viewed task's repository.
+			s.remember(inv, app, id)
+		}
+		return text, buttons, err
 	}
 	return "", nil, fmt.Errorf("Unknown action; try `help`")
 }

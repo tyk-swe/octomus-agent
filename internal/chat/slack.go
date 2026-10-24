@@ -288,7 +288,9 @@ func stripMention(text string) string {
 // notification fallback.
 func slackBlocks(resp Response) []map[string]any {
 	blocks := []map[string]any{
-		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackEscapedBounded(resp.Text)}},
+		// verbatim stops Slack parsing @mentions, #channels and links out
+		// of repository-derived text (proposal and PR titles, task errors).
+		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackEscapedBounded(resp.Text), "verbatim": true}},
 	}
 	if len(resp.Buttons) > 0 {
 		elements := []map[string]any{}
@@ -336,14 +338,18 @@ func (a *slackAdapter) postResponseURL(responseURL string, resp Response, replac
 	}
 	body := map[string]any{
 		"response_type": "ephemeral", "replace_original": replace,
-		"text": resp.Text, "blocks": slackBlocks(resp),
+		// The fallback text is markup-parsed by older clients, so it gets
+		// the same escaping as the block text.
+		"text": slackEscape(resp.Text), "blocks": slackBlocks(resp),
 	}
 	return a.postJSON(context.Background(), responseURL, "", body)
 }
 
 // postMessage sends a proactive message (alerts, digest, mention replies).
 func (a *slackAdapter) postMessage(ctx context.Context, channel, thread string, resp Response) error {
-	body := map[string]any{"channel": channel, "text": resp.Text, "blocks": slackBlocks(resp)}
+	// mrkdwn:false keeps the fallback text literal; blocks carry the
+	// rendered form with mention parsing disabled there too.
+	body := map[string]any{"channel": channel, "text": resp.Text, "mrkdwn": false, "blocks": slackBlocks(resp)}
 	if thread != "" {
 		body["thread_ts"] = thread
 	}

@@ -59,16 +59,22 @@ func countLine(counts map[string]uint64) string {
 func nextDigest(now time.Time, loc *time.Location, hhmm string) time.Time {
 	t, _ := time.Parse("15:04", hhmm)
 	local := now.In(loc)
-	next := time.Date(local.Year(), local.Month(), local.Day(), t.Hour(), t.Minute(), 0, 0, loc)
+	year, month, day := local.Date()
+	next := time.Date(year, month, day, t.Hour(), t.Minute(), 0, 0, loc)
 	if !next.After(local) {
-		next = next.AddDate(0, 0, 1)
+		// Advance the calendar date and reconstruct the wall time: adding
+		// a day to a spring-forward-normalized nonexistent time (02:30
+		// becoming 01:30) would schedule tomorrow at the wrong hour and
+		// then fire twice.
+		year, month, day = time.Date(year, month, day, 0, 0, 0, 0, loc).AddDate(0, 0, 1).Date()
+		next = time.Date(year, month, day, t.Hour(), t.Minute(), 0, 0, loc)
 	}
 	return next
 }
 
 // runDigest posts the digest to every alert channel on the configured
 // daily boundary until ctx ends.
-func (s *Service) runDigest(ctx context.Context, post func(Provider, string, Response) error) {
+func (s *Service) runDigest(ctx context.Context, post func(context.Context, Provider, string, Response) error) {
 	if s.cfg.DigestTime == "" {
 		return
 	}
@@ -83,10 +89,13 @@ func (s *Service) runDigest(ctx context.Context, post func(Provider, string, Res
 		}
 		text := s.Digest(ctx)
 		for _, pc := range []*ProviderConfig{s.cfg.Slack, s.cfg.Discord} {
+			if ctx.Err() != nil {
+				return
+			}
 			if pc == nil || pc.AlertChannel == "" {
 				continue
 			}
-			if err := post(pc.Provider, pc.AlertChannel, Response{Text: text}); err != nil {
+			if err := post(ctx, pc.Provider, pc.AlertChannel, Response{Text: text}); err != nil {
 				s.warn(err)
 			}
 		}

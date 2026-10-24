@@ -584,3 +584,127 @@ func TestDiscordGatewayAnswersHeartbeatRequestDuringCallback(t *testing.T) {
 		t.Fatal("gateway ignored the heartbeat request while the interaction callback was in flight")
 	}
 }
+
+func TestSlackTextCannotMention(t *testing.T) {
+	blocks := slackBlocks(Response{Text: "<!channel> deploy @here"})
+	section := blocks[0]["text"].(map[string]any)
+	if section["verbatim"] != true {
+		t.Fatalf("section text = %+v; want verbatim so Slack never parses mentions", section)
+	}
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider, BotToken: "tok"})
+	a.apiBase = srv.URL
+	if err := a.postMessage(context.Background(), "C1", "", Response{Text: "<!channel> deploy"}); err != nil {
+		t.Fatal(err)
+	}
+	if captured["mrkdwn"] != false {
+		t.Fatalf("postMessage body = %+v; want mrkdwn disabled for the fallback text", captured)
+	}
+	captured = nil
+	if err := a.postResponseURL(srv.URL+"/response", Response{Text: "<!channel> deploy"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if fallback, _ := captured["text"].(string); strings.Contains(fallback, "<!channel>") {
+		t.Fatalf("response fallback = %q; want the broadcast syntax escaped", fallback)
+	}
+}
+
+func TestNextDigestAcrossSpringForwardGap(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2026-03-08 skips 02:00–03:00 in New York. The next digest after
+	// that morning belongs at the configured 02:30 on March 9.
+	now := time.Date(2026, 3, 8, 8, 0, 0, 0, loc)
+	got := nextDigest(now, loc, "02:30")
+	want := time.Date(2026, 3, 9, 2, 30, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("nextDigest across the gap = %v; want %v", got, want)
+	}
+}
+
+// An interaction whose REST acknowledgement is in flight when the gateway
+// connection drops must still be answered: the gateway will not replay it
+// on Resume, so the connection-lifetime context must not cancel it.
+func TestDiscordInteractionSurvivesGatewayReconnect(t *testing.T) {
+	svc, _ := testService(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	callbackStarted := make(chan struct{}, 1)
+	releaseCallback := make(chan struct{})
+	patchSeen := make(chan struct{}, 1)
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/gateway/bot"):
+			fmt.Fprintf(w, `{"url":"ws://%s"}`, ln.Addr().String())
+		case strings.Contains(r.URL.Path, "/callback"):
+			select {
+			case callbackStarted <- struct{}{}:
+			default:
+			}
+			<-releaseCallback
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			select {
+			case patchSeen <- struct{}{}:
+			default:
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer rest.Close()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(releaseCallback)
+		}
+	}
+	defer release()
+
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = rest.URL
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- a.serveOnce(ctx) }()
+
+	closeGateway := make(chan struct{}, 1)
+	go wsHandshake(t, ln, func(conn net.Conn) {
+		br := bufio.NewReader(conn)
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		writeServerText(conn, `{"op":10,"d":{"heartbeat_interval":60000}}`)
+		if _, err := readClientFrame(br); err != nil { // Identify
+			return
+		}
+		writeServerText(conn, `{"op":0,"s":1,"t":"INTERACTION_CREATE","d":{"id":"43","type":2,"token":"tok","channel_id":"C1","member":{"user":{"id":"D-OPERATOR"}},"data":{"name":"octomus","options":[{"name":"help","options":[]}]}}}`)
+		<-closeGateway // returning closes the socket, dropping the connection
+	})
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("interaction callback never started")
+	}
+	closeGateway <- struct{}{}
+	select {
+	case <-serveDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveOnce did not end after the gateway connection dropped")
+	}
+	release()
+	select {
+	case <-patchSeen:
+	case <-time.After(3 * time.Second):
+		t.Fatal("interaction was dropped when the gateway reconnected; want its reply delivered")
+	}
+}

@@ -15,7 +15,7 @@ type notifyWorker struct {
 	svc      *Service
 	st       *store.Store
 	dest     store.ChatDestination
-	post     func(Provider, string, Response) error
+	post     func(context.Context, Provider, string, Response) error
 	provider Provider
 }
 
@@ -46,11 +46,15 @@ func (w *notifyWorker) deliverNext(ctx context.Context) {
 		return
 	}
 	resp := w.svc.alertResponse(delivery)
-	err = w.post(w.provider, w.dest.Target, resp)
+	err = w.post(ctx, w.provider, w.dest.Target, resp)
 	if err == nil {
 		w.svc.warn(w.st.MarkDelivered(delivery.Seq, w.svc.now()))
 		return
 	}
+	// The delivery error itself is the operator's only diagnostic for a
+	// broken chat destination (webhook health excludes chat rows), so
+	// log it instead of only warning about the bookkeeping write.
+	w.svc.warn(err)
 	if ctx.Err() != nil {
 		// Uncertain send during shutdown: leave the claim to the store's
 		// attempt-limit recovery, like the webhook worker does.
