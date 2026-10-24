@@ -76,6 +76,7 @@ func (e *apiError) retryable() bool {
 func (a *slackAdapter) run(ctx context.Context) {
 	attempt := 0
 	for ctx.Err() == nil {
+		started := time.Now()
 		err := a.serveOnce(ctx)
 		if ctx.Err() != nil {
 			return
@@ -83,7 +84,7 @@ func (a *slackAdapter) run(ctx context.Context) {
 		if err != nil {
 			a.svc.warn(fmt.Errorf("slack socket mode: %w", err))
 		}
-		attempt++
+		attempt = reconnectAttempt(attempt, time.Since(started))
 		select {
 		case <-ctx.Done():
 			return

@@ -40,6 +40,7 @@ func (a *discordAdapter) run(ctx context.Context) {
 	a.svc.goHandle(func() { a.registerLoop(ctx) })
 	attempt := 0
 	for ctx.Err() == nil {
+		started := time.Now()
 		err := a.serveOnce(ctx)
 		if ctx.Err() != nil {
 			return
@@ -47,7 +48,7 @@ func (a *discordAdapter) run(ctx context.Context) {
 		if err != nil {
 			a.svc.warn(fmt.Errorf("discord gateway: %w", err))
 		}
-		attempt++
+		attempt = reconnectAttempt(attempt, time.Since(started))
 		select {
 		case <-ctx.Done():
 			return
@@ -137,11 +138,7 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 		}
 		switch p.Op {
 		case 1: // Heartbeat request: answer immediately, timer untouched.
-			a.mu.Lock()
-			seq := a.seq
-			a.hbAcked = false
-			a.mu.Unlock()
-			if err := conn.WriteJSON(map[string]any{"op": 1, "d": seq}); err != nil {
+			if err := a.answerHeartbeatRequest(conn); err != nil {
 				return err
 			}
 		case 11: // Heartbeat ACK.
@@ -225,6 +222,18 @@ func (a *discordAdapter) identify(conn *wsConn) error {
 			"os": "linux", "browser": "octomus-agent", "device": "octomus-agent",
 		},
 	}})
+}
+
+// answerHeartbeatRequest replies to a gateway-requested heartbeat
+// (opcode 1) without disturbing the periodic ACK tracking: marking the
+// periodic heartbeat unacknowledged here would make the next tick close
+// a healthy connection while the requested heartbeat's ACK is in flight.
+// Any ACK that arrives still lands through opcode 11.
+func (a *discordAdapter) answerHeartbeatRequest(conn *wsConn) error {
+	a.mu.Lock()
+	seq := a.seq
+	a.mu.Unlock()
+	return conn.WriteJSON(map[string]any{"op": 1, "d": seq})
 }
 
 func (a *discordAdapter) heartbeat(ctx context.Context, conn *wsConn, interval time.Duration) {

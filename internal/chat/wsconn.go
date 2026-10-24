@@ -249,6 +249,21 @@ func (c *wsConn) writeFrame(op byte, payload []byte) error {
 	return err
 }
 
+// healthyConnection is how long a provider connection must live for its
+// end to count as a healthy disconnect (e.g. Slack's routine Socket Mode
+// refresh) rather than another failure in a reconnect streak.
+const healthyConnection = time.Minute
+
+// reconnectAttempt advances the failure streak, resetting it after a
+// healthy connection so routine refreshes reconnect promptly instead of
+// accumulating toward the 60s cap over the process lifetime.
+func reconnectAttempt(attempt int, servedFor time.Duration) int {
+	if servedFor >= healthyConnection {
+		return 0
+	}
+	return attempt + 1
+}
+
 // backoffDelay grows reconnect pauses from 1s toward a 60s cap with jitter.
 func backoffDelay(attempt int) time.Duration {
 	d := time.Second << min(attempt, 6)

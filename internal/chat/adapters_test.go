@@ -728,6 +728,62 @@ func TestSlackWebAPIRequiresPositiveAck(t *testing.T) {
 	}
 }
 
+func TestReconnectAttemptResetsAfterHealthyConnection(t *testing.T) {
+	if got := reconnectAttempt(6, 2*time.Hour); got != 0 {
+		t.Fatalf("attempt after a healthy connection = %d; want a reset streak", got)
+	}
+	if got := reconnectAttempt(2, time.Second); got != 3 {
+		t.Fatalf("attempt after a quick failure = %d; want the streak to grow", got)
+	}
+	if d := backoffDelay(0); d < time.Second || d > 2*time.Second {
+		t.Fatalf("backoff after reset = %v; want a prompt ~1s reconnect", d)
+	}
+}
+
+func TestAnswerHeartbeatRequestPreservesACKState(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	received := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		frame, err := readClientFrame(bufio.NewReader(conn))
+		if err == nil {
+			received <- frame
+		}
+	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := &wsConn{conn: client, br: bufio.NewReader(client)}
+	defer ws.Close()
+	a := &discordAdapter{hbAcked: true}
+	if err := a.answerHeartbeatRequest(ws); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-received:
+		if !strings.Contains(frame, `"op":1`) {
+			t.Fatalf("requested heartbeat reply = %q; want opcode 1", frame)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requested heartbeat was not answered")
+	}
+	a.mu.Lock()
+	acked := a.hbAcked
+	a.mu.Unlock()
+	if !acked {
+		t.Fatal("requested heartbeat clobbered the periodic ACK state")
+	}
+}
+
 func TestDiscordTaskIDOptionIsOptional(t *testing.T) {
 	var captured []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
