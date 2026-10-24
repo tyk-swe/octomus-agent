@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -42,6 +43,24 @@ type apiError struct {
 }
 
 func (e *apiError) Error() string { return e.Msg }
+
+// transportMessage renders an HTTP transport failure without the request
+// URL. http.Client errors embed the full URL, and chat URLs carry
+// per-interaction credentials (Slack response URLs, Discord interaction
+// tokens) that environment-based redaction cannot know about. Only the
+// wrapped cause (dial/TLS/timeout detail) survives.
+func transportMessage(prefix string, err error) string {
+	var urlErr *url.Error
+	unwrapped := false
+	for errors.As(err, &urlErr) && urlErr.Err != nil {
+		err = urlErr.Err
+		unwrapped = true
+	}
+	if !unwrapped || errors.As(err, &urlErr) {
+		return prefix
+	}
+	return prefix + ": " + err.Error()
+}
 func (e *apiError) retryable() bool {
 	switch e.Code {
 	case "internal_error", "fatal_error", "ratelimited", "rate_limited",
@@ -82,7 +101,7 @@ func (a *slackAdapter) openConnection(ctx context.Context) (string, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", &apiError{Status: 0, Msg: transportMessage("slack request failed", err)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -338,7 +357,7 @@ func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body 
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return &apiError{Status: 0, Msg: transportMessage("slack request failed", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
@@ -346,7 +365,7 @@ func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body 
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return &apiError{Status: 0, Msg: "slack request failed: " + err.Error()}
+		return &apiError{Status: 0, Msg: transportMessage("slack request failed", err)}
 	}
 	defer resp.Body.Close()
 	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))

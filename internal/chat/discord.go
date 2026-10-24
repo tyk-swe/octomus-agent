@@ -70,7 +70,7 @@ func (a *discordAdapter) gatewayURL(ctx context.Context) (string, error) {
 	req.Header.Set("Authorization", "Bot "+a.cfg.BotToken)
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -136,6 +136,14 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 			a.mu.Unlock()
 		}
 		switch p.Op {
+		case 1: // Heartbeat request: answer immediately, timer untouched.
+			a.mu.Lock()
+			seq := a.seq
+			a.hbAcked = false
+			a.mu.Unlock()
+			if err := conn.WriteJSON(map[string]any{"op": 1, "d": seq}); err != nil {
+				return err
+			}
 		case 11: // Heartbeat ACK.
 			a.mu.Lock()
 			a.hbAcked = true
@@ -165,7 +173,10 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 					a.mu.Unlock()
 				}
 			case "INTERACTION_CREATE":
-				a.handleInteraction(connCtx, p.D)
+				// The REST acknowledgement can take seconds; the read
+				// loop must stay free for heartbeats and the next
+				// interaction's own acknowledgement deadline.
+				go a.handleInteraction(connCtx, p.D)
 			}
 		case 7: // Reconnect.
 			return errors.New("discord asked for a reconnect")
@@ -416,7 +427,7 @@ func (a *discordAdapter) rest(ctx context.Context, method, path string, body map
 	}
 	req, err := http.NewRequestWithContext(ctx, method, a.apiBase+path, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if bot {
@@ -424,7 +435,7 @@ func (a *discordAdapter) rest(ctx context.Context, method, path string, body map
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return &apiError{Status: 0, Msg: "discord request failed: " + err.Error()}
+		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
@@ -502,13 +513,13 @@ func (a *discordAdapter) registerCommands(ctx context.Context) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.apiBase+path, bytes.NewReader(data))
 	if err != nil {
-		return err
+		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bot "+a.cfg.BotToken)
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return err
+		return &apiError{Status: 0, Msg: transportMessage("discord request failed", err)}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))

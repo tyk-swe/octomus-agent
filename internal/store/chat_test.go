@@ -87,6 +87,35 @@ func TestClaimCleanupIsolatedPerDestination(t *testing.T) {
 	}
 }
 
+func TestNotificationHealthScopesToWebhookDestination(t *testing.T) {
+	t.Parallel()
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.SetNotifyPolicy(str(notifyDest), "enabled", nil))
+	must(t, s.SetChatDestinations([]store.ChatDestination{slackDest}))
+	putNotificationTask(t, s, "health-scope-1", "blocked", "timeout")
+	db := raw(t, path)
+	var slackSeq, webhookSeq int64
+	must(t, db.QueryRow("SELECT seq FROM notification_outbox WHERE destination_id=?", slackDest.ID).Scan(&slackSeq))
+	must(t, db.QueryRow("SELECT seq FROM notification_outbox WHERE destination_id=?", notifyDest).Scan(&webhookSeq))
+	// A chat success and a webhook failure: the webhook health panel must
+	// report only its own destination's outcome.
+	must(t, s.MarkDelivered(slackSeq, time.Now()))
+	status := uint16(403)
+	must(t, s.MarkFailed(webhookSeq, "http_status", &status, false))
+	health, err := s.NotificationHealth()
+	must(t, err)
+	if health.LastDeliveredAt != nil {
+		t.Fatalf("webhook health claimed the chat delivery at %v", *health.LastDeliveredAt)
+	}
+	if health.Failed != 1 || health.Pending != 0 {
+		t.Fatalf("health = %+v; want one failed webhook row and none pending", health)
+	}
+	if health.LastHTTPStatus == nil || *health.LastHTTPStatus != 403 {
+		t.Fatalf("health last HTTP status = %v; want the webhook 403", health.LastHTTPStatus)
+	}
+}
+
 func TestChatDestinationRemovalCancelsPending(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)

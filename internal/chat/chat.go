@@ -114,8 +114,12 @@ func (s *Service) Handle(ctx context.Context, inv Invocation) (resp Response, ha
 	if inv.EventID != "" && s.store != nil {
 		seen, err := s.store.MarkChatEventSeen(string(inv.Provider), inv.EventID, s.now())
 		if err != nil {
+			// Fail closed: without a durable dedupe record a provider
+			// redelivery could execute this command a second time.
 			s.warn(err)
-		} else if seen {
+			return Response{Text: "That delivery could not be recorded safely; please try again."}, true
+		}
+		if seen {
 			return Response{}, true
 		}
 	}

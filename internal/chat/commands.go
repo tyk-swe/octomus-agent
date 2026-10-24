@@ -23,35 +23,58 @@ retry <task-id> · cancel <task-id> · withdraw <request-id> (ask for confirmati
 repos — repositories this instance serves`
 
 // parseCommand splits invocation text into verb, positional fields and the
-// optional --repo flag.
+// optional --repo flag. Token end offsets are tracked so rest starts
+// exactly after the verb token, even when the verb also appears inside a
+// preceding --repo value.
 func parseCommand(text string) (verb string, fields []string, rest string, repo string, err error) {
-	var kept []string
-	raw := strings.Fields(text)
-	for i := 0; i < len(raw); i++ {
+	type token struct {
+		value string
+		end   int // byte offset just past the token in text
+	}
+	var tokens []token
+	cursor := 0
+	for _, field := range strings.Fields(text) {
+		idx := strings.Index(text[cursor:], field)
+		if idx < 0 {
+			break
+		}
+		end := cursor + idx + len(field)
+		tokens = append(tokens, token{value: field, end: end})
+		cursor = end
+	}
+	var kept []token
+	var unknown []string
+	for i := 0; i < len(tokens); i++ {
 		switch {
-		case raw[i] == "--repo" && i+1 < len(raw):
-			repo = raw[i+1]
+		case tokens[i].value == "--repo" && i+1 < len(tokens):
+			repo = tokens[i+1].value
 			i++
-		case strings.HasPrefix(raw[i], "--repo="):
-			repo = strings.TrimPrefix(raw[i], "--repo=")
-		case strings.HasPrefix(raw[i], "--"):
-			return "", nil, "", "", fmt.Errorf("Unknown flag %s; only --repo is supported", raw[i])
+		case strings.HasPrefix(tokens[i].value, "--repo="):
+			repo = strings.TrimPrefix(tokens[i].value, "--repo=")
+		case strings.HasPrefix(tokens[i].value, "--"):
+			unknown = append(unknown, tokens[i].value)
 		default:
-			kept = append(kept, raw[i])
+			kept = append(kept, tokens[i])
 		}
 	}
 	if len(kept) == 0 {
+		if len(unknown) > 0 {
+			return "", nil, "", "", fmt.Errorf("Unknown flag %s; only --repo is supported", unknown[0])
+		}
 		return "help", nil, "", repo, nil
 	}
-	verb = strings.ToLower(kept[0])
-	fields = kept[1:]
+	verb = strings.ToLower(kept[0].value)
+	// A work request's description is free text: CLI flags mentioned in it
+	// (--help, --dry-run, …) are content, not chat flags to reject.
+	if verb != "request" && len(unknown) > 0 {
+		return "", nil, "", "", fmt.Errorf("Unknown flag %s; only --repo is supported", unknown[0])
+	}
+	for _, tok := range kept[1:] {
+		fields = append(fields, tok.value)
+	}
 	// rest preserves free text after the verb (used by request, where
 	// spacing and newlines matter) minus any --repo flag.
-	rest = text
-	if idx := strings.Index(rest, kept[0]); idx >= 0 {
-		rest = rest[idx+len(kept[0]):]
-	}
-	rest = stripRepoFlag(rest)
+	rest = stripRepoFlag(text[kept[0].end:])
 	return verb, fields, strings.TrimSpace(rest), repo, nil
 }
 

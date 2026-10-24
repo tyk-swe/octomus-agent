@@ -451,3 +451,136 @@ func TestDiscordRegistrationRetriesTransientFailure(t *testing.T) {
 		t.Fatalf("registration attempts = %d; want a transient failure then success", got)
 	}
 }
+
+func TestTransportErrorsHideCapabilityURLs(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close() // every request now fails at the transport layer
+
+	slack := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider})
+	err := slack.postJSON(context.Background(), deadURL+"/response/SECRET-RESPONSE-PATH", "", map[string]any{"text": "x"})
+	if err == nil || strings.Contains(err.Error(), "SECRET-RESPONSE-PATH") {
+		t.Fatalf("slack transport error = %v; want a failure without the response URL", err)
+	}
+	discord := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok"})
+	discord.apiBase = deadURL
+	err = discord.rest(context.Background(), http.MethodPost, "/interactions/1/SECRET-INTERACTION-TOKEN/callback", map[string]any{"type": 5}, false)
+	if err == nil || strings.Contains(err.Error(), "SECRET-INTERACTION-TOKEN") {
+		t.Fatalf("discord transport error = %v; want a failure without the interaction token", err)
+	}
+}
+
+func readClientFrame(br *bufio.Reader) (string, error) {
+	var head [2]byte
+	if _, err := io.ReadFull(br, head[:]); err != nil {
+		return "", err
+	}
+	length := int(head[1] & 0x7F)
+	if length == 126 {
+		var ext [2]byte
+		if _, err := io.ReadFull(br, ext[:]); err != nil {
+			return "", err
+		}
+		length = int(binary.BigEndian.Uint16(ext[:]))
+	}
+	var mask [4]byte
+	if _, err := io.ReadFull(br, mask[:]); err != nil {
+		return "", err
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(br, payload); err != nil {
+		return "", err
+	}
+	for i := range payload {
+		payload[i] ^= mask[i%4]
+	}
+	return string(payload), nil
+}
+
+func writeServerText(conn net.Conn, text string) {
+	frame := []byte{0x80 | wsText}
+	switch {
+	case len(text) < 126:
+		frame = append(frame, byte(len(text)))
+	default:
+		frame = append(frame, 126, byte(len(text)>>8), byte(len(text)))
+	}
+	conn.Write(append(frame, text...))
+}
+
+// The gateway read loop must answer an opcode-1 heartbeat request even
+// while an interaction callback is still in flight at the REST layer.
+func TestDiscordGatewayAnswersHeartbeatRequestDuringCallback(t *testing.T) {
+	svc, _ := testService(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	callbackStarted := make(chan struct{}, 1)
+	releaseCallback := make(chan struct{})
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/gateway/bot"):
+			fmt.Fprintf(w, `{"url":"ws://%s"}`, ln.Addr().String())
+		case strings.Contains(r.URL.Path, "/callback"):
+			select {
+			case callbackStarted <- struct{}{}:
+			default:
+			}
+			<-releaseCallback
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer rest.Close()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(releaseCallback)
+		}
+	}
+	defer release()
+
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = rest.URL
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.serveOnce(ctx)
+
+	sendHeartbeatRequest := make(chan struct{}, 1)
+	heartbeatSeen := make(chan string, 1)
+	go wsHandshake(t, ln, func(conn net.Conn) {
+		br := bufio.NewReader(conn)
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		writeServerText(conn, `{"op":10,"d":{"heartbeat_interval":60000}}`)
+		if _, err := readClientFrame(br); err != nil { // Identify
+			return
+		}
+		writeServerText(conn, `{"op":0,"s":1,"t":"INTERACTION_CREATE","d":{"id":"42","type":2,"token":"tok","channel_id":"C1","member":{"user":{"id":"D-OPERATOR"}},"data":{"name":"octomus","options":[{"name":"help","options":[]}]}}}`)
+		<-sendHeartbeatRequest
+		writeServerText(conn, `{"op":1,"d":null}`)
+		frame, err := readClientFrame(br)
+		if err == nil {
+			heartbeatSeen <- frame
+		}
+		time.Sleep(100 * time.Millisecond)
+	})
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("interaction callback never started")
+	}
+	sendHeartbeatRequest <- struct{}{}
+	select {
+	case frame := <-heartbeatSeen:
+		if !strings.Contains(frame, `"op":1`) {
+			t.Fatalf("frame after heartbeat request = %q; want an opcode-1 heartbeat", frame)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("gateway ignored the heartbeat request while the interaction callback was in flight")
+	}
+}

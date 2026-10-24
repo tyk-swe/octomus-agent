@@ -141,17 +141,21 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	if err != nil && err != sql.ErrNoRows {
 		return health, err
 	}
-	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='pending'").Scan(&health.Pending); err != nil {
+	// Health reports the webhook destination only: chat destinations fan
+	// out into the same outbox, and their successes or failures must not
+	// surface as webhook health in Settings.
+	const webhookRows = "(destination_id IS NULL OR destination_id IN (SELECT destination_id FROM notification_destinations WHERE kind='webhook') OR destination_id IN (SELECT destination_id FROM notification_policy WHERE id=1 AND destination_id IS NOT NULL))"
+	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='pending' AND "+webhookRows).Scan(&health.Pending); err != nil {
 		return health, err
 	}
-	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='failed'").Scan(&health.Failed); err != nil {
+	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='failed' AND "+webhookRows).Scan(&health.Failed); err != nil {
 		return health, err
 	}
-	if err := s.conn.QueryRowContext(background, "SELECT MAX(delivered_at) FROM notification_outbox WHERE status='delivered'").Scan(&health.LastDeliveredAt); err != nil {
+	if err := s.conn.QueryRowContext(background, "SELECT MAX(delivered_at) FROM notification_outbox WHERE status='delivered' AND "+webhookRows).Scan(&health.LastDeliveredAt); err != nil {
 		return health, err
 	}
 	var lastError *string
-	err = s.conn.QueryRowContext(background, "SELECT last_error, http_status FROM notification_outbox WHERE last_error IS NOT NULL OR http_status IS NOT NULL ORDER BY seq DESC LIMIT 1").Scan(&lastError, &health.LastHTTPStatus)
+	err = s.conn.QueryRowContext(background, "SELECT last_error, http_status FROM notification_outbox WHERE (last_error IS NOT NULL OR http_status IS NOT NULL) AND "+webhookRows+" ORDER BY seq DESC LIMIT 1").Scan(&lastError, &health.LastHTTPStatus)
 	if err != nil && err != sql.ErrNoRows {
 		return health, err
 	}

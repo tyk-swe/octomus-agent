@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,6 +168,60 @@ func TestAlertButtonsFitDiscordLimitForLongRepos(t *testing.T) {
 		if len(b.Value) > 100 {
 			t.Fatalf("button value %q is %d chars; Discord custom_id limit is 100", b.Value, len(b.Value))
 		}
+	}
+}
+
+func TestRequestTextKeepsEmbeddedFlags(t *testing.T) {
+	verb, _, rest, _, err := parseCommand("request Fix help :: Make --help and --dry-run work")
+	if err != nil {
+		t.Fatalf("request with CLI flags in its description rejected: %v", err)
+	}
+	if verb != "request" || !strings.Contains(rest, "--help") || !strings.Contains(rest, "--dry-run") {
+		t.Fatalf("verb=%q rest=%q; want the flags preserved as content", verb, rest)
+	}
+	if _, _, _, _, err := parseCommand("status --bogus"); err == nil {
+		t.Fatal("unknown flag on a non-request command accepted")
+	}
+	// A --repo before the verb must not let the verb be located inside
+	// the repository name.
+	_, _, rest, repo, err := parseCommand("--repo acme/requests request Title :: Details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo != "acme/requests" || rest != "Title :: Details" {
+		t.Fatalf("repo=%q rest=%q; want acme/requests and the exact title", repo, rest)
+	}
+}
+
+func TestDedupeFailureBlocksDispatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	fleet, err := engine.NewFleet(st, t.TempDir(), engine.FleetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fleet.Shutdown)
+	svc := NewService(testConfig(), fleet, st, nil)
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec("DROP TABLE chat_events"); err != nil {
+		t.Fatal(err)
+	}
+	resp, handled := svc.Handle(context.Background(), Invocation{
+		Provider: SlackProvider, EventID: "env-dedupe-fail", UserID: testSlackUser, ChannelID: "C1", Text: "help",
+	})
+	if strings.Contains(resp.Text, "Octomus commands") {
+		t.Fatalf("command dispatched despite dedupe failure: %q", resp.Text)
+	}
+	if !handled || resp.Text == "" {
+		t.Fatalf("resp=%+v handled=%v; want a handled refusal", resp, handled)
 	}
 }
 
