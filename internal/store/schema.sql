@@ -26,6 +26,23 @@ CREATE TABLE notification_policy (
             state TEXT NOT NULL DEFAULT 'disabled', error TEXT
         );
 
+CREATE TABLE notification_destinations (
+            destination_id TEXT PRIMARY KEY, kind TEXT NOT NULL,
+            target TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1
+        );
+
+CREATE TABLE chat_events (
+            provider TEXT NOT NULL, event_id TEXT NOT NULL, received_at TEXT NOT NULL,
+            PRIMARY KEY(provider, event_id)
+        );
+
+CREATE TABLE chat_context (
+            provider TEXT NOT NULL, channel_id TEXT NOT NULL, thread_id TEXT NOT NULL DEFAULT '',
+            repository TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL, PRIMARY KEY(provider, channel_id, thread_id)
+        );
+
+
 CREATE TABLE pr_reservations(task_id TEXT PRIMARY KEY,repository TEXT NOT NULL,branch TEXT NOT NULL,admitted_at TEXT NOT NULL);
 
 CREATE TABLE proposal_records(seq INTEGER PRIMARY KEY AUTOINCREMENT,cycle_id TEXT NOT NULL,proposal_id TEXT NOT NULL,mode TEXT NOT NULL,number INTEGER NOT NULL,decision TEXT NOT NULL,target TEXT NOT NULL,title TEXT NOT NULL,data TEXT NOT NULL, content_revision INTEGER NOT NULL DEFAULT 1,UNIQUE(cycle_id,proposal_id));
@@ -106,7 +123,7 @@ CREATE TRIGGER count_record_update AFTER UPDATE OF status,archived ON record_met
 
 CREATE TRIGGER notify_control_insert AFTER INSERT ON records
         WHEN NEW.kind='settings' AND (NEW.id='control' OR NEW.id LIKE 'control:%')
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
+            AND EXISTS (SELECT 1 FROM notification_destinations WHERE enabled=1)
             AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1
             AND json_extract(NEW.data,'$.error') IS NOT NULL
         BEGIN
@@ -116,13 +133,13 @@ CREATE TRIGGER notify_control_insert AFTER INSERT ON records
                     CASE WHEN NEW.id='control' THEN COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),'') ELSE substr(NEW.id,9) END,
                     json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,
                     'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
+                FROM notification_destinations WHERE enabled=1;
             UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);
         END;
 
 CREATE TRIGGER notify_control_update AFTER UPDATE ON records
         WHEN NEW.kind='settings' AND (NEW.id='control' OR NEW.id LIKE 'control:%')
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
+            AND EXISTS (SELECT 1 FROM notification_destinations WHERE enabled=1)
             AND COALESCE(json_extract(NEW.data,'$.paused'),0)=1
             AND json_extract(NEW.data,'$.error') IS NOT NULL
             AND NOT (COALESCE(json_extract(OLD.data,'$.paused'),0)=1 AND json_extract(OLD.data,'$.error') IS NOT NULL)
@@ -133,13 +150,13 @@ CREATE TRIGGER notify_control_update AFTER UPDATE ON records
                     CASE WHEN NEW.id='control' THEN COALESCE(json_extract((SELECT data FROM records WHERE kind='settings' AND id='config'),'$.github_repo'),'') ELSE substr(NEW.id,9) END,
                     json_extract(NEW.data,'$.batch.cycle_id'), json_extract(NEW.data,'$.batch.id'), NULL,
                     'service_error_paused', 'inspect_service', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
+                FROM notification_destinations WHERE enabled=1;
             UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);
         END;
 
 CREATE TRIGGER notify_task_insert AFTER INSERT ON records
         WHEN NEW.kind='task'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
+            AND EXISTS (SELECT 1 FROM notification_destinations WHERE enabled=1)
             AND json_extract(NEW.data,'$.status') IN ('blocked','failed','published')
         BEGIN
             INSERT INTO notification_outbox
@@ -148,13 +165,13 @@ CREATE TRIGGER notify_task_insert AFTER INSERT ON records
                     COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),
                     json_extract(NEW.data,'$.cycle_id'), json_extract(NEW.data,'$.run_id'), NEW.id,
                     CASE WHEN json_extract(NEW.data,'$.status')='published' THEN 'task_published' WHEN COALESCE(json_extract(NEW.data,'$.blocked_reason'),'') IN ('budget_exhausted','storage_limit','stale_base','remote_conflict','publication_uncertain','runner_unavailable','invalid_review','verification_failed','dependency_blocked','invalid_plan','workspace_invalid','retry_limit','timeout') THEN json_extract(NEW.data,'$.blocked_reason') ELSE 'unknown' END, 'inspect_task', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
+                FROM notification_destinations WHERE enabled=1;
             UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);
         END;
 
 CREATE TRIGGER notify_task_update AFTER UPDATE ON records
         WHEN NEW.kind='task'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
+            AND EXISTS (SELECT 1 FROM notification_destinations WHERE enabled=1)
             AND json_extract(NEW.data,'$.status') IN ('blocked','failed','published')
             AND ((json_extract(NEW.data,'$.status')='published' AND COALESCE(json_extract(OLD.data,'$.status'),'')!='published')
                 OR (json_extract(NEW.data,'$.status') IN ('blocked','failed') AND COALESCE(json_extract(OLD.data,'$.status'),'') NOT IN ('blocked','failed')))
@@ -165,13 +182,13 @@ CREATE TRIGGER notify_task_update AFTER UPDATE ON records
                     COALESCE(json_extract(NEW.data,'$.config.github_repo'),''),
                     json_extract(NEW.data,'$.cycle_id'), json_extract(NEW.data,'$.run_id'), NEW.id,
                     CASE WHEN json_extract(NEW.data,'$.status')='published' THEN 'task_published' WHEN COALESCE(json_extract(NEW.data,'$.blocked_reason'),'') IN ('budget_exhausted','storage_limit','stale_base','remote_conflict','publication_uncertain','runner_unavailable','invalid_review','verification_failed','dependency_blocked','invalid_plan','workspace_invalid','retry_limit','timeout') THEN json_extract(NEW.data,'$.blocked_reason') ELSE 'unknown' END, 'inspect_task', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
+                FROM notification_destinations WHERE enabled=1;
             UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);
         END;
 
 CREATE TRIGGER notify_cycle_insert AFTER INSERT ON records
         WHEN NEW.kind='cycle'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
+            AND EXISTS (SELECT 1 FROM notification_destinations WHERE enabled=1)
             AND (json_extract(NEW.data,'$.status')='failed'
                 OR (json_extract(NEW.data,'$.mode')='audit' AND json_extract(NEW.data,'$.status') IN ('completed','idle')))
         BEGIN
@@ -182,13 +199,13 @@ CREATE TRIGGER notify_cycle_insert AFTER INSERT ON records
                     json_extract(NEW.data,'$.run_id'), NULL,
                     CASE WHEN json_extract(NEW.data,'$.status')='failed' THEN 'cycle_failed' ELSE 'audit_completed' END,
                     'inspect_cycle', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
+                FROM notification_destinations WHERE enabled=1;
             UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);
         END;
 
 CREATE TRIGGER notify_cycle_update AFTER UPDATE ON records
         WHEN NEW.kind='cycle'
-            AND (SELECT enabled FROM notification_policy WHERE id=1)=1
+            AND EXISTS (SELECT 1 FROM notification_destinations WHERE enabled=1)
             AND (json_extract(NEW.data,'$.status')='failed'
                 OR (json_extract(NEW.data,'$.mode')='audit' AND json_extract(NEW.data,'$.status') IN ('completed','idle')))
             AND CASE WHEN json_extract(NEW.data,'$.status')='failed'
@@ -203,7 +220,7 @@ CREATE TRIGGER notify_cycle_update AFTER UPDATE ON records
                     json_extract(NEW.data,'$.run_id'), NULL,
                     CASE WHEN json_extract(NEW.data,'$.status')='failed' THEN 'cycle_failed' ELSE 'audit_completed' END,
                     'inspect_cycle', 'pending', 0, unixepoch('now')
-                FROM notification_policy WHERE id=1;
+                FROM notification_destinations WHERE enabled=1;
             UPDATE notification_outbox SET status='failed', last_error='queue_overflow' WHERE seq IN (SELECT seq FROM notification_outbox WHERE status='pending' ORDER BY seq DESC LIMIT -1 OFFSET 1000);
         END;
 

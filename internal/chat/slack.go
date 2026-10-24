@@ -1,0 +1,333 @@
+package chat
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// slackAdapter speaks Socket Mode: an outbound WebSocket that carries
+// slash commands, button clicks and app_mention events, so Octomus needs
+// no public request URL. Replies go through the Web API / response URLs.
+type slackAdapter struct {
+	svc     *Service
+	cfg     *ProviderConfig
+	client  *http.Client
+	apiBase string
+}
+
+func newSlackAdapter(svc *Service, cfg *ProviderConfig) *slackAdapter {
+	return &slackAdapter{svc: svc, cfg: cfg, client: apiClient(), apiBase: "https://slack.com/api"}
+}
+
+func apiClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &http.Client{Transport: transport, Timeout: 20 * time.Second}
+}
+
+type apiError struct {
+	Status int
+	Msg    string
+}
+
+func (e *apiError) Error() string { return e.Msg }
+func (e *apiError) retryable() bool {
+	return e.Status == 408 || e.Status == 429 || e.Status >= 500
+}
+
+func (a *slackAdapter) run(ctx context.Context) {
+	attempt := 0
+	for ctx.Err() == nil {
+		err := a.serveOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			a.svc.warn(fmt.Errorf("slack socket mode: %w", err))
+		}
+		attempt++
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoffDelay(attempt)):
+		}
+	}
+}
+
+func (a *slackAdapter) openConnection(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.apiBase+"/apps.connections.open", strings.NewReader(""))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.cfg.AppToken)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		OK    bool   `json:"ok"`
+		URL   string `json:"url"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("apps.connections.open: %w", err)
+	}
+	if !out.OK || out.URL == "" {
+		return "", &apiError{Status: resp.StatusCode, Msg: "apps.connections.open refused: " + out.Error}
+	}
+	return out.URL, nil
+}
+
+type slackEnvelope struct {
+	EnvelopeID string          `json:"envelope_id"`
+	Type       string          `json:"type"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+func (a *slackAdapter) serveOnce(ctx context.Context) error {
+	wsURL, err := a.openConnection(ctx)
+	if err != nil {
+		return err
+	}
+	conn, err := wsDial(ctx, wsURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	for {
+		data, err := conn.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		var env slackEnvelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			continue
+		}
+		switch env.Type {
+		case "hello":
+		case "disconnect":
+			return errors.New("slack asked for a reconnect")
+		case "slash_commands", "interactive", "events_api":
+			if err := a.handleEnvelope(ctx, conn, env); err != nil {
+				return err
+			}
+		default:
+			if env.EnvelopeID != "" {
+				_ = conn.WriteJSON(map[string]any{"envelope_id": env.EnvelopeID})
+			}
+		}
+	}
+}
+
+// handleEnvelope acknowledges within Slack's deadline first, then runs the
+// (possibly slow) engine call in the background and posts the real answer.
+func (a *slackAdapter) handleEnvelope(ctx context.Context, conn *wsConn, env slackEnvelope) error {
+	inv, ackPayload, respond, ok := a.decode(env)
+	ack := map[string]any{"envelope_id": env.EnvelopeID}
+	if ackPayload != nil {
+		ack["payload"] = ackPayload
+	}
+	if err := conn.WriteJSON(ack); err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	go func() {
+		resp, handled := a.svc.Handle(ctx, inv)
+		if !handled || (resp.Text == "" && len(resp.Buttons) == 0) {
+			return
+		}
+		if err := respond(resp); err != nil {
+			a.svc.warn(err)
+		}
+	}()
+	return nil
+}
+
+type slackSlashPayload struct {
+	Command     string `json:"command"`
+	Text        string `json:"text"`
+	UserID      string `json:"user_id"`
+	ChannelID   string `json:"channel_id"`
+	ResponseURL string `json:"response_url"`
+}
+
+type slackInteractivePayload struct {
+	Type string `json:"type"`
+	User struct {
+		ID string `json:"id"`
+	} `json:"user"`
+	Channel struct {
+		ID string `json:"id"`
+	} `json:"channel"`
+	Message struct {
+		ThreadTS string `json:"thread_ts"`
+	} `json:"message"`
+	ResponseURL string `json:"response_url"`
+	Actions     []struct {
+		Value string `json:"value"`
+	} `json:"actions"`
+}
+
+type slackEventPayload struct {
+	EventID string `json:"event_id"`
+	Event   struct {
+		Type     string `json:"type"`
+		User     string `json:"user"`
+		Channel  string `json:"channel"`
+		Text     string `json:"text"`
+		TS       string `json:"ts"`
+		ThreadTS string `json:"thread_ts"`
+	} `json:"event"`
+}
+
+func (a *slackAdapter) decode(env slackEnvelope) (Invocation, map[string]any, func(Response) error, bool) {
+	switch env.Type {
+	case "slash_commands":
+		var p slackSlashPayload
+		if json.Unmarshal(env.Payload, &p) != nil || p.Command != "/octomus" {
+			return Invocation{}, nil, nil, false
+		}
+		inv := Invocation{Provider: SlackProvider, EventID: env.EnvelopeID, UserID: p.UserID, ChannelID: p.ChannelID, Text: p.Text}
+		ack := map[string]any{"response_type": "ephemeral", "text": "Working on it…"}
+		respond := func(resp Response) error {
+			return a.postResponseURL(p.ResponseURL, resp, true)
+		}
+		return inv, ack, respond, true
+	case "interactive":
+		var p slackInteractivePayload
+		if json.Unmarshal(env.Payload, &p) != nil || len(p.Actions) == 0 {
+			return Invocation{}, nil, nil, false
+		}
+		inv := Invocation{Provider: SlackProvider, EventID: env.EnvelopeID, UserID: p.User.ID,
+			ChannelID: p.Channel.ID, ThreadID: p.Message.ThreadTS, Action: p.Actions[0].Value}
+		respond := func(resp Response) error {
+			return a.postResponseURL(p.ResponseURL, resp, false)
+		}
+		return inv, nil, respond, true
+	case "events_api":
+		var p slackEventPayload
+		if json.Unmarshal(env.Payload, &p) != nil || p.Event.Type != "app_mention" {
+			return Invocation{}, nil, nil, false
+		}
+		thread := p.Event.ThreadTS
+		if thread == "" {
+			thread = p.Event.TS
+		}
+		inv := Invocation{Provider: SlackProvider, EventID: p.EventID, UserID: p.Event.User,
+			ChannelID: p.Event.Channel, ThreadID: thread, Text: stripMention(p.Event.Text)}
+		respond := func(resp Response) error {
+			return a.postMessage(context.Background(), p.Event.Channel, thread, resp)
+		}
+		return inv, nil, respond, true
+	}
+	return Invocation{}, nil, nil, false
+}
+
+func stripMention(text string) string {
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "<@") {
+		if end := strings.Index(text, ">"); end >= 0 {
+			text = strings.TrimSpace(text[end+1:])
+		}
+	}
+	return text
+}
+
+// slackBlocks renders text plus buttons as Block Kit, keeping text as the
+// notification fallback.
+func slackBlocks(resp Response) []map[string]any {
+	blocks := []map[string]any{
+		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackEscape(resp.Text)}},
+	}
+	if len(resp.Buttons) > 0 {
+		elements := []map[string]any{}
+		for _, b := range resp.Buttons {
+			if len(elements) >= 5 {
+				break
+			}
+			elements = append(elements, map[string]any{
+				"type": "button", "action_id": "octomus_action", "value": b.Value,
+				"text": map[string]any{"type": "plain_text", "text": b.Label},
+			})
+		}
+		blocks = append(blocks, map[string]any{"type": "actions", "elements": elements})
+	}
+	return blocks
+}
+
+func slackEscape(text string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+	return r.Replace(text)
+}
+
+func (a *slackAdapter) postResponseURL(responseURL string, resp Response, replace bool) error {
+	if responseURL == "" {
+		return nil
+	}
+	body := map[string]any{
+		"response_type": "ephemeral", "replace_original": replace,
+		"text": resp.Text, "blocks": slackBlocks(resp),
+	}
+	return a.postJSON(context.Background(), responseURL, "", body)
+}
+
+// postMessage sends a proactive message (alerts, digest, mention replies).
+func (a *slackAdapter) postMessage(ctx context.Context, channel, thread string, resp Response) error {
+	body := map[string]any{"channel": channel, "text": resp.Text, "blocks": slackBlocks(resp)}
+	if thread != "" {
+		body["thread_ts"] = thread
+	}
+	return a.postJSON(ctx, a.apiBase+"/chat.postMessage", a.cfg.BotToken, body)
+}
+
+func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body map[string]any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return &apiError{Status: 0, Msg: "slack request failed: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &apiError{Status: resp.StatusCode, Msg: fmt.Sprintf("slack request refused: %s", resp.Status)}
+	}
+	var out struct {
+		OK    *bool  `json:"ok"`
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(got, &out) == nil && out.OK != nil && !*out.OK {
+		return &apiError{Status: resp.StatusCode, Msg: "slack refused: " + out.Error}
+	}
+	return nil
+}

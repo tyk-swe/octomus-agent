@@ -155,5 +155,7 @@ commands still need configuration. The file is a reference, not a ready-to-run s
 
 For command-line options, environment variables, the optional attention webhook and
 planning context, see [deployment and operations](deployment.md#cli) and
-[architecture](architecture.md#planning). Keep account credentials in the service user's
+[architecture](architecture.md#planning). The optional Slack/Discord chat surface is
+host environment too, never saved configuration; see [Slack and Discord chat](chat.md).
+Keep account credentials in the service user's
 protected environment and runner settings, never in the repository.

@@ -45,9 +45,21 @@ func (s *Store) SetNotifyPolicy(destination *string, state string, errorText *st
 		if state == "enabled" && destination != nil {
 			enabled = 1
 		}
+		// Rotating or disabling the webhook cancels only the webhook
+		// destination's pending rows; chat destinations keep theirs.
 		if _, err := c.ExecContext(background, `UPDATE notification_outbox SET status='cancelled', last_error='destination_changed'
-             WHERE status='pending' AND (?1=0 OR destination_id IS NOT ?2)`, enabled, destination); err != nil {
+             WHERE status='pending' AND (?1=0 OR destination_id IS NOT ?2)
+                 AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE kind='webhook')`, enabled, destination); err != nil {
 			return err
+		}
+		if _, err := c.ExecContext(background, "DELETE FROM notification_destinations WHERE kind='webhook' AND (?1=0 OR destination_id IS NOT ?2)", enabled, destination); err != nil {
+			return err
+		}
+		if enabled == 1 {
+			if _, err := c.ExecContext(background, `INSERT INTO notification_destinations(destination_id,kind,target,enabled) VALUES (?1,'webhook','',1)
+                 ON CONFLICT(destination_id) DO UPDATE SET kind='webhook', enabled=1`, destination); err != nil {
+				return err
+			}
 		}
 		_, err := c.ExecContext(background, `INSERT INTO notification_policy VALUES (1,?2,?1,?3,?4)
              ON CONFLICT(id) DO UPDATE SET destination_id=excluded.destination_id, enabled=excluded.enabled, state=excluded.state, error=excluded.error`, enabled, destination, state, errorText)
@@ -71,7 +83,7 @@ func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationD
 		err := c.QueryRowContext(background, `SELECT seq,event_id,created_at,repository,cycle_id,run_id,task_id,category,action,attempts
                  FROM notification_outbox
                  WHERE status='pending' AND next_attempt_at <= ?1 AND destination_id=?2
-                     AND destination_id = (SELECT destination_id FROM notification_policy WHERE id=1 AND enabled=1)
+                     AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE enabled=1)
                  ORDER BY seq LIMIT 1`, epoch, destination).Scan(&d.Seq, &d.EventID, &d.CreatedAt, &d.Repository, &d.CycleID, &d.RunID, &d.TaskID, &d.Category, &d.Action, &d.Attempts)
 		if err != nil && err != sql.ErrNoRows {
 			return err
