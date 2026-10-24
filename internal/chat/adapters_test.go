@@ -7,10 +7,15 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -187,5 +192,262 @@ func TestWSConnRoundTrip(t *testing.T) {
 	}
 	if string(got) != "pong-ok" {
 		t.Fatalf("after ping/pong = %q; want pong-ok", got)
+	}
+}
+
+func TestSlackBlocksDistinctActionIDsAndBoundedEscape(t *testing.T) {
+	resp := Response{Text: "Confirm?", Buttons: []Button{
+		{Label: "Confirm", Value: "confirm:abc"}, {Label: "Cancel", Value: "cancel:abc"},
+	}}
+	blocks := slackBlocks(resp)
+	elements, ok := blocks[1]["elements"].([]map[string]any)
+	if !ok || len(elements) != 2 {
+		t.Fatalf("blocks = %+v; want two button elements", blocks)
+	}
+	if elements[0]["action_id"] == elements[1]["action_id"] {
+		t.Fatalf("action_ids must differ within one block: %v", elements)
+	}
+	escaped := slackBlocks(Response{Text: strings.Repeat("&", 700)})
+	section := escaped[0]["text"].(map[string]any)["text"].(string)
+	if len([]rune(section)) > 3000 {
+		t.Fatalf("escaped section is %d chars; Slack rejects over 3000", len([]rune(section)))
+	}
+}
+
+func TestSlackTransientAPIErrorIsRetryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		code := "internal_error"
+		if strings.Contains(r.URL.Path, "permanent") {
+			code = "channel_not_found"
+		}
+		fmt.Fprintf(w, `{"ok":false,"error":%q}`, code)
+	}))
+	defer srv.Close()
+	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider})
+	err := a.postJSON(context.Background(), srv.URL+"/transient", "tok", map[string]any{"text": "x"})
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || !apiErr.retryable() {
+		t.Fatalf("transient slack error = %v; want retryable apiError", err)
+	}
+	err = a.postJSON(context.Background(), srv.URL+"/permanent", "tok", map[string]any{"text": "x"})
+	if !errors.As(err, &apiErr) || apiErr.retryable() {
+		t.Fatalf("permanent slack error = %v; want non-retryable apiError", err)
+	}
+}
+
+func TestDiscordComponentsSkipOversizeIDsAndDisableMentions(t *testing.T) {
+	rows := discordComponents(Response{Buttons: []Button{
+		{Label: "Too long", Value: strings.Repeat("x", 101)},
+		{Label: "View task", Value: "task:view:abc-123"},
+	}})
+	if len(rows) != 1 || len(rows[0]["components"].([]map[string]any)) != 1 {
+		t.Fatalf("components = %+v; want only the in-limit button", rows)
+	}
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok"})
+	a.apiBase = srv.URL
+	if err := a.postMessage(context.Background(), "123", Response{Text: "hi <@999> @everyone"}); err != nil {
+		t.Fatal(err)
+	}
+	mentions, ok := captured["allowed_mentions"].(map[string]any)
+	if !ok {
+		t.Fatalf("post body = %+v; want allowed_mentions", captured)
+	}
+	if parse, ok := mentions["parse"].([]any); !ok || len(parse) != 0 {
+		t.Fatalf("allowed_mentions = %+v; want empty parse list", mentions)
+	}
+}
+
+func TestDiscordUnauthorizedClickDoesNotEditAlert(t *testing.T) {
+	svc, _ := testService(t)
+	var mu sync.Mutex
+	var callback map[string]any
+	patched := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPatch {
+			patched = true
+		}
+		if strings.Contains(r.URL.Path, "/callback") {
+			_ = json.NewDecoder(r.Body).Decode(&callback)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	raw := `{"id":"99","type":3,"token":"tok","channel_id":"C1","member":{"user":{"id":"STRANGER"}},
+	  "data":{"custom_id":"task:view:abc-123"}}`
+	a.handleInteraction(context.Background(), json.RawMessage(raw))
+	time.Sleep(250 * time.Millisecond) // let any (wrong) async edit land
+	mu.Lock()
+	defer mu.Unlock()
+	if callback == nil || callback["type"] != float64(4) {
+		t.Fatalf("callback = %+v; want an ephemeral type-4 refusal, not a deferred update", callback)
+	}
+	if data, _ := callback["data"].(map[string]any); data == nil || data["flags"] != float64(64) {
+		t.Fatalf("callback data = %+v; want ephemeral flags", callback["data"])
+	}
+	if patched {
+		t.Fatal("unauthorized click edited the shared alert message")
+	}
+}
+
+func wsHandshake(t *testing.T, ln net.Listener, then func(net.Conn)) {
+	t.Helper()
+	conn, err := ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	var key string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if name, value, ok := strings.Cut(line, ":"); ok && strings.EqualFold(strings.TrimSpace(name), "sec-websocket-key") {
+			key = strings.TrimSpace(value)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	sum := sha1.Sum([]byte(key + wsGUID))
+	fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+		base64.StdEncoding.EncodeToString(sum[:]))
+	then(conn)
+}
+
+func TestWSCloseCodeSurfaced(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go wsHandshake(t, ln, func(conn net.Conn) {
+		payload := make([]byte, 2)
+		binary.BigEndian.PutUint16(payload, 4009)
+		payload = append(payload, []byte("session timed out")...)
+		frame := append([]byte{0x80 | wsClose, byte(len(payload))}, payload...)
+		conn.Write(frame)
+		time.Sleep(50 * time.Millisecond)
+	})
+	conn, err := wsDial(context.Background(), "ws://"+ln.Addr().String()+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err = conn.ReadMessage()
+	if err == nil || !strings.Contains(err.Error(), "4009") {
+		t.Fatalf("close error = %v; want the 4009 close code preserved", err)
+	}
+}
+
+func TestWSDialHandshakeHonoursCancellation(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+		buf := make([]byte, 512)
+		_, _ = conn.Read(buf) // swallow the upgrade request, never reply
+		time.Sleep(10 * time.Second)
+		conn.Close()
+	}()
+	t.Cleanup(func() {
+		select {
+		case conn := <-accepted:
+			conn.Close()
+		default:
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := wsDial(ctx, "ws://"+ln.Addr().String()+"/")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("stalled handshake unexpectedly succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("wsDial ignored context cancellation during the upgrade handshake")
+	}
+}
+
+func TestDiscordHeartbeatClosesOnMissedACK(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	closed := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 512)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				close(closed)
+				return
+			}
+		}
+	}()
+	client, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := &wsConn{conn: client, br: bufio.NewReader(client)}
+	a := &discordAdapter{hbAcked: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.heartbeat(ctx, ws, 20*time.Millisecond)
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("heartbeat kept a half-open connection alive after a missed ACK")
+	}
+}
+
+func TestDiscordRegistrationRetriesTransientFailure(t *testing.T) {
+	svc, _ := testService(t)
+	var attempts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	a.registerLoop(ctx)
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("registration attempts = %d; want a transient failure then success", got)
 	}
 }

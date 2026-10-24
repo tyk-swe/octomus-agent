@@ -55,20 +55,39 @@ func parseCommand(text string) (verb string, fields []string, rest string, repo 
 	return verb, fields, strings.TrimSpace(rest), repo, nil
 }
 
+// stripRepoFlag removes only the --repo flag's own text span. Free-form
+// request text keeps its newlines, tabs and indentation byte for byte.
 func stripRepoFlag(text string) string {
-	fields := strings.Fields(text)
-	var kept []string
-	for i := 0; i < len(fields); i++ {
-		if fields[i] == "--repo" && i+1 < len(fields) {
-			i++
-			continue
+	isSpace := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		boundary := i == 0 || isSpace(text[i-1])
+		if boundary && strings.HasPrefix(text[i:], "--repo") {
+			rest := text[i+len("--repo"):]
+			if strings.HasPrefix(rest, "=") {
+				j := i + len("--repo=")
+				for j < len(text) && !isSpace(text[j]) {
+					j++
+				}
+				i = j
+				continue
+			}
+			if rest == "" || isSpace(rest[0]) {
+				j := i + len("--repo")
+				for j < len(text) && isSpace(text[j]) {
+					j++
+				}
+				for j < len(text) && !isSpace(text[j]) {
+					j++
+				}
+				i = j
+				continue
+			}
 		}
-		if strings.HasPrefix(fields[i], "--repo=") {
-			continue
-		}
-		kept = append(kept, fields[i])
+		b.WriteByte(text[i])
+		i++
 	}
-	return strings.Join(kept, " ")
+	return b.String()
 }
 
 // resolveApp picks the repository's App: explicit --repo, then the thread's
@@ -90,6 +109,35 @@ func (s *Service) resolveApp(inv Invocation, repoFlag string) (*engine.App, erro
 		return nil, fmt.Errorf("Repository %s is not served by this instance; try `repos`", repo)
 	}
 	return app, nil
+}
+
+// resolveCommandApp routes ID-addressed verbs through the record's owning
+// repository, exactly like the HTTP API: an explicit --repo naming another
+// owner is not-found, and implicit thread/channel defaults never let one
+// repository's App act on another's task or request.
+func (s *Service) resolveCommandApp(inv Invocation, verb string, fields []string, repoFlag string) (*engine.App, error) {
+	kind := ""
+	switch verb {
+	case "task", "retry", "cancel":
+		kind = "task"
+	case "withdraw":
+		kind = "request"
+	default:
+		return s.resolveApp(inv, repoFlag)
+	}
+	id := ""
+	if len(fields) > 0 {
+		id = fields[0]
+	} else if verb == "task" && s.store != nil {
+		if ctx, err := s.store.ChatContext(string(inv.Provider), inv.ChannelID, inv.ThreadID); err == nil {
+			id = ctx.TaskID
+		}
+	}
+	if id == "" {
+		// Dispatch produces the "Name a …" guidance on the default App.
+		return s.resolveApp(inv, repoFlag)
+	}
+	return s.fleet.ForRecord(kind, id, repoFlag)
 }
 
 func (s *Service) remember(inv Invocation, app *engine.App, taskID string) {
@@ -117,7 +165,7 @@ func (s *Service) handleCommand(ctx context.Context, inv Invocation) (string, []
 	case "digest":
 		return s.Digest(ctx), nil, nil
 	}
-	app, err := s.resolveApp(inv, repoFlag)
+	app, err := s.resolveCommandApp(inv, verb, fields, repoFlag)
 	if err != nil {
 		return "", nil, err
 	}

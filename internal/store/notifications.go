@@ -73,10 +73,14 @@ func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationD
 	epoch := now.Unix()
 	var claimed *NotificationDelivery
 	err := s.transaction(false, func(c *sql.Conn) error {
-		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='expired' WHERE status='pending' AND unixepoch(created_at) < ?1", epoch-expiry); err != nil {
+		// Cleanup is scoped to the claiming destination and to rows whose
+		// next attempt is due: with several workers draining in parallel,
+		// a global sweep would fail another destination's in-flight final
+		// attempt before its MarkDelivered can land.
+		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='expired' WHERE status='pending' AND destination_id=?2 AND next_attempt_at<=?1 AND unixepoch(created_at) < ?3", epoch, destination, epoch-expiry); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='delivery_uncertain' WHERE status='pending' AND attempts >= ?1", maxAttempts); err != nil {
+		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='delivery_uncertain' WHERE status='pending' AND destination_id=?2 AND next_attempt_at<=?3 AND attempts >= ?1", maxAttempts, destination, epoch); err != nil {
 			return err
 		}
 		var d NotificationDelivery

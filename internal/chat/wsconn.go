@@ -59,6 +59,11 @@ func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The dial timeout no longer applies once TCP/TLS is up, so bound the
+	// HTTP upgrade itself and honour cancellation while it runs.
+	stopCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopCancel()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	var keyRaw [16]byte
 	if _, err := rand.Read(keyRaw[:]); err != nil {
 		conn.Close()
@@ -86,7 +91,27 @@ func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
 		conn.Close()
 		return nil, errors.New("websocket upgrade returned a bad accept key")
 	}
+	if err := ctx.Err(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Time{})
 	return &wsConn{conn: conn, br: br}, nil
+}
+
+// wsCloseError preserves the peer's close code: Discord's non-resumable
+// codes (4007, 4009, …) must not be flattened into a plain EOF, or the
+// client would keep Resuming a session the gateway has discarded.
+type wsCloseError struct {
+	Code   uint16
+	Reason string
+}
+
+func (e *wsCloseError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("websocket closed with code %d: %s", e.Code, e.Reason)
+	}
+	return fmt.Sprintf("websocket closed with code %d", e.Code)
 }
 
 func (c *wsConn) Close() error { return c.conn.Close() }
@@ -118,7 +143,12 @@ func (c *wsConn) ReadMessage() ([]byte, error) {
 		case wsPong:
 			continue
 		case wsClose:
-			return nil, io.EOF
+			closeErr := &wsCloseError{Code: 1005} // no status received
+			if len(payload) >= 2 {
+				closeErr.Code = binary.BigEndian.Uint16(payload[:2])
+				closeErr.Reason = string(payload[2:])
+			}
+			return nil, closeErr
 		case wsText, wsBinary, 0x0:
 			message = append(message, payload...)
 			if len(message) > maxWSMessage {

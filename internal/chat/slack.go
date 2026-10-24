@@ -34,11 +34,23 @@ func apiClient() *http.Client {
 
 type apiError struct {
 	Status int
-	Msg    string
+	// Code is Slack's own error string, returned with HTTP 200 in an
+	// {"ok":false} body. It classifies separately from the HTTP status:
+	// a transient code must keep its retries despite the 200.
+	Code string
+	Msg  string
 }
 
 func (e *apiError) Error() string { return e.Msg }
 func (e *apiError) retryable() bool {
+	switch e.Code {
+	case "internal_error", "fatal_error", "ratelimited", "rate_limited",
+		"service_unavailable", "request_timeout":
+		return true
+	}
+	if e.Code != "" {
+		return false
+	}
 	return e.Status == 408 || e.Status == 429 || e.Status >= 500
 }
 
@@ -86,7 +98,7 @@ func (a *slackAdapter) openConnection(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("apps.connections.open: %w", err)
 	}
 	if !out.OK || out.URL == "" {
-		return "", &apiError{Status: resp.StatusCode, Msg: "apps.connections.open refused: " + out.Error}
+		return "", &apiError{Status: resp.StatusCode, Code: out.Error, Msg: "apps.connections.open refused: " + out.Error}
 	}
 	return out.URL, nil
 }
@@ -257,16 +269,18 @@ func stripMention(text string) string {
 // notification fallback.
 func slackBlocks(resp Response) []map[string]any {
 	blocks := []map[string]any{
-		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackEscape(resp.Text)}},
+		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": slackEscapedBounded(resp.Text)}},
 	}
 	if len(resp.Buttons) > 0 {
 		elements := []map[string]any{}
-		for _, b := range resp.Buttons {
+		for i, b := range resp.Buttons {
 			if len(elements) >= 5 {
 				break
 			}
+			// Slack requires action IDs unique within the block; clicks
+			// dispatch on value, so the ID only needs to be distinct.
 			elements = append(elements, map[string]any{
-				"type": "button", "action_id": "octomus_action", "value": b.Value,
+				"type": "button", "action_id": fmt.Sprintf("octomus_action_%d", i), "value": b.Value,
 				"text": map[string]any{"type": "plain_text", "text": b.Label},
 			})
 		}
@@ -278,6 +292,23 @@ func slackBlocks(resp Response) []map[string]any {
 func slackEscape(text string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 	return r.Replace(text)
+}
+
+// slackEscapedBounded escapes text and keeps the result within Slack's
+// 3000-character section limit: escaping expands text (& → &amp;), so the
+// bound must apply after escaping, never splitting an entity.
+func slackEscapedBounded(text string) string {
+	escaped := slackEscape(text)
+	runes := []rune(escaped)
+	const sectionLimit = 3000
+	if len(runes) <= sectionLimit {
+		return escaped
+	}
+	cut := string(runes[:sectionLimit-1])
+	if amp, semi := strings.LastIndex(cut, "&"), strings.LastIndex(cut, ";"); amp > semi {
+		cut = cut[:amp]
+	}
+	return cut + "…"
 }
 
 func (a *slackAdapter) postResponseURL(responseURL string, resp Response, replace bool) error {
@@ -327,7 +358,7 @@ func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body 
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(got, &out) == nil && out.OK != nil && !*out.OK {
-		return &apiError{Status: resp.StatusCode, Msg: "slack refused: " + out.Error}
+		return &apiError{Status: resp.StatusCode, Code: out.Error, Msg: "slack refused: " + out.Error}
 	}
 	return nil
 }

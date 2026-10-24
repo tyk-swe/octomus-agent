@@ -26,6 +26,7 @@ type discordAdapter struct {
 	sessionID string
 	resumeURL string
 	seq       *int64
+	hbAcked   bool // the last heartbeat was acknowledged (opcode 11)
 }
 
 func newDiscordAdapter(svc *Service, cfg *ProviderConfig) *discordAdapter {
@@ -33,9 +34,10 @@ func newDiscordAdapter(svc *Service, cfg *ProviderConfig) *discordAdapter {
 }
 
 func (a *discordAdapter) run(ctx context.Context) {
-	if err := a.registerCommands(ctx); err != nil {
-		a.svc.warn(fmt.Errorf("discord command registration: %w", err))
-	}
+	// Registration retries on its own loop: a transient failure at first
+	// startup must not leave /octomus unregistered until a restart, and
+	// must not block the gateway either.
+	go a.registerLoop(ctx)
 	attempt := 0
 	for ctx.Err() == nil {
 		err := a.serveOnce(ctx)
@@ -114,6 +116,14 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			var closeErr *wsCloseError
+			if errors.As(err, &closeErr) && !discordResumable(closeErr.Code) {
+				// The gateway discarded this session (e.g. 4007 invalid
+				// sequence, 4009 session timed out): forget it so the
+				// next connection Identifies fresh instead of Resuming
+				// a rejected session forever.
+				a.clearSession()
+			}
 			return err
 		}
 		var p discordPayload
@@ -126,11 +136,18 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 			a.mu.Unlock()
 		}
 		switch p.Op {
+		case 11: // Heartbeat ACK.
+			a.mu.Lock()
+			a.hbAcked = true
+			a.mu.Unlock()
 		case 10: // Hello: start heartbeats, then identify or resume.
 			var hello struct {
 				HeartbeatInterval int64 `json:"heartbeat_interval"`
 			}
 			_ = json.Unmarshal(p.D, &hello)
+			a.mu.Lock()
+			a.hbAcked = true
+			a.mu.Unlock()
 			go a.heartbeat(connCtx, conn, time.Duration(hello.HeartbeatInterval)*time.Millisecond)
 			if err := a.identify(conn); err != nil {
 				return err
@@ -153,12 +170,27 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 		case 7: // Reconnect.
 			return errors.New("discord asked for a reconnect")
 		case 9: // Invalid session: forget it and re-identify fresh.
-			a.mu.Lock()
-			a.sessionID, a.resumeURL, a.seq = "", "", nil
-			a.mu.Unlock()
+			a.clearSession()
 			return errors.New("discord session invalid; re-identifying")
 		}
 	}
+}
+
+func (a *discordAdapter) clearSession() {
+	a.mu.Lock()
+	a.sessionID, a.resumeURL, a.seq = "", "", nil
+	a.mu.Unlock()
+}
+
+// discordResumable reports whether a gateway close code permits Resume
+// (Discord's close-code table: 4000–4003, 4005, 4008 may reconnect and
+// resume; 4004, 4007, 4009 and the 401x configuration codes may not).
+func discordResumable(code uint16) bool {
+	switch code {
+	case 4004, 4007, 4009, 4010, 4011, 4012, 4013, 4014:
+		return false
+	}
+	return true
 }
 
 func (a *discordAdapter) identify(conn *wsConn) error {
@@ -193,9 +225,18 @@ func (a *discordAdapter) heartbeat(ctx context.Context, conn *wsConn, interval t
 			return
 		case <-ticker.C:
 			a.mu.Lock()
-			seq := a.seq
+			seq, acked := a.seq, a.hbAcked
+			a.hbAcked = false
 			a.mu.Unlock()
+			if !acked {
+				// Half-open connection: writes may keep succeeding
+				// while nothing arrives. Closing forces the read
+				// loop out so run() reconnects.
+				conn.Close()
+				return
+			}
 			if err := conn.WriteJSON(map[string]any{"op": 1, "d": seq}); err != nil {
+				conn.Close()
 				return
 			}
 		}
@@ -284,6 +325,19 @@ func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMess
 	default:
 		return
 	}
+	if !a.svc.Authorized(DiscordProvider, inv.UserID) {
+		// Never answer a stranger with a deferred update (type 6): the
+		// follow-up edit would replace the shared alert message, letting
+		// any channel member erase it. An ephemeral reply edits nothing.
+		refusal := map[string]any{"type": 4, "data": map[string]any{
+			"content": "Octomus chat is operator-only.", "flags": 64,
+			"allowed_mentions": noMentions(),
+		}}
+		if err := a.rest(ctx, http.MethodPost, fmt.Sprintf("/interactions/%s/%s/callback", it.ID, it.Token), refusal, false); err != nil {
+			a.svc.warn(err)
+		}
+		return
+	}
 	callback := map[string]any{"type": callbackType}
 	if callbackType == 5 {
 		callback["data"] = map[string]any{"flags": 64}
@@ -295,17 +349,30 @@ func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMess
 	go func() {
 		resp, handled := a.svc.Handle(ctx, inv)
 		if !handled {
+			// Authorization was checked before the callback, so this is
+			// only a config change mid-flight. For a component click the
+			// original message is the shared alert: never edit it here.
+			if callbackType == 6 {
+				return
+			}
 			resp = Response{Text: "Octomus chat is operator-only."}
 		}
 		if resp.Text == "" && len(resp.Buttons) == 0 {
 			resp.Text = "Done."
 		}
-		body := map[string]any{"content": resp.Text, "components": discordComponents(resp)}
+		body := map[string]any{"content": resp.Text, "components": discordComponents(resp), "allowed_mentions": noMentions()}
 		path := fmt.Sprintf("/webhooks/%s/%s/messages/@original", a.cfg.AppID, it.Token)
 		if err := a.rest(context.Background(), http.MethodPatch, path, body, false); err != nil {
 			a.svc.warn(err)
 		}
 	}()
+}
+
+// noMentions disables mention parsing: response text carries
+// model-generated titles and error strings, which must display as text,
+// never ping users, roles or @everyone.
+func noMentions() map[string]any {
+	return map[string]any{"parse": []string{}}
 }
 
 func discordComponents(resp Response) []map[string]any {
@@ -317,6 +384,11 @@ func discordComponents(resp Response) []map[string]any {
 		if len(buttons) >= 5 {
 			break
 		}
+		if len(b.Value) > 100 {
+			// Discord rejects the whole message for one oversize
+			// custom_id; dropping the button keeps the alert itself.
+			continue
+		}
 		style := 2
 		if strings.HasPrefix(b.Value, "confirm:") {
 			style = 1
@@ -325,12 +397,15 @@ func discordComponents(resp Response) []map[string]any {
 			"type": 2, "style": style, "label": b.Label, "custom_id": b.Value,
 		})
 	}
+	if len(buttons) == 0 {
+		return []map[string]any{}
+	}
 	return []map[string]any{{"type": 1, "components": buttons}}
 }
 
 // postMessage sends a proactive message (alerts, digest) to a channel.
 func (a *discordAdapter) postMessage(ctx context.Context, channel string, resp Response) error {
-	body := map[string]any{"content": resp.Text, "components": discordComponents(resp)}
+	body := map[string]any{"content": resp.Text, "components": discordComponents(resp), "allowed_mentions": noMentions()}
 	return a.rest(ctx, http.MethodPost, "/channels/"+channel+"/messages", body, true)
 }
 
@@ -357,6 +432,30 @@ func (a *discordAdapter) rest(ctx context.Context, method, path string, body map
 		return &apiError{Status: resp.StatusCode, Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
 	}
 	return nil
+}
+
+// registerLoop registers the /octomus command, retrying transient
+// failures (429/5xx/network) with backoff until it succeeds or ctx ends.
+// Permanent refusals warn once and stop.
+func (a *discordAdapter) registerLoop(ctx context.Context) {
+	attempt := 0
+	for ctx.Err() == nil {
+		err := a.registerCommands(ctx)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		a.svc.warn(fmt.Errorf("discord command registration: %w", err))
+		var apiErr *apiError
+		if errors.As(err, &apiErr) && !apiErr.retryable() && apiErr.Status != 0 {
+			return
+		}
+		attempt++
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoffDelay(attempt)):
+		}
+	}
 }
 
 // registerCommands bulk-overwrites the /octomus command. Guild commands

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tyk-swe/octomus-agent/internal/engine"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -14,6 +15,17 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// attentionCount totals every blocked/failed task from the dashboard
+// status counts. AttentionTasks itself is only a five-item preview, so
+// its length must never be reported as the backlog.
+func attentionCount(view *engine.StateView) int64 {
+	var total int64
+	for _, status := range model.AttentionStatuses() {
+		total += view.Counts[status.String()]
+	}
+	return total
 }
 
 func statusText(app *engine.App) (string, error) {
@@ -32,7 +44,7 @@ func statusText(app *engine.App) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s, cycle #%d\n", repo, mode, view.Control.CycleNumber)
 	fmt.Fprintf(&b, "Active tasks: %d · Needs attention: %d · Pending requests: %d\n",
-		view.ActiveTasks, len(view.AttentionTasks), view.PendingRequests)
+		view.ActiveTasks, attentionCount(view), view.PendingRequests)
 	fmt.Fprintf(&b, "Sessions today: %d/%d · Open owned PRs use the dashboard for detail", view.SessionsToday, view.SessionLimit)
 	if view.Control.Error != nil && *view.Control.Error != "" {
 		fmt.Fprintf(&b, "\nError: %s", *view.Control.Error)

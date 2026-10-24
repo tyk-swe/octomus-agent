@@ -56,8 +56,16 @@ func (s *Service) takePending(token, userID string) *pendingAction {
 	return p
 }
 
+// taskActionValue builds a task button's value. It deliberately omits
+// the repository: a full OWNER/REPO plus a UUID can exceed Discord's
+// 100-character custom_id limit, and the owning repository is resolved
+// from the record itself (Fleet.ForRecord) when the button is clicked.
+func taskActionValue(verb, id string) string {
+	return "task:" + verb + ":" + id
+}
+
 // handleAction runs button clicks: pending confirmations and the stateless
-// task:<verb>:<repo>:<id> buttons attached to alerts and task views.
+// task:<verb>:<id> buttons attached to alerts and task views.
 func (s *Service) handleAction(ctx context.Context, inv Invocation) (string, []Button, error) {
 	kind, rest, _ := strings.Cut(inv.Action, ":")
 	switch kind {
@@ -73,13 +81,18 @@ func (s *Service) handleAction(ctx context.Context, inv Invocation) (string, []B
 		return text, nil, err
 	case "task":
 		parts := strings.Split(rest, ":")
-		if len(parts) != 3 {
+		var verb, repo, id string
+		switch len(parts) {
+		case 2: // task:<verb>:<id> — the owner resolves from the record
+			verb, id = parts[0], parts[1]
+		case 3: // legacy task:<verb>:<repo>:<id> on already-posted alerts
+			verb, repo, id = parts[0], parts[1], parts[2]
+		default:
 			return "", nil, fmt.Errorf("Malformed task action")
 		}
-		verb, repo, id := parts[0], parts[1], parts[2]
-		app := s.fleet.For(repo)
-		if app == nil {
-			return "", nil, fmt.Errorf("Repository %s is not served by this instance", repo)
+		app, err := s.fleet.ForRecord("task", id, repo)
+		if err != nil {
+			return "", nil, err
 		}
 		switch verb {
 		case "view":

@@ -38,9 +38,9 @@ func (s *Service) taskDetail(_ context.Context, inv Invocation, app *engine.App,
 	for _, action := range detail.AllowedActions {
 		switch action {
 		case model.TaskActionRetry:
-			buttons = append(buttons, Button{Label: "Retry task", Value: "task:retry:" + app.Repository() + ":" + id})
+			buttons = append(buttons, Button{Label: "Retry task", Value: taskActionValue("retry", id)})
 		case model.TaskActionCancel:
-			buttons = append(buttons, Button{Label: "Cancel task", Value: "task:cancel:" + app.Repository() + ":" + id})
+			buttons = append(buttons, Button{Label: "Cancel task", Value: taskActionValue("cancel", id)})
 		}
 	}
 	return b.String(), buttons, id, nil

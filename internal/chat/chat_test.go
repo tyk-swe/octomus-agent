@@ -128,6 +128,58 @@ func TestParseCommandRepoFlag(t *testing.T) {
 	}
 }
 
+func TestParseCommandPreservesRequestWhitespace(t *testing.T) {
+	_, _, rest, _, err := parseCommand("request Title :: line one\n  indented code\n\ttabbed line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rest, "line one\n  indented code\n\ttabbed line") {
+		t.Fatalf("rest = %q; want newlines and indentation preserved", rest)
+	}
+	_, _, rest, repo, err := parseCommand("request Title :: first\nsecond --repo acme/widgets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo != "acme/widgets" || strings.Contains(rest, "--repo") || !strings.Contains(rest, "first\nsecond") {
+		t.Fatalf("rest = %q repo = %q; want the flag span removed and the newline kept", rest, repo)
+	}
+}
+
+func TestRecordActionRejectsConflictingRepoSelection(t *testing.T) {
+	svc, _ := testService(t)
+	resp, handled := svc.Handle(context.Background(), Invocation{
+		Provider: SlackProvider, UserID: testSlackUser, ChannelID: "C1", Text: "task missing-1 --repo ghost/nothing",
+	})
+	if !handled || !strings.Contains(resp.Text, "Record not found") {
+		t.Fatalf("conflicting selection = handled %v %q; want owner-aware Record not found", handled, resp.Text)
+	}
+}
+
+func TestAlertButtonsFitDiscordLimitForLongRepos(t *testing.T) {
+	svc, _ := testService(t)
+	repo := strings.Repeat("a", 30) + "/" + strings.Repeat("b", 30)
+	id := "12345678-1234-1234-1234-123456789012"
+	resp := svc.alertResponse(&store.NotificationDelivery{Repository: repo, Category: "timeout", TaskID: &id})
+	if len(resp.Buttons) != 2 {
+		t.Fatalf("buttons = %+v; want view + retry", resp.Buttons)
+	}
+	for _, b := range resp.Buttons {
+		if len(b.Value) > 100 {
+			t.Fatalf("button value %q is %d chars; Discord custom_id limit is 100", b.Value, len(b.Value))
+		}
+	}
+}
+
+func TestAttentionCountUsesStatusCountsNotPreview(t *testing.T) {
+	view := &engine.StateView{Dashboard: store.Dashboard{
+		Counts:         map[string]int64{"blocked": 4, "failed": 3, "executing": 9},
+		AttentionTasks: make([]store.TaskSummary, 5), // the five-item preview
+	}}
+	if got := attentionCount(view); got != 7 {
+		t.Fatalf("attentionCount = %d; want 7 from status counts, not the preview length", got)
+	}
+}
+
 func TestFromEnvValidation(t *testing.T) {
 	env := func(vars map[string]string) func(string) (string, bool) {
 		return func(k string) (string, bool) { v, ok := vars[k]; return v, ok }

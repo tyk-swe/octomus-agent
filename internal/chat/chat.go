@@ -17,6 +17,10 @@ import (
 // state only through the engine, exactly like the HTTP API.
 type Fleet interface {
 	For(repo string) *engine.App
+	// ForRecord is the HTTP API's owner-aware routing for ID-addressed
+	// reads and actions: one repository's view never acts on another's
+	// records, and a conflicting explicit selection is not-found.
+	ForRecord(kind, id, selected string) (*engine.App, error)
 	Apps() []*engine.App
 	Entries() []store.RepositoryEntry
 }
@@ -30,7 +34,7 @@ type Invocation struct {
 	ChannelID string
 	ThreadID  string
 	Text      string // e.g. "task abc123 --repo owner/repo"
-	Action    string // button value, e.g. "confirm:<token>" or "task:retry:<repo>:<id>"
+	Action    string // button value, e.g. "confirm:<token>" or "task:retry:<id>"
 }
 
 // Button is one inline action under a response.

@@ -57,9 +57,15 @@ func (w *notifyWorker) deliverNext(ctx context.Context) {
 		return
 	}
 	var apiErr *apiError
-	if errors.As(err, &apiErr) && apiErr.Status > 0 {
-		status := uint16(apiErr.Status)
-		w.svc.warn(w.st.MarkFailed(delivery.Seq, "http_status", &status, apiErr.retryable()))
+	if errors.As(err, &apiErr) && (apiErr.Status > 0 || apiErr.Code != "") {
+		// Slack reports refusals with HTTP 200 plus an error code; only a
+		// real HTTP failure status belongs in the health record.
+		var status *uint16
+		if apiErr.Code == "" && apiErr.Status > 0 {
+			s := uint16(apiErr.Status)
+			status = &s
+		}
+		w.svc.warn(w.st.MarkFailed(delivery.Seq, "http_status", status, apiErr.retryable()))
 		return
 	}
 	w.svc.warn(w.st.MarkFailed(delivery.Seq, "transport_error", nil, true))
@@ -96,9 +102,9 @@ func (s *Service) alertResponse(d *store.NotificationDelivery) Response {
 				}
 			}
 		}
-		buttons = append(buttons, Button{Label: "View task", Value: "task:view:" + d.Repository + ":" + id})
+		buttons = append(buttons, Button{Label: "View task", Value: taskActionValue("view", id)})
 		if d.Category != "task_published" {
-			buttons = append(buttons, Button{Label: "Retry task", Value: "task:retry:" + d.Repository + ":" + id})
+			buttons = append(buttons, Button{Label: "Retry task", Value: taskActionValue("retry", id)})
 		}
 	}
 	return Response{Text: boundText(text), Buttons: buttons}

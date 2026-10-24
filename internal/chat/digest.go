@@ -29,7 +29,7 @@ func (s *Service) Digest(_ context.Context) string {
 			mode = "paused"
 		}
 		fmt.Fprintf(&b, "%s — %s, cycle #%d, %d active, %d need attention, %d pending requests",
-			view.Repository, mode, view.Control.CycleNumber, view.ActiveTasks, len(view.AttentionTasks), view.PendingRequests)
+			view.Repository, mode, view.Control.CycleNumber, view.ActiveTasks, attentionCount(view), view.PendingRequests)
 		ins, err := app.Insights(7)
 		if err == nil {
 			fmt.Fprintf(&b, "\n  Tasks: %s · Cycles: %s · PRs: %s",

@@ -58,6 +58,35 @@ func TestChatDestinationFanout(t *testing.T) {
 	}
 }
 
+func TestClaimCleanupIsolatedPerDestination(t *testing.T) {
+	t.Parallel()
+	path := statePath(t)
+	s := open(t, path)
+	must(t, s.SetChatDestinations([]store.ChatDestination{slackDest, discordDest}))
+	putNotificationTask(t, s, "claim-iso-1", "blocked", "timeout")
+	db := raw(t, path)
+	// Simulate the slack worker's fifth attempt being in flight.
+	var slackSeq int64
+	must(t, db.QueryRow("SELECT seq FROM notification_outbox WHERE destination_id=?", slackDest.ID).Scan(&slackSeq))
+	_, err := db.Exec("UPDATE notification_outbox SET attempts=5 WHERE seq=?", slackSeq)
+	must(t, err)
+	claimed, err := s.ClaimDelivery(discordDest.ID, time.Now())
+	must(t, err)
+	if claimed == nil {
+		t.Fatal("discord claim found nothing; want its own pending row")
+	}
+	var status string
+	must(t, db.QueryRow("SELECT status FROM notification_outbox WHERE seq=?", slackSeq).Scan(&status))
+	if status != "pending" {
+		t.Fatalf("slack row status = %q after another destination claimed; want pending", status)
+	}
+	must(t, s.MarkDelivered(slackSeq, time.Now()))
+	must(t, db.QueryRow("SELECT status FROM notification_outbox WHERE seq=?", slackSeq).Scan(&status))
+	if status != "delivered" {
+		t.Fatalf("slack row status = %q after MarkDelivered; want delivered", status)
+	}
+}
+
 func TestChatDestinationRemovalCancelsPending(t *testing.T) {
 	t.Parallel()
 	path := statePath(t)
