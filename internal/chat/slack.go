@@ -182,7 +182,7 @@ func (a *slackAdapter) handleEnvelope(ctx context.Context, conn *wsConn, env sla
 	if !ok {
 		return nil
 	}
-	go func() {
+	a.svc.goHandle(func() {
 		resp, handled := a.svc.Handle(ctx, inv)
 		if !handled || (resp.Text == "" && len(resp.Buttons) == 0) {
 			return
@@ -190,7 +190,7 @@ func (a *slackAdapter) handleEnvelope(ctx context.Context, conn *wsConn, env sla
 		if err := respond(resp); err != nil {
 			a.svc.warn(err)
 		}
-	}()
+	})
 	return nil
 }
 
@@ -374,7 +374,10 @@ func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body 
 		return &apiError{Status: 0, Msg: transportMessage("slack request failed", err)}
 	}
 	defer resp.Body.Close()
-	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	got, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return &apiError{Status: 0, Msg: transportMessage("slack response unreadable", err)}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &apiError{Status: resp.StatusCode, Msg: fmt.Sprintf("slack request refused: %s", resp.Status)}
 	}
@@ -382,8 +385,18 @@ func (a *slackAdapter) postJSON(ctx context.Context, rawURL, token string, body 
 		OK    *bool  `json:"ok"`
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(got, &out) == nil && out.OK != nil && !*out.OK {
-		return &apiError{Status: resp.StatusCode, Code: out.Error, Msg: "slack refused: " + out.Error}
+	if json.Unmarshal(got, &out) == nil && out.OK != nil {
+		if !*out.OK {
+			return &apiError{Status: resp.StatusCode, Code: out.Error, Msg: "slack refused: " + out.Error}
+		}
+		return nil
 	}
+	if token != "" {
+		// Web API calls must positively acknowledge with ok:true; an
+		// undecodable 200 is not a delivery. Status 0 keeps it on the
+		// notification worker's retryable transport path.
+		return &apiError{Status: 0, Msg: "slack response unreadable"}
+	}
+	// Response URLs acknowledge in plain text ("ok"): a 2xx suffices.
 	return nil
 }

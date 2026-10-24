@@ -77,6 +77,9 @@ func Start(parent context.Context, cfg Config, fleet Fleet, st *store.Store, war
 func (r *Runner) Stop() {
 	r.cancel()
 	r.wg.Wait()
+	// Adapter loops have ended, so no new handlers can start; join the
+	// ones still in flight before the caller closes the store.
+	r.svc.waitInflight()
 }
 
 // post delivers one proactive message through the provider's REST API.

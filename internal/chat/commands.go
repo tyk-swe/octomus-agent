@@ -14,7 +14,7 @@ import (
 const helpText = `Octomus commands (add --repo OWNER/REPO anywhere to pick a repository):
 status — mode, cycle, active tasks, today's sessions
 digest — 7-day summary for every repository
-tasks [N] — latest tasks · task <id> — one task's detail
+tasks [N] — latest tasks · task [id] — one task's detail (default: the remembered task)
 cycles [N] — latest cycles · prs [N] — observed pull requests
 requests — pending work requests
 request <title> :: <description> — file work for the next planning cycle

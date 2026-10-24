@@ -58,10 +58,24 @@ type Service struct {
 	warnings io.Writer
 	now      func() time.Time
 
-	mu      sync.Mutex
-	pending map[string]*pendingAction
-	warned  string
+	mu       sync.Mutex
+	pending  map[string]*pendingAction
+	warned   string
+	inflight sync.WaitGroup // adapter-spawned handlers, joined at shutdown
 }
+
+// goHandle runs fn as a tracked in-flight handler. Runner.Stop joins
+// these after the adapter loops end and before the process closes the
+// store, so a handler can never touch chat state after shutdown.
+func (s *Service) goHandle(fn func()) {
+	s.inflight.Add(1)
+	go func() {
+		defer s.inflight.Done()
+		fn()
+	}()
+}
+
+func (s *Service) waitInflight() { s.inflight.Wait() }
 
 type pendingAction struct {
 	userID  string

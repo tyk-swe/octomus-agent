@@ -242,6 +242,34 @@ func TestTaskButtonRemembersContext(t *testing.T) {
 	}
 }
 
+func TestRunnerStopJoinsInflightHandlers(t *testing.T) {
+	svc, _ := testService(t)
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	svc.goHandle(func() {
+		started <- struct{}{}
+		<-release
+	})
+	<-started
+	runner := &Runner{svc: svc, cancel: func() {}}
+	stopped := make(chan struct{})
+	go func() {
+		runner.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while a handler was still in flight")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after the handler finished")
+	}
+}
+
 func TestAttentionCountUsesStatusCountsNotPreview(t *testing.T) {
 	view := &engine.StateView{Dashboard: store.Dashboard{
 		Counts:         map[string]int64{"blocked": 4, "failed": 3, "executing": 9},

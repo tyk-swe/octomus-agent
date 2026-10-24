@@ -708,3 +708,56 @@ func TestDiscordInteractionSurvivesGatewayReconnect(t *testing.T) {
 		t.Fatal("interaction was dropped when the gateway reconnected; want its reply delivered")
 	}
 }
+
+func TestSlackWebAPIRequiresPositiveAck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "chat.postMessage") {
+			fmt.Fprint(w, `{"ok":tru`) // truncated acknowledgement
+			return
+		}
+		fmt.Fprint(w, "ok") // response URLs answer in plain text
+	}))
+	defer srv.Close()
+	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider, BotToken: "tok"})
+	a.apiBase = srv.URL
+	if err := a.postMessage(context.Background(), "C1", "", Response{Text: "alert"}); err == nil {
+		t.Fatal("undecodable Web API reply counted as delivered; want a retryable failure")
+	}
+	if err := a.postResponseURL(srv.URL+"/response", Response{Text: "reply"}, true); err != nil {
+		t.Fatalf("plain-text response URL acknowledgement rejected: %v", err)
+	}
+}
+
+func TestDiscordTaskIDOptionIsOptional(t *testing.T) {
+	var captured []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	if err := a.registerCommands(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("registered %d commands; want one", len(captured))
+	}
+	subs, _ := captured[0]["options"].([]any)
+	for _, raw := range subs {
+		sub, _ := raw.(map[string]any)
+		if sub["name"] != "task" {
+			continue
+		}
+		opts, _ := sub["options"].([]any)
+		if len(opts) == 0 {
+			t.Fatal("task subcommand has no options")
+		}
+		id, _ := opts[0].(map[string]any)
+		if id["name"] != "id" || id["required"] != false {
+			t.Fatalf("task id option = %+v; want optional so remembered-task lookup is reachable", id)
+		}
+		return
+	}
+	t.Fatal("task subcommand not registered")
+}

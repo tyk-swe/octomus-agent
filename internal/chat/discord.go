@@ -37,7 +37,7 @@ func (a *discordAdapter) run(ctx context.Context) {
 	// Registration retries on its own loop: a transient failure at first
 	// startup must not leave /octomus unregistered until a restart, and
 	// must not block the gateway either.
-	go a.registerLoop(ctx)
+	a.svc.goHandle(func() { a.registerLoop(ctx) })
 	attempt := 0
 	for ctx.Err() == nil {
 		err := a.serveOnce(ctx)
@@ -179,7 +179,7 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 				// runs on the adapter-lifetime context, not connCtx: a
 				// gateway reconnect must not cancel an acknowledgement
 				// Discord will never replay.
-				go a.handleInteraction(ctx, p.D)
+				a.svc.goHandle(func() { a.handleInteraction(ctx, p.D) })
 			}
 		case 7: // Reconnect.
 			return errors.New("discord asked for a reconnect")
@@ -360,7 +360,7 @@ func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMess
 		a.svc.warn(err)
 		return
 	}
-	go func() {
+	a.svc.goHandle(func() {
 		resp, handled := a.svc.Handle(ctx, inv)
 		if !handled {
 			// Authorization was checked before the callback, so this is
@@ -379,7 +379,7 @@ func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMess
 		if err := a.rest(context.Background(), http.MethodPatch, path, body, false); err != nil {
 			a.svc.warn(err)
 		}
-	}()
+	})
 }
 
 // noMentions disables mention parsing: response text carries
@@ -490,7 +490,7 @@ func (a *discordAdapter) registerCommands(ctx context.Context) error {
 			sub("status", "Mode, cycle, active tasks, today's sessions"),
 			sub("digest", "7-day summary for every repository"),
 			sub("tasks", "Latest tasks", strOpt("count", "How many (default 5)", false)),
-			sub("task", "One task's detail", strOpt("id", "Task ID", true)),
+			sub("task", "One task's detail (default: the remembered task)", strOpt("id", "Task ID (default: the remembered task)", false)),
 			sub("cycles", "Latest cycles", strOpt("count", "How many (default 5)", false)),
 			sub("prs", "Observed pull requests", strOpt("count", "How many (default 5)", false)),
 			sub("requests", "Pending work requests"),

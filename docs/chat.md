@@ -103,7 +103,7 @@ channel; slash-command answers are ephemeral). Discord: `/octomus
 | --- | --- |
 | `status` | Mode, cycle number, active and attention tasks, pending requests, today's sessions |
 | `digest` | The 7-day fleet summary on demand |
-| `tasks [N]`, `task <id>` | Latest tasks (default 5, at most 20); one task's detail, with Retry/Cancel buttons when allowed |
+| `tasks [N]`, `task [id]` | Latest tasks (default 5, at most 20); one task's detail (default: the remembered task), with Retry/Cancel buttons when allowed |
 | `cycles [N]`, `prs [N]` | Latest cycles; observed pull requests |
 | `requests` | Pending and recent work requests |
 | `request <title> :: <description>` | File a work request (target: the default branch) |
