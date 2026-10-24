@@ -45,9 +45,25 @@ func (s *Store) SetNotifyPolicy(destination *string, state string, errorText *st
 		if state == "enabled" && destination != nil {
 			enabled = 1
 		}
+		// Rotating or disabling the webhook cancels only the webhook
+		// destination's pending rows; chat destinations keep theirs.
 		if _, err := c.ExecContext(background, `UPDATE notification_outbox SET status='cancelled', last_error='destination_changed'
-             WHERE status='pending' AND (?1=0 OR destination_id IS NOT ?2)`, enabled, destination); err != nil {
+             WHERE status='pending' AND (?1=0 OR destination_id IS NOT ?2)
+                 AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE kind='webhook')`, enabled, destination); err != nil {
 			return err
+		}
+		// Keep superseded webhook destinations as disabled tombstones.
+		// Their kind still classifies retained delivery history for
+		// NotificationHealth after rotation or disablement, while
+		// enabled=0 excludes them from fan-out and delivery claims.
+		if _, err := c.ExecContext(background, "UPDATE notification_destinations SET enabled=0 WHERE kind='webhook' AND (?1=0 OR destination_id IS NOT ?2)", enabled, destination); err != nil {
+			return err
+		}
+		if enabled == 1 {
+			if _, err := c.ExecContext(background, `INSERT INTO notification_destinations(destination_id,kind,target,enabled) VALUES (?1,'webhook','',1)
+                 ON CONFLICT(destination_id) DO UPDATE SET kind='webhook', enabled=1`, destination); err != nil {
+				return err
+			}
 		}
 		_, err := c.ExecContext(background, `INSERT INTO notification_policy VALUES (1,?2,?1,?3,?4)
              ON CONFLICT(id) DO UPDATE SET destination_id=excluded.destination_id, enabled=excluded.enabled, state=excluded.state, error=excluded.error`, enabled, destination, state, errorText)
@@ -61,17 +77,21 @@ func (s *Store) ClaimDelivery(destination string, now time.Time) (*NotificationD
 	epoch := now.Unix()
 	var claimed *NotificationDelivery
 	err := s.transaction(false, func(c *sql.Conn) error {
-		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='expired' WHERE status='pending' AND unixepoch(created_at) < ?1", epoch-expiry); err != nil {
+		// Cleanup is scoped to the claiming destination and to rows whose
+		// next attempt is due: with several workers draining in parallel,
+		// a global sweep would fail another destination's in-flight final
+		// attempt before its MarkDelivered can land.
+		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='expired' WHERE status='pending' AND destination_id=?2 AND next_attempt_at<=?1 AND unixepoch(created_at) < ?3", epoch, destination, epoch-expiry); err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='delivery_uncertain' WHERE status='pending' AND attempts >= ?1", maxAttempts); err != nil {
+		if _, err := c.ExecContext(background, "UPDATE notification_outbox SET status='failed', last_error='delivery_uncertain' WHERE status='pending' AND destination_id=?2 AND next_attempt_at<=?3 AND attempts >= ?1", maxAttempts, destination, epoch); err != nil {
 			return err
 		}
 		var d NotificationDelivery
 		err := c.QueryRowContext(background, `SELECT seq,event_id,created_at,repository,cycle_id,run_id,task_id,category,action,attempts
                  FROM notification_outbox
                  WHERE status='pending' AND next_attempt_at <= ?1 AND destination_id=?2
-                     AND destination_id = (SELECT destination_id FROM notification_policy WHERE id=1 AND enabled=1)
+                     AND destination_id IN (SELECT destination_id FROM notification_destinations WHERE enabled=1 AND cooldown_until<=?1)
                  ORDER BY seq LIMIT 1`, epoch, destination).Scan(&d.Seq, &d.EventID, &d.CreatedAt, &d.Repository, &d.CycleID, &d.RunID, &d.TaskID, &d.Category, &d.Action, &d.Attempts)
 		if err != nil && err != sql.ErrNoRows {
 			return err
@@ -102,6 +122,14 @@ func (s *Store) MarkDelivered(seq int64, now time.Time) error {
 }
 
 func (s *Store) MarkFailed(seq int64, category string, httpStatus *uint16, retryable bool) error {
+	return s.MarkFailedAt(seq, category, httpStatus, retryable, time.Time{})
+}
+
+// MarkFailedAt records a failed attempt and, when retryAt is set, keeps
+// both this delivery and its destination ineligible until that provider
+// deadline. Persisting the destination cooldown prevents queued alerts
+// from burning attempts during throttling, including after a restart.
+func (s *Store) MarkFailedAt(seq int64, category string, httpStatus *uint16, retryable bool, retryAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	retry := int64(0)
@@ -112,8 +140,25 @@ func (s *Store) MarkFailed(seq int64, category string, httpStatus *uint16, retry
 	if httpStatus != nil {
 		status = new(int64(*httpStatus))
 	}
-	_, err := s.conn.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq)
-	return err
+	var retryEpoch int64
+	if !retryAt.IsZero() {
+		retryEpoch = retryAt.Unix()
+	}
+	return s.transaction(false, func(c *sql.Conn) error {
+		result, err := c.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, next_attempt_at=CASE WHEN ?1=1 AND attempts<?2 THEN MAX(next_attempt_at,?6) ELSE next_attempt_at END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq, retryEpoch)
+		if err != nil {
+			return err
+		}
+		if retryEpoch <= 0 {
+			return nil
+		}
+		affected, err := result.RowsAffected()
+		if err != nil || affected == 0 {
+			return err
+		}
+		_, err = c.ExecContext(background, "UPDATE notification_destinations SET cooldown_until=MAX(cooldown_until,?1) WHERE destination_id=(SELECT destination_id FROM notification_outbox WHERE seq=?2)", retryEpoch, seq)
+		return err
+	})
 }
 
 func (s *Store) NotificationHealth() (NotificationHealth, error) {
@@ -125,17 +170,21 @@ func (s *Store) NotificationHealth() (NotificationHealth, error) {
 	if err != nil && err != sql.ErrNoRows {
 		return health, err
 	}
-	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='pending'").Scan(&health.Pending); err != nil {
+	// Health reports the webhook destination only: chat destinations fan
+	// out into the same outbox, and their successes or failures must not
+	// surface as webhook health in Settings.
+	const webhookRows = "(destination_id IS NULL OR destination_id IN (SELECT destination_id FROM notification_destinations WHERE kind='webhook') OR destination_id IN (SELECT destination_id FROM notification_policy WHERE id=1 AND destination_id IS NOT NULL))"
+	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='pending' AND "+webhookRows).Scan(&health.Pending); err != nil {
 		return health, err
 	}
-	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='failed'").Scan(&health.Failed); err != nil {
+	if err := s.conn.QueryRowContext(background, "SELECT COUNT(*) FROM notification_outbox WHERE status='failed' AND "+webhookRows).Scan(&health.Failed); err != nil {
 		return health, err
 	}
-	if err := s.conn.QueryRowContext(background, "SELECT MAX(delivered_at) FROM notification_outbox WHERE status='delivered'").Scan(&health.LastDeliveredAt); err != nil {
+	if err := s.conn.QueryRowContext(background, "SELECT MAX(delivered_at) FROM notification_outbox WHERE status='delivered' AND "+webhookRows).Scan(&health.LastDeliveredAt); err != nil {
 		return health, err
 	}
 	var lastError *string
-	err = s.conn.QueryRowContext(background, "SELECT last_error, http_status FROM notification_outbox WHERE last_error IS NOT NULL OR http_status IS NOT NULL ORDER BY seq DESC LIMIT 1").Scan(&lastError, &health.LastHTTPStatus)
+	err = s.conn.QueryRowContext(background, "SELECT last_error, http_status FROM notification_outbox WHERE (last_error IS NOT NULL OR http_status IS NOT NULL) AND "+webhookRows+" ORDER BY seq DESC LIMIT 1").Scan(&lastError, &health.LastHTTPStatus)
 	if err != nil && err != sql.ErrNoRows {
 		return health, err
 	}

@@ -18,7 +18,7 @@ func Command(binary string, cwd string) *exec.Cmd {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if config.IsPerRepoSecretEnv(key) {
+		if config.IsPerRepoSecretEnv(key) || config.IsChatSecretEnv(key) {
 			continue
 		}
 		switch key {

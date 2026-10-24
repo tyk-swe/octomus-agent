@@ -278,7 +278,7 @@ new notice. Each `application/json` POST contains:
 | Key | Value |
 | --- | --- |
 | `schema_version` | `1` |
-| `event_id` | 32 lowercase hex chars, unique per notice and reused on retries |
+| `event_id` | 32 lowercase hex chars, unique per delivery and reused on retries |
 | `occurred_at` | UTC RFC 3339 timestamp with milliseconds (`2026-09-26T12:00:00.123Z`) |
 | `repository` | Recorded GitHub `OWNER/REPOSITORY` (from the cycle/task snapshot), or `""` |
 | `cycle_id`, `run_id`, `task_id` | String or `null`, never absent (`run_id` is set only inside a Run once batch; cycle/service notices have `task_id: null`) |
@@ -287,8 +287,17 @@ new notice. Each `application/json` POST contains:
 
 HTTPS is required except literal loopback HTTP. Redirects and proxies are disabled;
 requests time out at 10s with up to 5 attempts (30/120/600/1,800s backoff, 1s spacing,
-24h expiry, 1,000 pending cap). Queue overflow, expiry, setup errors and delivery failures
+24h expiry, 1,000 pending cap across every destination). Queue overflow, expiry, setup errors and delivery failures
 appear in Configuration.
+
+## Optional Slack and Discord chat
+
+The operator can also talk to Octomus from Slack or Discord — status, work requests,
+confirmed controls — and receive these same attention notices plus a daily digest in an
+alert channel. Both transports are outbound-only and operator-allowlisted, everything is
+host environment, and chat tokens accept the `*_FILE` secret forms under `secrets/` via a
+compose override. See [Slack and Discord chat](chat.md) for app setup, commands and the
+full variable list.
 
 ## Private access
 

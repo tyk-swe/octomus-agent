@@ -22,6 +22,7 @@ import (
 	"time"
 
 	octomus "github.com/tyk-swe/octomus-agent"
+	"github.com/tyk-swe/octomus-agent/internal/chat"
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/export"
@@ -235,19 +236,40 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 		}
 	}
 	webhook, _ := env(config.WebhookEnv)
+	chatCfg, err := chat.FromEnv(env)
+	if err != nil {
+		return err
+	}
 	server := newHTTPServer(httpapi.Router(fleet, token, assetsOverride, octomus.Version))
 	components := serviceComponents{
 		fleet: fleet,
 		http:  server,
 		prepareWorker: func() error {
-			return notifications.Configure(state, webhook)
+			if err := notifications.Configure(state, webhook); err != nil {
+				return err
+			}
+			return chat.Configure(state, chatCfg)
 		},
 		startWorker: func() (func(), error) {
 			worker, err := notifications.Start(fleet.Context(), state, webhook)
-			if err != nil || worker == nil {
+			if err != nil {
 				return nil, err
 			}
-			return worker.Stop, nil
+			chatRunner, err := chat.Start(fleet.Context(), chatCfg, fleet, state, stderr)
+			if err != nil {
+				if worker != nil {
+					worker.Stop()
+				}
+				return nil, err
+			}
+			return func() {
+				if chatRunner != nil {
+					chatRunner.Stop()
+				}
+				if worker != nil {
+					worker.Stop()
+				}
+			}, nil
 		},
 	}
 	return components.run(sigCtx, parsed.listen, stderr)

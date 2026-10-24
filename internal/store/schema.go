@@ -51,6 +51,10 @@ var releaseMigrations = []migration{
 		_, err := c.ExecContext(ctx, planningReservationsV13)
 		return err
 	}},
+	{name: "v14-chat", apply: func(ctx context.Context, c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, chatV14)
+		return err
+	}},
 }
 
 //go:embed migrations/008-notifications.sql
@@ -70,6 +74,9 @@ var repositoryRetentionV12 string
 
 //go:embed migrations/013-planning-reservations.sql
 var planningReservationsV13 string
+
+//go:embed migrations/014-chat.sql
+var chatV14 string
 
 type schemaPlan struct {
 	ddl        string

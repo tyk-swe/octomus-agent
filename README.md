@@ -57,6 +57,7 @@ see [cost and usage](docs/cost.md).
 | [Sandbox](docs/sandbox.md) | Isolation lifecycle, egress and self-test |
 | [Threat model](docs/threat-model.md) | Trust boundaries and residual risk |
 | [Run evidence](docs/run-evidence.md) | `RunEvidenceV1` export and its limits |
+| [Slack and Discord chat](docs/chat.md) | Talk to Octomus from chat: commands, alerts and the daily digest |
 | [Cost](docs/cost.md) | Session admissions and usage reporting |
 | [Maintenance merging](docs/maintenance-merging.md) | Destination protections for automatic maintenance merges |
 | [Releasing](https://github.com/tyk-swe/octomus-agent/blob/main/docs/releasing.md) | Packaging and release workflow |

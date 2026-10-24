@@ -10,6 +10,7 @@ deploy/docker/sandbox.Dockerfile
 deploy/docker/setup.sh
 deploy/octomus-agent.service
 docs/architecture.md
+docs/chat.md
 docs/configuration.example.json
 docs/configuration.md
 docs/cost.md

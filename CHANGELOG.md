@@ -7,6 +7,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Slack and Discord chat (opt-in, disabled by default): the operator can talk to Octomus
+  from chat with `/octomus` slash commands (plus Slack @mentions) — status, tasks, cycles,
+  PRs, work requests, and confirmed pause/resume/cycle/audit and task retry/cancel actions.
+  One provider-neutral, operator-allowlisted command router drives the same engine actions
+  and planning gates as the dashboard; Slack uses Socket Mode and Discord the Gateway, both
+  outbound-only, with durable redelivery dedupe and thread memory. Attention events also
+  post to configured alert channels (schema v14 generalises the outbox to multiple
+  destinations; the webhook's behaviour and payload are unchanged), and an optional daily
+  digest doubles as the 24/7 heartbeat. See `docs/chat.md`.
+
 - Multi-repository fleet (stage 1 of `docs/autonomous-maintainer.md`): one instance serves
   several registered repositories for its single operator, each with its own saved policy,
   pause state, schedule, daily session cap, workspaces and trusted checkout. The scheduler
