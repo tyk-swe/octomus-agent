@@ -252,7 +252,7 @@ func (a *slackAdapter) liveness(ctx context.Context, conn *wsConn) {
 // handleEnvelope acknowledges within Slack's deadline first, then runs the
 // (possibly slow) engine call in the background and posts the real answer.
 func (a *slackAdapter) handleEnvelope(ctx context.Context, conn *wsConn, env slackEnvelope) error {
-	inv, ackPayload, respond, ok := a.decode(env)
+	inv, ackPayload, respond, ok := a.decode(ctx, env)
 	authorized := ok && a.svc != nil && a.svc.Authorized(inv.Provider, inv.UserID)
 	if ok && !authorized {
 		// The envelope still needs its acknowledgement, but a
@@ -319,7 +319,7 @@ type slackEventPayload struct {
 	} `json:"event"`
 }
 
-func (a *slackAdapter) decode(env slackEnvelope) (Invocation, map[string]any, func(Response) error, bool) {
+func (a *slackAdapter) decode(ctx context.Context, env slackEnvelope) (Invocation, map[string]any, func(Response) error, bool) {
 	switch env.Type {
 	case "slash_commands":
 		var p slackSlashPayload
@@ -329,7 +329,7 @@ func (a *slackAdapter) decode(env slackEnvelope) (Invocation, map[string]any, fu
 		inv := Invocation{Provider: SlackProvider, EventID: env.EnvelopeID, UserID: p.UserID, ChannelID: p.ChannelID, Text: p.Text}
 		ack := map[string]any{"response_type": "ephemeral", "text": "Working on it…"}
 		respond := func(resp Response) error {
-			return a.postResponseURL(p.ResponseURL, resp, true)
+			return a.postResponseURL(ctx, p.ResponseURL, resp, true)
 		}
 		return inv, ack, respond, true
 	case "interactive":
@@ -340,7 +340,7 @@ func (a *slackAdapter) decode(env slackEnvelope) (Invocation, map[string]any, fu
 		inv := Invocation{Provider: SlackProvider, EventID: env.EnvelopeID, UserID: p.User.ID,
 			ChannelID: p.Channel.ID, ThreadID: p.Message.ThreadTS, Action: p.Actions[0].Value}
 		respond := func(resp Response) error {
-			return a.postResponseURL(p.ResponseURL, resp, false)
+			return a.postResponseURL(ctx, p.ResponseURL, resp, false)
 		}
 		return inv, nil, respond, true
 	case "events_api":
@@ -355,7 +355,7 @@ func (a *slackAdapter) decode(env slackEnvelope) (Invocation, map[string]any, fu
 		inv := Invocation{Provider: SlackProvider, EventID: p.EventID, UserID: p.Event.User,
 			ChannelID: p.Event.Channel, ThreadID: thread, Text: slackUnescape(stripMention(p.Event.Text))}
 		respond := func(resp Response) error {
-			return a.postMessage(context.Background(), p.Event.Channel, thread, resp)
+			return a.postMessage(ctx, p.Event.Channel, thread, resp)
 		}
 		return inv, nil, respond, true
 	}
@@ -429,7 +429,7 @@ func slackEscapedBounded(text string) string {
 	return cut + "…"
 }
 
-func (a *slackAdapter) postResponseURL(responseURL string, resp Response, replace bool) error {
+func (a *slackAdapter) postResponseURL(ctx context.Context, responseURL string, resp Response, replace bool) error {
 	if responseURL == "" {
 		return nil
 	}
@@ -439,7 +439,7 @@ func (a *slackAdapter) postResponseURL(responseURL string, resp Response, replac
 		// the same escaping as the block text.
 		"text": slackEscape(resp.Text), "blocks": slackBlocks(resp),
 	}
-	return a.postJSON(context.Background(), responseURL, "", body)
+	return a.postJSON(ctx, responseURL, "", body)
 }
 
 // postMessage sends a proactive message (alerts, digest, mention replies).

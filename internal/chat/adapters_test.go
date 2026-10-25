@@ -43,12 +43,12 @@ func TestSlackSlashDecode(t *testing.T) {
 		"command": "/octomus", "text": "status", "user_id": "U1",
 		"channel_id": "C1", "response_url": "https://hooks.slack.com/x",
 	})
-	inv, ack, respond, ok := a.decode(slackEnvelope{EnvelopeID: "e1", Type: "slash_commands", Payload: payload})
+	inv, ack, respond, ok := a.decode(context.Background(), slackEnvelope{EnvelopeID: "e1", Type: "slash_commands", Payload: payload})
 	if !ok || inv.Text != "status" || inv.UserID != "U1" || inv.EventID != "e1" || ack == nil || respond == nil {
 		t.Fatalf("decode = inv %+v ack %v ok %v", inv, ack, ok)
 	}
 	other, _ := json.Marshal(map[string]any{"command": "/other", "text": "x"})
-	if _, _, _, ok := a.decode(slackEnvelope{Type: "slash_commands", Payload: other}); ok {
+	if _, _, _, ok := a.decode(context.Background(), slackEnvelope{Type: "slash_commands", Payload: other}); ok {
 		t.Fatal("non-octomus slash command accepted")
 	}
 }
@@ -119,13 +119,101 @@ func TestSlackUnauthorizedSlashAcknowledgesWithoutPayload(t *testing.T) {
 	}
 }
 
+func TestSlackRepliesHonourAdapterCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		envType string
+		payload func(responseURL string) map[string]any
+	}{
+		{
+			name:    "slash response URL",
+			envType: "slash_commands",
+			payload: func(responseURL string) map[string]any {
+				return map[string]any{"command": "/octomus", "text": "help", "user_id": testSlackUser, "channel_id": "C1", "response_url": responseURL}
+			},
+		},
+		{
+			name:    "mention reply",
+			envType: "events_api",
+			payload: func(string) map[string]any {
+				return map[string]any{
+					"event_id": "Ev-reply-cancel",
+					"event":    map[string]any{"type": "app_mention", "user": testSlackUser, "channel": "C1", "text": "<@UBOT> help", "ts": "12.34"},
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := testService(t)
+			release := make(chan struct{})
+			replyStarted := make(chan struct{}, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case replyStarted <- struct{}{}:
+				default:
+				}
+				<-release
+				fmt.Fprint(w, `{"ok":true}`)
+			}))
+			t.Cleanup(func() { close(release); srv.Close() })
+
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ln.Close() })
+			accepted := make(chan net.Conn, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err == nil {
+					accepted <- conn
+				}
+			}()
+			client, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverConn := <-accepted
+			defer serverConn.Close()
+			conn := &wsConn{conn: client, br: bufio.NewReader(client)}
+			defer conn.Close()
+
+			a := newSlackAdapter(svc, &ProviderConfig{Provider: SlackProvider, BotToken: "tok"})
+			a.apiBase = srv.URL
+			payload, _ := json.Marshal(tc.payload(srv.URL + "/response"))
+			env := slackEnvelope{EnvelopeID: "env-reply-cancel-" + tc.envType, Type: tc.envType, Payload: payload}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if err := a.handleEnvelope(ctx, conn, env); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-replyStarted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Slack reply did not start")
+			}
+			cancel()
+			done := make(chan struct{})
+			go func() {
+				svc.waitInflight()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("Slack reply ignored adapter cancellation")
+			}
+		})
+	}
+}
+
 func TestSlackMentionDecode(t *testing.T) {
 	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider})
 	payload, _ := json.Marshal(map[string]any{
 		"event_id": "Ev1",
 		"event":    map[string]any{"type": "app_mention", "user": "U9", "channel": "C9", "text": "<@UBOT> request Fix &lt;parser&gt; :: a &lt; b &amp;&amp; c &amp;lt;literal&amp;gt;", "ts": "12.34"},
 	})
-	inv, _, _, ok := a.decode(slackEnvelope{EnvelopeID: "e9", Type: "events_api", Payload: payload})
+	inv, _, _, ok := a.decode(context.Background(), slackEnvelope{EnvelopeID: "e9", Type: "events_api", Payload: payload})
 	if !ok || inv.Text != "request Fix <parser> :: a < b && c &lt;literal&gt;" || inv.EventID != "Ev1" || inv.ThreadID != "12.34" {
 		t.Fatalf("mention decode = %+v ok %v", inv, ok)
 	}
@@ -507,6 +595,45 @@ func TestDiscordComponentsSkipOversizeIDsAndDisableMentions(t *testing.T) {
 	}
 	if parse, ok := mentions["parse"].([]any); !ok || len(parse) != 0 {
 		t.Fatalf("allowed_mentions = %+v; want empty parse list", mentions)
+	}
+}
+
+func TestDiscordReplyHonoursAdapterCancellation(t *testing.T) {
+	svc, _ := testService(t)
+	release := make(chan struct{})
+	patchStarted := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			select {
+			case patchStarted <- struct{}{}:
+			default:
+			}
+			<-release
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw := fmt.Sprintf(`{"id":"101","type":2,"token":"tok","channel_id":"C1","member":{"user":{"id":%q}},"data":{"name":"octomus","options":[{"name":"help","options":[]}]}}`, testDiscordUser)
+	a.handleInteraction(ctx, json.RawMessage(raw))
+	select {
+	case <-patchStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Discord final reply did not start")
+	}
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		svc.waitInflight()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Discord final reply ignored adapter cancellation")
 	}
 }
 
@@ -1079,7 +1206,7 @@ func TestSlackTextCannotMention(t *testing.T) {
 		t.Fatalf("postMessage body = %+v; want mrkdwn disabled for the fallback text", captured)
 	}
 	captured = nil
-	if err := a.postResponseURL(srv.URL+"/response", Response{Text: "<!channel> deploy"}, true); err != nil {
+	if err := a.postResponseURL(context.Background(), srv.URL+"/response", Response{Text: "<!channel> deploy"}, true); err != nil {
 		t.Fatal(err)
 	}
 	if fallback, _ := captured["text"].(string); strings.Contains(fallback, "<!channel>") {
@@ -1212,7 +1339,7 @@ func TestSlackWebAPIRequiresPositiveAck(t *testing.T) {
 	if err := a.postMessage(context.Background(), "C1", "", Response{Text: "alert"}); err == nil {
 		t.Fatal("undecodable Web API reply counted as delivered; want a retryable failure")
 	}
-	if err := a.postResponseURL(srv.URL+"/response", Response{Text: "reply"}, true); err != nil {
+	if err := a.postResponseURL(context.Background(), srv.URL+"/response", Response{Text: "reply"}, true); err != nil {
 		t.Fatalf("plain-text response URL acknowledgement rejected: %v", err)
 	}
 }

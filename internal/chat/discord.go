@@ -423,7 +423,7 @@ func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMess
 		}
 		body := map[string]any{"content": resp.Text, "components": discordComponents(resp), "allowed_mentions": noMentions()}
 		path := fmt.Sprintf("/webhooks/%s/%s/messages/@original", a.cfg.AppID, it.Token)
-		if err := a.rest(context.Background(), http.MethodPatch, path, body, false); err != nil {
+		if err := a.rest(ctx, http.MethodPatch, path, body, false); err != nil {
 			a.svc.warn(err)
 		}
 	})
