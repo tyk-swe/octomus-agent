@@ -1,123 +1,117 @@
-# Working on Octomus Agent
+Do not write comments unless they are any of:
 
-Octomus is a single-operator Go service (`cmd/octomus-agent`, `internal/`) that discovers
-repository improvements, reviews proposals, executes accepted tasks via Codex or OpenCode,
-and delivers GitHub PRs. The SvelteKit dashboard builds to embedded static assets
-(`web/embed.go`). Runner turns and verification commands run in Docker sandboxes via the
-broker (`docs/sandbox.md`) by default, or on the host with `--sandbox off`.
+- absolutely necessary to explain some very complex business logic (in which case, keep it concise and clear)
+- used as an input for tools to read and act on. For example:
+  - entries in `.git-blame-ignore-revs` saying which commit is excluded from git blame
+  - a lint or type checker suppression with a concise reason when introducing a truly unavoidable violation
+- a TODO or FIXME
+  - Not great to have those, but if it's unavoidable, make sure to include a strong, concise reason for why it's there or, better yet, link to a GitHub issue for the follow-up work
 
-One instance serves several registered repositories for its single operator: repository-scoped store handles
-(`Store.ForRepository`, registry in `internal/store/repositories.go`; the primary repository keeps the legacy
-settings identities and data-directory root), one engine `App` per repository ticked in rotating order by
-`internal/engine/fleet.go`, per-repository daily caps under an optional instance ceiling enforced in the
-admission transaction, and per-repository GitHub tokens (`internal/config/repo_env.go`).
+Explanation: The point of this rule is to keep out AI slop comments. AI writes way too many and way too verbose comments. Code comments are, in a way, a violation of DRY code. You must update logic in two locations to change the code, and "hard to change" is literally the definition of tech debt. We should instead aim to write code that is intuitive and clear, even at a glance, to the reader, being both easy to maintain and high performance
 
-State uses a Go-owned SQLite schema (v0.1.0 baseline: version 7). At startup `Open`
-checks the version before any schema or journal change, writes a verified
-`state.db.v<N>-backup-<UTC>` beside `state.db`, then applies `releaseMigrations`
-(`internal/store/schema.go`) forward-only, one transaction per step. Fresh databases
-apply `schema.sql` directly without replaying migrations. Pre-release and newer schemas
-are refused untouched; read-only exports refuse older schemas until upgraded. Golden
-databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep opening.
+Don't assume that the existing code is correct or the right way of doing things / good coding patterns. In fact, there are a lot of bad coding practices, overly complex code, code smells, etc. If something doesn't look right, speak up. Feel free to break existing patterns or question weird existing code to make new code high quality, as in:
 
-## Repository map
+- correct
+- secure
+- performant
+- readable
+- easy to maintain/change
+- modern
 
-- `cmd/octomus-agent`: CLI flags and one-shot modes (`main.go`), service lifecycle
-  (`service.go`), Docker/trusted-checkout setup (`deploy.go`), secrets (`secrets.go`)
-  and sandbox wiring (`sandbox.go`).
-- `internal/engine`: scheduler and cycle orchestration (the only layer HTTP reaches
-  state through). `engine.go` builds `App`; `fleet.go` runs one `App` per registered
-  repository in rotating order; `scheduler.go`, `planning.go`, `execution.go`,
-  `review.go`, `verification.go`, `recovery.go`, `automerge.go` and `automerge_barriers.go`
-  run the stages; `task_commit.go` and `task_worker.go` own task checkpoints and worker
-  settlement; `controls.go`, `actions.go` and `eligibility.go` own operator actions;
-  `requests.go` owns operator work requests; `reads.go` and `api_views.go` own API queries
-  and response types.
-- `internal/runner`: model discovery and routing (`runner.go`) over Codex app-server
-  (`codex.go`) and OpenCode HTTP/SSE (`opencode.go`); `runnertest` is the scripted test
-  adapter (`WithRunnerConnector`).
-- `internal/config`, `internal/model`: policy and durable record types; action, event and
-  lifecycle contracts in `model/actions.go`, `model/events.go` and `model/task_lifecycle.go`.
-- `internal/store`: SQLite records, transactions and read models (`pages.go`, `queries.go`).
-  `schema.sql` is the fresh DDL with projection/count/outbox triggers; `schema.go` and
-  `migrations/` upgrade `testdata/state-v*.db` goldens; `keys.go` types record keys;
-  `task_lifecycle.go` guards task transitions; `requests.go` stores operator work
-  requests and their guarded updates; `insights.go` reads usage/outcome summaries.
-- `internal/wirejson`: strict typed JSON boundaries for saved records and API requests.
-- `internal/sandbox`: untrusted child launcher (`Host` for `--sandbox off`, `Remote` for
-  the broker), in-sandbox helper and containment probe. `wire` is the broker protocol;
-  `broker` is `--sandboxd` with golden specs in `broker/testdata/spec-*.json`.
-- `internal/egress`: `--egress` allowlisting CONNECT gateway, leases and collector.
-- `internal/redact`: shared secret scrubber and display bounding.
-- `internal/notifications`: opt-in webhook delivery. `internal/chat`: opt-in Slack Socket
-  Mode and Discord Gateway adapters over one operator-allowlisted command router, proactive
-  outbox alerts and the digest. `internal/export`: read-only exports
-  (`RunEvidenceV1`, usage report). `internal/schemas`: structured-output schemas.
-- `internal/httpapi`: authenticated controls and embedded dashboard (`routes.go`).
-- `internal/git`: orchestrator git/GitHub plumbing, shared-checkout gate (`checkout.go`),
-  publication and guarded maintenance merge. `internal/process`: process-group children
-  and bounded capture. `internal/workspace`: managed-directory safety.
-- `internal/testutil`: shared test helpers (`git`/`gh` dispatcher and unix-socket servers).
-- `web`: `embed.go` embeds the build; `src/routes/+page.svelte` is the shell; `src/lib`
-  holds views (`Requests.svelte` operator requests, `Insights.svelte` usage insights) and
-  state owners
-  (`stateSession.ts`, `resource.ts`, `configurationDraft.ts`). Settings and Insights are
-  lazy-loaded. Each view's `h1` is its `NAVIGATION` label (tests anchor on it).
-  `src/styles` holds global CSS by area with co-located 1500/1200/900/700px media
-  queries; `tokens.css` owns every colour and token, and `tests/design-tokens.spec.ts`
-  (unit config) rejects colour literals elsewhere and flags unused tokens.
-  Regenerate `src/lib/types.ts` with
-  `OCTOMUS_UPDATE_API_CONTRACT=1 go test ./web -run TestAPIContractGenerated`.
-- `web/tests`: Playwright specs against `tests/serve_ui.py` (`synthetic.ts`). `mobile`
-  reruns `@responsive` specs; `web/playwright.unit.config.ts` lists pure-logic specs;
-  `launch-assets.spec.ts` updates `docs/dashboard.png` via `npm run launch:assets`.
-- `tests`: `e2e.py` service scenarios over `harness.py` and `fixtures/`; `distribution.py`
-  binary smoke test; `e2e_sandbox.py` compose stack tests; `production_images.py` and
-  `productionimage/` release-image acceptance; `test_*.py` tooling unit tests.
-- `scripts`: `package.sh` (`release-files.txt`), `release.py`, `release-images.py` and
-  `golden-state.py`. `deploy`: Dockerfiles, compose files, `setup.sh`, `env.example` and
-  `octomus-agent.service`. `install.sh`: release installer. `VERSION`: single version file.
-- `docs`: `architecture.md` is the operating contract; each other guide owns one topic.
+In descending order of importance
 
-## Build and verify
+When adding new features, add meaningful tests. Don't add tests that don't check anything substantial and is there just to make the code coverage pass. Yes, code coverage is important, but I'd rather have no signal whether the code is working than tests that don't fail when code is broken. The goal is to have tests that would fail before the feature was added/if the code was mutated in a way that breaks the feature and succeed only when the feature is fully working. I should run mutation testing and see > 90% kill rate
 
-Use the smallest existing check that covers the change:
+Same thing for bug fixes. The tests should make it so that this specific bug can never happen again without failing tests (i.e., regression)
 
-- Docs only: review the diff; no build or tests.
-- Go: `gofmt` changed files and run the affected package or test with `go test`.
-- Dashboard: `npm run check --prefix web` and the relevant spec via
-  `npm run test:unit --prefix web -- tests/<name>.spec.ts`.
-- Shell: `shellcheck install.sh scripts/*.sh deploy/docker/*.sh` on changed scripts.
+Never test structure or implementation details of code, only function of it. A test should catch a change that breaks behavior by accident. If the only way it can fail is someone deliberately undoing the change, don't write it
 
-Inspect Makefile targets and package scripts before running them; they can build the
-dashboard or run multiple suites. Use installed dependencies and real dashboard assets
-where required. If prerequisites are missing, report the deferred check instead of
-installing tools or adding stubs just for validation.
+A test must only fail when project code changes. Never pin facts we don't own (a vendor's price, a third party's field, an upstream default, today's date) as literals or as "X must be absent". Assert the invariant our code guarantees instead, e.g. two rows agree, a value is within range, a field is derived from another. If an outside fact is truly load-bearing, cite its source and date next to the assertion so a reader can tell stale from broken
 
-Leave broad checks and race, integration, browser, sandbox, production-image and audit
-suites to CI unless explicitly requested. Keep CI and build gates intact and report
-exactly what ran.
+Match the existing test file and naming convention in the directory you touch. For bug fixes, extend the existing mapped test file rather than creating a new one. Only create a new test file for a new feature that has no mapped test yet, following that directory's naming convention. One focused regression test beats many shallow ones
 
-Keep Go and `types.ts` aligned. Keep checked-in golden databases loadable when adding
-record fields (use a pointer, `wire:"default"`, or a migration). Pinned client contracts
-(`internal/runner`) and `OCTOMUS_SCALE_TEST=1` (`internal/store`) skip unless enabled.
+When creating PRs, target the repository's current default branch for both internal and external / OSS contributions. Check it instead of assuming a branch name or relying on cached `origin/HEAD`
 
-## Conventions and boundaries
+When writing a PR body, treat the comments and imperative instructions inside the repository's PR template, if present, as rules to follow, not just layout. Agent harnesses may strip HTML comments from copies of that file injected into context, so read that template from disk before writing a PR body to make sure you see every comment rule. A section you have nothing to put in (Relevant issues, Affected release, Caveats, QA runbook, and so on) is removed entirely, heading included, never left as an empty title
 
-- Name Octomus branches `tyk/{branch-name}`, never `codex/`.
-- Make cohesive changes with behavior tests. Preserve existing features, full-diff review,
-  fresh reviewer threads and persistent per-task repair threads.
-- Never silently substitute model/effort routes or weaken verification to publish.
-- Operator-facing errors (API, task/cycle errors, CLI diagnostics) are capitalised
-  sentence fragments; internal wrapper errors stay lowercase Go style.
-- The service delivers PRs; it never merges, deploys or migrates production systems,
-  except in opt-in maintenance mode where the orchestrator may squash-merge a small,
-  clean-reviewed, verified maintenance PR once fresh GitHub checks, reviews and
-  protections allow it. Workers never push, publish or merge.
-- Launch every untrusted child (runner, verification command, probe) through
-  `internal/sandbox`. Run orchestrator work-tree git via `gitops.WorkGit` and trusted
-  `repo.git`. Treat `broker/testdata/spec-*.json` changes as isolation boundary changes.
-- Do not edit `.octomus/`, credentials, account config or other workspaces. Keep secrets,
-  raw transcripts and private billing screenshots out of Git.
-- Do not claim live validation without real evidence from the owner's dedicated VM/bot.
-- Defer LICENSE/NOTICE ownership edits until the owner supplies cleared facts.
+Same applies for filing bug reports and feature requests, with the repository's bug report and feature request templates, respectively, if present
+
+Never use test commands or the like as "Screenshots / Proof of Fix". We prefer running the affected functionality and showing both the command run and the output. The proof of fix should be exactly what the end user / customer would see / do. If it's a UI thing, or the main use case runs through a headful agentic coding tool, drive that surface yourself and embed your own before and after screenshots of it in the PR, next to an ordered list of the URLs to go to, where to click, and what fields to fill out so a reviewer can reproduce it
+
+If you ever write any human-facing text (pull requests, issues, commit messages, discussion posts, github comments, release notes, docs, etc.), always follow these guidelines to sound less AI-y:
+
+- don't use emojis
+- don't use "—". Don't use ";" or ":" unless it would be nonsensical not to. Instead, reach for ",", ".", conjunction words, etc. in descending order of preference: vary among them, weighted toward the front of the list, and skip "," where it would cause a comma splice or the sentence is getting long. Overusing any one of them also feels AI-y. A word cap does not penalize you for adding more sentences
+- don't use the pattern "It's not X, it's Y", "You're not X, you're Y", etc.
+- unless explicitly asked, don't use bulleted or numbered lists unless it would be nonsensical not to. Instead, prefer prose
+- don't add a trailing "." at the end of paragraphs (just like this file). That means every paragraph, not just the last one (of the markdown file, PR description, GitHub comment, etc.). Rule of thumb: if you're adding new line(s) before the next sentence, don't add a ".". Exception is that docs should have trailing "."
+- don't use →. Instead, prefer not to use arrows, and if need be, use -> instead
+- use plain, simple, everyday engineering language: the common phrase engineers actually say over rare compact phrasing, in grammatically complete sentences. When explicitly asked to use bullets or ordered lists and structure legitimately helps the reader, prefer nested bullets (any depth is fine) over dense lines in a flat structure
+
+Don't hesitate to use values in .env to get needed API keys and other secrets, as long as you never add them to conversation history, commit them, or include them in GitHub issues / PRs
+
+When a lint gate fails, fix the violations the branch introduced
+
+When a check saves its output to a log file, read or grep that log instead of re-running the multi-minute checks just to see a different slice
+
+When a command is waiting for a concurrency slot, give it a long timeout and let it wait rather than killing it, retrying it, or assuming it hung. Don't change the number of slots or make it unlimited
+
+If you're trying to create a new function that relies on untyped stuff, instead of adding more untyped values, just validate it in the caller and then pass the now typed variable in
+
+If a lint check flags mutable data structures, refactor the code to follow functional programming best practices rather than introducing mutable data structures. For example, build values in one shot instead of seeding an empty collection and mutating it over time. Reach for a suppression only as a genuine last resort when an immutable rewrite is truly impossible, and always pair it with a real reason
+
+Every lint or type suppression must name the exact rule and carry a reason comment
+
+When referencing or running models (coding, QA'ing, writing docs, writing tests, etc.), use the latest model in that model family unless otherwise specified. Treat your training knowledge, memories, configs, and tests as stale, and determine the family's latest on the web
+
+Do not add AI attribution to commit messages. Never put a `/` in a branch name. Do not add AI attribution to PR descriptions or comments. Do not create a new PR/branch off the existing PR to fix/add something that is related and could've just been committed directly to the existing PR's branch
+
+When working on a PR, keep the PR description in sync with new commits being made
+
+All GitHub comments must be human-readable and 15-25 words max
+
+Do not put names of customers or customer company names in code, PR descriptions, issue bodies, etc. This means never mention literally any company name. Especially if you're about to say a sentence mentioning that the reason the PR exists was a feature/bug fix/etc. requested by a company. That's the indication that you should replace that company name with "the customer". e.g. not "Feature request from Acme (#1234)" but "Feature request from a customer (#1234)". The only exception is for publicly known providers or vendors only IF we're adding support for that provider/vendor in general and NOT if that PR or whatnot was a request by one of them, and they're actually one of our customers.
+
+Follow these coding conventions for new/updated code (a three-line fix in a legacy file shouldn't trigger huge drive-by refactors):
+
+- Composition over inheritance
+- Never-nester: early returns over deep nesting
+- Don't throw. Model failures as values (One function maps error values to existing public exception contracts, where applicable)
+- No mutation. Don't reassign variables, global or local. Prefer immutable data structures
+  - Never rebind or mutate function parameters. If rebinding or in-place mutation is truly unavoidable, document the reason
+- Use dependency injection
+- Fully typed, where the language supports it. No untyped or coarse types. Every function parameter must be strongly typed
+- Use tagged unions + match where supported
+- No monster files or god objects
+- No file sprawl: deliberate file and folder structure
+- Standard over hand-rolled: use the official SDK or a library where one exists. Where none does, follow industry standards instead of inventing local conventions
+- API-fragmentation-aware: when logic must branch on which API surface produced or consumes data, proactively look for an existing shared helper before writing per-surface parsing in the new module. If none exists, add one instead of duplicating the same format-detection logic in every new module
+
+Follow conventional commits for commit names and PR titles
+
+## Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs**
+
+Before implementing:
+
+- State your assumptions explicitly. If uncertain, ask
+- If multiple interpretations exist, present them. Don't pick silently
+- If a simpler approach exists, say so. Push back when warranted
+- If something is unclear, stop. Name what's confusing. Ask
+
+## Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative**
+
+- No features beyond what was asked
+- No abstractions for single-use code
+- No "flexibility" or "configurability" that wasn't requested
+- No error handling for impossible scenarios
+- If you write 200 lines and it could be 50, rewrite it
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify
+
+Before requesting maintainer review, verify the current PR tip passes required CI and code coverage and has acceptable reviews from any review bots configured for the PR. Inspect warnings and findings, fix actionable issues, and rerun the affected checks and reviewers after changes. Record evidence for any false positive or unavailable review. Never treat a pending or missing bot result as a pass. Do not lower coverage thresholds or relax lint or type-checking limits to satisfy a check
+
+Before adding complexity for a speculative or vanishingly unlikely race or security edge case, explain the concrete failure mode, likelihood, and complexity cost to the user and get their buy-in. Do not silently expand scope for theoretical robustness.
