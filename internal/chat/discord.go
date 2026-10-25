@@ -21,6 +21,9 @@ type discordAdapter struct {
 	cfg     *ProviderConfig
 	client  *http.Client
 	apiBase string
+	// helloTimeout bounds the wait for opcode 10 after the websocket
+	// upgrade; a field keeps test-scale deadlines out of production.
+	helloTimeout time.Duration
 
 	mu        sync.Mutex
 	sessionID string
@@ -30,7 +33,7 @@ type discordAdapter struct {
 }
 
 func newDiscordAdapter(svc *Service, cfg *ProviderConfig) *discordAdapter {
-	return &discordAdapter{svc: svc, cfg: cfg, client: apiClient(), apiBase: "https://discord.com/api/v10"}
+	return &discordAdapter{svc: svc, cfg: cfg, client: apiClient(), apiBase: "https://discord.com/api/v10", helloTimeout: 30 * time.Second}
 }
 
 func (a *discordAdapter) run(ctx context.Context) {
@@ -111,6 +114,13 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 	defer cancel()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
+	helloTimeout := a.helloTimeout
+	if helloTimeout <= 0 {
+		helloTimeout = 30 * time.Second
+	}
+	// Heartbeat monitoring starts only with Hello, so bound this first
+	// read phase separately; opcode 10 clears the deadline below.
+	conn.SetReadDeadline(time.Now().Add(helloTimeout))
 	for {
 		data, err := conn.ReadMessage()
 		if err != nil {
@@ -146,6 +156,7 @@ func (a *discordAdapter) serveOnce(ctx context.Context) error {
 			a.hbAcked = true
 			a.mu.Unlock()
 		case 10: // Hello: start heartbeats, then identify or resume.
+			conn.SetReadDeadline(time.Time{})
 			var hello struct {
 				HeartbeatInterval int64 `json:"heartbeat_interval"`
 			}

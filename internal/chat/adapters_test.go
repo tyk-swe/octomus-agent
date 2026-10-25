@@ -753,6 +753,42 @@ func TestDiscordRegistrationRetriesTransientFailure(t *testing.T) {
 	}
 }
 
+func TestDiscordServeOnceDetectsSocketStalledBeforeHello(t *testing.T) {
+	svc, _ := testService(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"url":"ws://%s"}`, ln.Addr().String())
+	}))
+	defer rest.Close()
+	go wsHandshake(t, ln, func(conn net.Conn) {
+		// Complete the upgrade, then never send Hello. Reading keeps
+		// the socket open until the client gives up and closes it.
+		_, _ = readClientFrame(bufio.NewReader(conn))
+	})
+
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = rest.URL
+	a.helloTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- a.serveOnce(ctx) }()
+	select {
+	case err := <-serveDone:
+		if err == nil {
+			t.Fatal("Discord socket stalled before Hello returned without an error")
+		}
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		<-serveDone
+		t.Fatal("Discord receive loop stayed blocked before initial Hello")
+	}
+}
+
 func TestDiscordGatewayPreservesRateLimitDelay(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "1")
