@@ -209,14 +209,16 @@ func TestChildEnvironmentIsScrubbed(t *testing.T) {
 	t.Setenv(config.WebhookEnv, "https://example.invalid/hook")
 	t.Setenv(config.MergeTokenEnv, "restricted-merger-secret")
 	t.Setenv("OCTOMUS_MERGE_TOKEN_FILE", "/run/secrets/merger")
+	t.Setenv(config.SlackBotTokenEnv, "slack-secret-that-must-not-leak")
+	t.Setenv(config.DiscordBotTokenEnv, "discord-secret-that-must-not-leak")
 	t.Setenv("GIT_TERMINAL_PROMPT", "1")
-	script := fmt.Sprintf(`printf 't=%%s w=%%s m=%%s f=%%s g=%%s' "${%s-unset}" "${%s-unset}" "${%s-unset}" "${OCTOMUS_MERGE_TOKEN_FILE-unset}" "$GIT_TERMINAL_PROMPT"`,
-		config.TokenEnv, config.WebhookEnv, config.MergeTokenEnv)
+	script := fmt.Sprintf(`printf 't=%%s w=%%s m=%%s f=%%s g=%%s s=%%s d=%%s' "${%s-unset}" "${%s-unset}" "${%s-unset}" "${OCTOMUS_MERGE_TOKEN_FILE-unset}" "$GIT_TERMINAL_PROMPT" "${%s-unset}" "${%s-unset}"`,
+		config.TokenEnv, config.WebhookEnv, config.MergeTokenEnv, config.SlackBotTokenEnv, config.DiscordBotTokenEnv)
 	out, err := RunMachine(context.Background(), "bash", []string{"-c", script}, temp, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "t=unset w=unset m=unset f=unset g=0" {
+	if out != "t=unset w=unset m=unset f=unset g=0 s=unset d=unset" {
 		t.Fatalf("child environment = %q; want secrets removed and GIT_TERMINAL_PROMPT=0", out)
 	}
 }

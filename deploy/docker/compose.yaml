@@ -42,6 +42,18 @@ services:
       OCTOMUS_GITHUB_REPOS: ${OCTOMUS_GITHUB_REPOS:-}
       OCTOMUS_GITHUB_TOKENS_DIR: /run/secrets/github_tokens
       OCTOMUS_SANDBOXD_SOCKET: /run/octomus/sandboxd.sock
+      # Optional Slack/Discord chat settings (docs/chat.md). Tokens arrive via a compose override with the
+      # *_FILE secret forms, like the notification webhook URL; they are not set here.
+      OCTOMUS_SLACK_OPERATOR_IDS: ${OCTOMUS_SLACK_OPERATOR_IDS:-}
+      OCTOMUS_SLACK_CHANNELS: ${OCTOMUS_SLACK_CHANNELS:-}
+      OCTOMUS_SLACK_ALERT_CHANNEL: ${OCTOMUS_SLACK_ALERT_CHANNEL:-}
+      OCTOMUS_DISCORD_APP_ID: ${OCTOMUS_DISCORD_APP_ID:-}
+      OCTOMUS_DISCORD_GUILD_ID: ${OCTOMUS_DISCORD_GUILD_ID:-}
+      OCTOMUS_DISCORD_OPERATOR_IDS: ${OCTOMUS_DISCORD_OPERATOR_IDS:-}
+      OCTOMUS_DISCORD_CHANNELS: ${OCTOMUS_DISCORD_CHANNELS:-}
+      OCTOMUS_DISCORD_ALERT_CHANNEL: ${OCTOMUS_DISCORD_ALERT_CHANNEL:-}
+      OCTOMUS_CHAT_DIGEST_TIME: ${OCTOMUS_CHAT_DIGEST_TIME:-}
+      OCTOMUS_CHAT_TIMEZONE: ${OCTOMUS_CHAT_TIMEZONE:-}
     secrets: [operator_token, github_token]
     volumes:
       - data:/var/lib/octomus/data

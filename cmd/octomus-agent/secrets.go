@@ -26,6 +26,9 @@ var secretFiles = []struct{ variable, file string }{
 	{config.WebhookEnv, "OCTOMUS_NOTIFICATION_WEBHOOK_URL_FILE"},
 	{githubTokenEnv, "OCTOMUS_GITHUB_TOKEN_FILE"},
 	{config.MergeTokenEnv, "OCTOMUS_MERGE_TOKEN_FILE"},
+	{config.SlackAppTokenEnv, "OCTOMUS_SLACK_APP_TOKEN_FILE"},
+	{config.SlackBotTokenEnv, "OCTOMUS_SLACK_BOT_TOKEN_FILE"},
+	{config.DiscordBotTokenEnv, "OCTOMUS_DISCORD_BOT_TOKEN_FILE"},
 }
 
 // loadSecretFiles moves file-held secrets into the process environment before anything reads it, so redaction and

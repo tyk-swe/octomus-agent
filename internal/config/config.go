@@ -24,6 +24,35 @@ const (
 	MergeRulesetEnv = "OCTOMUS_MERGE_RULESET_ID"
 )
 
+// Chat integration variables (docs/chat.md). Tokens are secrets; the rest name
+// the operator's chat identities and channel bindings.
+const (
+	SlackAppTokenEnv       = "OCTOMUS_SLACK_APP_TOKEN"
+	SlackBotTokenEnv       = "OCTOMUS_SLACK_BOT_TOKEN"
+	SlackOperatorsEnv      = "OCTOMUS_SLACK_OPERATOR_IDS"
+	SlackChannelsEnv       = "OCTOMUS_SLACK_CHANNELS"
+	SlackAlertChannelEnv   = "OCTOMUS_SLACK_ALERT_CHANNEL"
+	DiscordBotTokenEnv     = "OCTOMUS_DISCORD_BOT_TOKEN"
+	DiscordAppIDEnv        = "OCTOMUS_DISCORD_APP_ID"
+	DiscordGuildIDEnv      = "OCTOMUS_DISCORD_GUILD_ID"
+	DiscordOperatorsEnv    = "OCTOMUS_DISCORD_OPERATOR_IDS"
+	DiscordChannelsEnv     = "OCTOMUS_DISCORD_CHANNELS"
+	DiscordAlertChannelEnv = "OCTOMUS_DISCORD_ALERT_CHANNEL"
+	ChatDigestTimeEnv      = "OCTOMUS_CHAT_DIGEST_TIME"
+	ChatTimezoneEnv        = "OCTOMUS_CHAT_TIMEZONE"
+)
+
+// IsChatSecretEnv reports whether key holds a chat credential that ordinary
+// children must never receive.
+func IsChatSecretEnv(key string) bool {
+	switch key {
+	case SlackAppTokenEnv, SlackBotTokenEnv, DiscordBotTokenEnv,
+		"OCTOMUS_SLACK_APP_TOKEN_FILE", "OCTOMUS_SLACK_BOT_TOKEN_FILE", "OCTOMUS_DISCORD_BOT_TOKEN_FILE":
+		return true
+	}
+	return false
+}
+
 func Categories() []string {
 	return []string{"features", "correctness", "performance", "ux-dx", "refactoring", "simplification", "tests", "dependencies", "documentation"}
 }

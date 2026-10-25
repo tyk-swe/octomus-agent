@@ -49,7 +49,9 @@ databases in `internal/store/testdata` (`scripts/golden-state.py`) must keep ope
   `broker` is `--sandboxd` with golden specs in `broker/testdata/spec-*.json`.
 - `internal/egress`: `--egress` allowlisting CONNECT gateway, leases and collector.
 - `internal/redact`: shared secret scrubber and display bounding.
-- `internal/notifications`: opt-in webhook delivery. `internal/export`: read-only exports
+- `internal/notifications`: opt-in webhook delivery. `internal/chat`: opt-in Slack Socket
+  Mode and Discord Gateway adapters over one operator-allowlisted command router, proactive
+  outbox alerts and the digest. `internal/export`: read-only exports
   (`RunEvidenceV1`, usage report). `internal/schemas`: structured-output schemas.
 - `internal/httpapi`: authenticated controls and embedded dashboard (`routes.go`).
 - `internal/git`: orchestrator git/GitHub plumbing, shared-checkout gate (`checkout.go`),
