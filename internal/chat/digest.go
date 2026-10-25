@@ -148,16 +148,18 @@ func nextDigest(now time.Time, loc *time.Location, hhmm string) time.Time {
 	t, _ := time.Parse("15:04", hhmm)
 	local := now.In(loc)
 	year, month, day := local.Date()
-	next := time.Date(year, month, day, t.Hour(), t.Minute(), 0, 0, loc)
-	if !next.After(local) {
-		// Advance the calendar date and reconstruct the wall time: adding
-		// a day to a spring-forward-normalized nonexistent time (02:30
-		// becoming 01:30) would schedule tomorrow at the wrong hour and
-		// then fire twice.
-		year, month, day = time.Date(year, month, day, 0, 0, 0, 0, loc).AddDate(0, 0, 1).Date()
-		next = time.Date(year, month, day, t.Hour(), t.Minute(), 0, 0, loc)
+	for {
+		next := time.Date(year, month, day, t.Hour(), t.Minute(), 0, 0, loc)
+		if next.After(local) {
+			return next
+		}
+		// Advance the civil date in UTC and reconstruct the wall time:
+		// local-date arithmetic can normalize back into the preceding
+		// day around spring-forward gaps, including zones that change
+		// clocks at local midnight. Re-checking the result preserves
+		// the strictly-after-now invariant runDigest relies on.
+		year, month, day = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1).Date()
 	}
-	return next
 }
 
 // runDigest posts the digest to every alert channel on the configured

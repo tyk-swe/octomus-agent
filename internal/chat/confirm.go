@@ -57,6 +57,24 @@ func (s *Service) takePending(token, userID string) *pendingAction {
 	return p
 }
 
+// pendingOwnedByOther reports whether a live confirmation belongs to a
+// different operator, without consuming it. Adapters whose component
+// replies would replace a shared message use this to answer the other
+// operator privately and leave the creator's buttons intact.
+func (s *Service) pendingOwnedByOther(token, userID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.pending[token]
+	if p == nil {
+		return false
+	}
+	if s.now().After(p.expires) {
+		delete(s.pending, token)
+		return false
+	}
+	return p.userID != userID
+}
+
 // taskActionValue builds a task button's value. It deliberately omits
 // the repository: a full OWNER/REPO plus a UUID can exceed Discord's
 // 100-character custom_id limit, and the owning repository is resolved

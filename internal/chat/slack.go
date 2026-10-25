@@ -303,7 +303,7 @@ func (a *slackAdapter) decode(env slackEnvelope) (Invocation, map[string]any, fu
 			thread = p.Event.TS
 		}
 		inv := Invocation{Provider: SlackProvider, EventID: p.EventID, UserID: p.Event.User,
-			ChannelID: p.Event.Channel, ThreadID: thread, Text: stripMention(p.Event.Text)}
+			ChannelID: p.Event.Channel, ThreadID: thread, Text: slackUnescape(stripMention(p.Event.Text))}
 		respond := func(resp Response) error {
 			return a.postMessage(context.Background(), p.Event.Channel, thread, resp)
 		}
@@ -346,6 +346,15 @@ func slackBlocks(resp Response) []map[string]any {
 		blocks = append(blocks, map[string]any{"type": "actions", "elements": elements})
 	}
 	return blocks
+}
+
+// slackUnescape reverses the three HTML entities Slack applies to
+// app_mention text. One simultaneous pass preserves text the operator
+// literally entered as an entity (for example &amp;lt; becomes &lt;,
+// not <).
+func slackUnescape(text string) string {
+	r := strings.NewReplacer("&lt;", "<", "&gt;", ">", "&amp;", "&")
+	return r.Replace(text)
 }
 
 func slackEscape(text string) string {

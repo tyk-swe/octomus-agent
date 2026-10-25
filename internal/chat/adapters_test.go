@@ -123,10 +123,10 @@ func TestSlackMentionDecode(t *testing.T) {
 	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider})
 	payload, _ := json.Marshal(map[string]any{
 		"event_id": "Ev1",
-		"event":    map[string]any{"type": "app_mention", "user": "U9", "channel": "C9", "text": "<@UBOT> tasks 3", "ts": "12.34"},
+		"event":    map[string]any{"type": "app_mention", "user": "U9", "channel": "C9", "text": "<@UBOT> request Fix &lt;parser&gt; :: a &lt; b &amp;&amp; c &amp;lt;literal&amp;gt;", "ts": "12.34"},
 	})
 	inv, _, _, ok := a.decode(slackEnvelope{EnvelopeID: "e9", Type: "events_api", Payload: payload})
-	if !ok || inv.Text != "tasks 3" || inv.EventID != "Ev1" || inv.ThreadID != "12.34" {
+	if !ok || inv.Text != "request Fix <parser> :: a < b && c &lt;literal&gt;" || inv.EventID != "Ev1" || inv.ThreadID != "12.34" {
 		t.Fatalf("mention decode = %+v ok %v", inv, ok)
 	}
 }
@@ -403,6 +403,60 @@ func TestDiscordUnauthorizedClickDoesNotEditAlert(t *testing.T) {
 	}
 	if patched {
 		t.Fatal("unauthorized click edited the shared alert message")
+	}
+}
+
+func TestDiscordOtherOperatorConfirmationClickPreservesSharedButtons(t *testing.T) {
+	svc, _ := testService(t)
+	svc.cfg.Discord.Operators["D-OTHER"] = true
+	_, buttons, _, err := svc.confirm(
+		Invocation{Provider: DiscordProvider, UserID: testDiscordUser},
+		"Retry this task?",
+		func(context.Context) (string, error) { return "Task requeued.", nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buttons) != 2 {
+		t.Fatalf("confirmation buttons = %+v; want confirm and cancel", buttons)
+	}
+	token := strings.TrimPrefix(buttons[0].Value, "confirm:")
+
+	var mu sync.Mutex
+	var callback map[string]any
+	patched := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPatch {
+			patched = true
+		}
+		if strings.Contains(r.URL.Path, "/callback") {
+			_ = json.NewDecoder(r.Body).Decode(&callback)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	raw := fmt.Sprintf(`{"id":"100","type":3,"token":"tok","channel_id":"C1","member":{"user":{"id":"D-OTHER"}},"data":{"custom_id":%q}}`, buttons[0].Value)
+	a.handleInteraction(context.Background(), json.RawMessage(raw))
+	time.Sleep(250 * time.Millisecond) // let any (wrong) async edit land
+	svc.waitInflight()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if callback == nil || callback["type"] != float64(4) {
+		t.Fatalf("callback = %+v; want an ephemeral type-4 refusal, not a deferred update", callback)
+	}
+	if data, _ := callback["data"].(map[string]any); data == nil || data["flags"] != float64(64) {
+		t.Fatalf("callback data = %+v; want ephemeral flags", callback["data"])
+	}
+	if patched {
+		t.Fatal("another operator's rejected click edited the shared confirmation")
+	}
+	if svc.takePending(token, testDiscordUser) == nil {
+		t.Fatal("creator's confirmation was consumed or removed by another operator")
 	}
 }
 
@@ -767,6 +821,22 @@ func TestSlackTextCannotMention(t *testing.T) {
 	}
 	if fallback, _ := captured["text"].(string); strings.Contains(fallback, "<!channel>") {
 		t.Fatalf("response fallback = %q; want the broadcast syntax escaped", fallback)
+	}
+}
+
+func TestNextDigestAcrossMidnightDSTTransition(t *testing.T) {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Santiago advances at local midnight. Advancing through a Go
+	// midnight value can normalize back to the preceding date, but the
+	// scheduler must still choose the following civil day.
+	now := time.Date(2026, 9, 5, 8, 0, 1, 0, loc)
+	got := nextDigest(now, loc, "08:00")
+	want := time.Date(2026, 9, 6, 8, 0, 0, 0, loc)
+	if !got.Equal(want) || !got.After(now) {
+		t.Fatalf("nextDigest across midnight transition = %v; want %v", got, want)
 	}
 }
 

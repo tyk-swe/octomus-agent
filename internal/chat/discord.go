@@ -333,6 +333,18 @@ func (it *discordInteraction) commandText() (string, bool) {
 	return strings.Join(parts, " "), true
 }
 
+// ephemeralCallback sends an initial response visible only to the
+// invoking user; it never edits the message that carried a component.
+func (a *discordAdapter) ephemeralCallback(ctx context.Context, it *discordInteraction, text string) {
+	refusal := map[string]any{"type": 4, "data": map[string]any{
+		"content": text, "flags": 64,
+		"allowed_mentions": noMentions(),
+	}}
+	if err := a.rest(ctx, http.MethodPost, fmt.Sprintf("/interactions/%s/%s/callback", it.ID, it.Token), refusal, false); err != nil {
+		a.svc.warn(err)
+	}
+}
+
 // handleInteraction defers within Discord's deadline, then edits the
 // deferred reply with the engine-backed answer.
 func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMessage) {
@@ -362,14 +374,19 @@ func (a *discordAdapter) handleInteraction(ctx context.Context, raw json.RawMess
 		// Never answer a stranger with a deferred update (type 6): the
 		// follow-up edit would replace the shared alert message, letting
 		// any channel member erase it. An ephemeral reply edits nothing.
-		refusal := map[string]any{"type": 4, "data": map[string]any{
-			"content": "Octomus chat is operator-only.", "flags": 64,
-			"allowed_mentions": noMentions(),
-		}}
-		if err := a.rest(ctx, http.MethodPost, fmt.Sprintf("/interactions/%s/%s/callback", it.ID, it.Token), refusal, false); err != nil {
-			a.svc.warn(err)
-		}
+		a.ephemeralCallback(ctx, &it, "Octomus chat is operator-only.")
 		return
+	}
+	if callbackType == 6 {
+		kind, token, found := strings.Cut(inv.Action, ":")
+		if found && (kind == "confirm" || kind == "cancel") && a.svc.pendingOwnedByOther(token, inv.UserID) {
+			// A different allowlisted identity clicked a shared
+			// confirmation. The token remains valid for its creator,
+			// so refuse this click ephemerally rather than replacing
+			// the creator's buttons with an expiry message.
+			a.ephemeralCallback(ctx, &it, "That confirmation belongs to the operator who requested it.")
+			return
+		}
 	}
 	callback := map[string]any{"type": callbackType}
 	if callbackType == 5 {
