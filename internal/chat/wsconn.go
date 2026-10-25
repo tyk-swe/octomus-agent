@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,9 +28,10 @@ const wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 const maxWSMessage = 4 << 20
 
 type wsConn struct {
-	conn net.Conn
-	br   *bufio.Reader
-	mu   sync.Mutex // writes
+	conn         net.Conn
+	br           *bufio.Reader
+	mu           sync.Mutex // writes
+	lastActivity atomic.Int64
 }
 
 func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
@@ -97,7 +99,9 @@ func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return &wsConn{conn: conn, br: br}, nil
+	ws := &wsConn{conn: conn, br: br}
+	ws.markActivity()
+	return ws, nil
 }
 
 // wsCloseError preserves the peer's close code: Discord's non-resumable
@@ -113,6 +117,22 @@ func (e *wsCloseError) Error() string {
 		return fmt.Sprintf("websocket closed with code %d: %s", e.Code, e.Reason)
 	}
 	return fmt.Sprintf("websocket closed with code %d", e.Code)
+}
+
+func (c *wsConn) markActivity() {
+	c.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (c *wsConn) lastActivityTime() time.Time {
+	ns := c.lastActivity.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (c *wsConn) Ping() error {
+	return c.writeFrame(wsPing, []byte("octomus"))
 }
 
 func (c *wsConn) Close() error { return c.conn.Close() }
@@ -203,6 +223,7 @@ func (c *wsConn) readFrame() (fin bool, op byte, payload []byte, err error) {
 			payload[i] ^= mask[i%4]
 		}
 	}
+	c.markActivity()
 	return fin, op, payload, nil
 }
 

@@ -22,10 +22,14 @@ type slackAdapter struct {
 	cfg     *ProviderConfig
 	client  *http.Client
 	apiBase string
+	// pingInterval/livenessTimeout drive active socket health checks;
+	// fields keep test-scale intervals out of production timing.
+	pingInterval    time.Duration
+	livenessTimeout time.Duration
 }
 
 func newSlackAdapter(svc *Service, cfg *ProviderConfig) *slackAdapter {
-	return &slackAdapter{svc: svc, cfg: cfg, client: apiClient(), apiBase: "https://slack.com/api"}
+	return &slackAdapter{svc: svc, cfg: cfg, client: apiClient(), apiBase: "https://slack.com/api", pingInterval: 30 * time.Second, livenessTimeout: 90 * time.Second}
 }
 
 func apiClient() *http.Client {
@@ -179,8 +183,11 @@ func (a *slackAdapter) serveOnce(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(connCtx, func() { conn.Close() })
 	defer stop()
+	go a.liveness(connCtx, conn)
 	for {
 		data, err := conn.ReadMessage()
 		if err != nil {
@@ -204,6 +211,39 @@ func (a *slackAdapter) serveOnce(ctx context.Context) error {
 		default:
 			if env.EnvelopeID != "" {
 				_ = conn.WriteJSON(map[string]any{"envelope_id": env.EnvelopeID})
+			}
+		}
+	}
+}
+
+// liveness actively probes the socket. Any inbound frame refreshes the
+// connection's activity marker; if neither data nor a pong arrives for
+// the timeout, closing the conn forces serveOnce back to reconnect
+// rather than leaving Slack commands stranded on a half-open socket.
+func (a *slackAdapter) liveness(ctx context.Context, conn *wsConn) {
+	interval := a.pingInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	timeout := a.livenessTimeout
+	if timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	conn.markActivity()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if now.Sub(conn.lastActivityTime()) > timeout {
+				conn.Close()
+				return
+			}
+			if err := conn.Ping(); err != nil {
+				conn.Close()
+				return
 			}
 		}
 	}

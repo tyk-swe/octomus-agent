@@ -280,6 +280,96 @@ func TestSlackBlocksDistinctActionIDsAndBoundedEscape(t *testing.T) {
 	}
 }
 
+func TestSlackServeOnceDetectsStalledSocket(t *testing.T) {
+	svc, _ := testService(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"ok":true,"url":"ws://%s"}`, ln.Addr().String())
+	}))
+	defer rest.Close()
+	go wsHandshake(t, ln, func(conn net.Conn) {
+		br := bufio.NewReader(conn)
+		for {
+			// Consume client pings without ever answering or sending a
+			// frame: TCP stays open, but the WebSocket peer is stalled.
+			if _, err := readClientFrame(br); err != nil {
+				return
+			}
+		}
+	})
+
+	a := newSlackAdapter(svc, &ProviderConfig{Provider: SlackProvider, AppToken: "xapp-test"})
+	a.apiBase = rest.URL
+	a.pingInterval = 20 * time.Millisecond
+	a.livenessTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- a.serveOnce(ctx) }()
+	select {
+	case err := <-serveDone:
+		if err == nil {
+			t.Fatal("stalled Slack socket returned without an error")
+		}
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		<-serveDone
+		t.Fatal("Slack receive loop stayed blocked on a stalled socket")
+	}
+}
+
+func TestSlackServeOnceKeepsResponsiveSocket(t *testing.T) {
+	svc, _ := testService(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	rest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"ok":true,"url":"ws://%s"}`, ln.Addr().String())
+	}))
+	defer rest.Close()
+	go wsHandshake(t, ln, func(conn net.Conn) {
+		br := bufio.NewReader(conn)
+		for {
+			payload, err := readClientFrame(br)
+			if err != nil {
+				return
+			}
+			if payload == "octomus" {
+				writeServerFrame(conn, wsPong, payload)
+			}
+		}
+	})
+
+	a := newSlackAdapter(svc, &ProviderConfig{Provider: SlackProvider, AppToken: "xapp-test"})
+	a.apiBase = rest.URL
+	a.pingInterval = 20 * time.Millisecond
+	a.livenessTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- a.serveOnce(ctx) }()
+	select {
+	case err := <-serveDone:
+		t.Fatalf("responsive Slack socket closed early: %v", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("cancelled responsive Slack socket returned %v; want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Slack receive loop did not stop after cancellation")
+	}
+}
+
 func TestSlackOpenConnectionPreservesRateLimitDelay(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "1")
@@ -840,8 +930,8 @@ func readClientFrame(br *bufio.Reader) (string, error) {
 	return string(payload), nil
 }
 
-func writeServerText(conn net.Conn, text string) {
-	frame := []byte{0x80 | wsText}
+func writeServerFrame(conn net.Conn, op byte, text string) {
+	frame := []byte{0x80 | op}
 	switch {
 	case len(text) < 126:
 		frame = append(frame, byte(len(text)))
@@ -849,6 +939,10 @@ func writeServerText(conn net.Conn, text string) {
 		frame = append(frame, 126, byte(len(text)>>8), byte(len(text)))
 	}
 	conn.Write(append(frame, text...))
+}
+
+func writeServerText(conn net.Conn, text string) {
+	writeServerFrame(conn, wsText, text)
 }
 
 // The gateway read loop must answer an opcode-1 heartbeat request even
