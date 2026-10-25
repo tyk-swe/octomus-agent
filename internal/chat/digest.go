@@ -218,14 +218,17 @@ func (s *Service) deliverDigestMessages(ctx context.Context, post func(context.C
 		if pc == nil || pc.AlertChannel == "" {
 			continue
 		}
+		var cooldown time.Duration
 		for i, text := range messages {
 			if ctx.Err() != nil {
 				return
 			}
-			if i > 0 && !waitForDigest(ctx, s.digestInterval()) {
+			if i > 0 && !waitForDigest(ctx, max(s.digestInterval(), cooldown)) {
 				return
 			}
-			if err := s.postDigestPage(ctx, post, pc.Provider, pc.AlertChannel, text); err != nil {
+			err, remaining := s.postDigestPage(ctx, post, pc.Provider, pc.AlertChannel, text)
+			cooldown = remaining
+			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -235,26 +238,32 @@ func (s *Service) deliverDigestMessages(ctx context.Context, post func(context.C
 	}
 }
 
-func (s *Service) postDigestPage(ctx context.Context, post func(context.Context, Provider, string, Response) error, provider Provider, channel, text string) error {
+// postDigestPage returns any rate-limit cooldown still owed after its
+// final attempt, so the caller can honor that same provider deadline
+// before sending another page to the destination.
+func (s *Service) postDigestPage(ctx context.Context, post func(context.Context, Provider, string, Response) error, provider Provider, channel, text string) (error, time.Duration) {
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return err, 0
 		}
 		err := post(ctx, provider, channel, Response{Text: text})
 		if err == nil {
-			return nil
+			return nil, 0
 		}
 		var apiErr *apiError
-		if !errors.As(err, &apiErr) || !apiErr.rateLimited() || attempt >= maxDigestPageAttempts {
-			return err
+		if !errors.As(err, &apiErr) || !apiErr.rateLimited() {
+			return err, 0
 		}
 		delay := apiErr.RetryAfter
 		if delay <= 0 {
 			delay = backoffDelay(attempt)
 		}
 		delay = max(delay, s.digestInterval())
+		if attempt >= maxDigestPageAttempts {
+			return err, delay
+		}
 		if !waitForDigest(ctx, delay) {
-			return ctx.Err()
+			return ctx.Err(), 0
 		}
 	}
 }

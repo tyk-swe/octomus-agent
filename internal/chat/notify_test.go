@@ -252,13 +252,19 @@ func TestDeliverDigestMessagesBoundsRateLimitRetries(t *testing.T) {
 	svc, _ := testService(t)
 	svc.cfg.Slack.AlertChannel = "C-ALERT"
 	svc.cfg.Discord = nil
-	svc.digestPageInterval = time.Millisecond
+	svc.digestPageInterval = 5 * time.Millisecond
 	attempts := map[string]int{}
+	type call struct {
+		text string
+		at   time.Time
+	}
+	var calls []call
 	var posted []string
 	svc.deliverDigestMessages(context.Background(), func(_ context.Context, _ Provider, _ string, resp Response) error {
+		calls = append(calls, call{text: resp.Text, at: time.Now()})
 		attempts[resp.Text]++
 		if resp.Text == "page 1" {
-			return &apiError{Status: 429, RetryAfter: time.Millisecond, Msg: "slow down"}
+			return &apiError{Status: 429, RetryAfter: 60 * time.Millisecond, Msg: "slow down"}
 		}
 		posted = append(posted, resp.Text)
 		return nil
@@ -268,6 +274,12 @@ func TestDeliverDigestMessagesBoundsRateLimitRetries(t *testing.T) {
 	}
 	if len(posted) != 1 || posted[0] != "page 2" {
 		t.Fatalf("posted after retry exhaustion = %v; want page 2 still attempted", posted)
+	}
+	if len(calls) != maxDigestPageAttempts+1 {
+		t.Fatalf("digest calls = %+v; want five page-1 attempts then page 2", calls)
+	}
+	if gap := calls[maxDigestPageAttempts].at.Sub(calls[maxDigestPageAttempts-1].at); gap < 55*time.Millisecond {
+		t.Fatalf("gap after exhausted page = %v; want its final provider cooldown carried into page 2", gap)
 	}
 }
 
