@@ -52,7 +52,7 @@ func (a *discordAdapter) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoffDelay(attempt)):
+		case <-time.After(reconnectDelay(attempt, err)):
 		}
 	}
 }
@@ -82,7 +82,7 @@ func (a *discordAdapter) gatewayURL(ctx context.Context) (string, error) {
 		URL string `json:"url"`
 	}
 	if resp.StatusCode != 200 || json.Unmarshal(body, &out) != nil || out.URL == "" {
-		return "", &apiError{Status: resp.StatusCode, Msg: "gateway/bot refused: " + resp.Status}
+		return "", &apiError{Status: resp.StatusCode, RetryAfter: providerRetryAfter(resp, body), Msg: "gateway/bot refused: " + resp.Status}
 	}
 	return out.URL, nil
 }
@@ -459,9 +459,9 @@ func (a *discordAdapter) postMessage(ctx context.Context, channel string, resp R
 	return a.rest(ctx, http.MethodPost, "/channels/"+channel+"/messages", body, true)
 }
 
-// discordRetryAfter combines Discord's Retry-After header with the
-// floating-point retry_after value in its JSON rate-limit body.
-func discordRetryAfter(resp *http.Response, body []byte) time.Duration {
+// providerRetryAfter combines a Retry-After header with the
+// floating-point retry_after value in a provider's JSON rate-limit body.
+func providerRetryAfter(resp *http.Response, body []byte) time.Duration {
 	retryAfter := retryAfterDelay(resp)
 	var out struct {
 		RetryAfter float64 `json:"retry_after"`
@@ -492,7 +492,7 @@ func (a *discordAdapter) rest(ctx context.Context, method, path string, body map
 	defer resp.Body.Close()
 	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Status: resp.StatusCode, RetryAfter: discordRetryAfter(resp, got), Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
+		return &apiError{Status: resp.StatusCode, RetryAfter: providerRetryAfter(resp, got), Msg: fmt.Sprintf("discord request refused: %s", resp.Status)}
 	}
 	return nil
 }
@@ -513,13 +513,7 @@ func (a *discordAdapter) registerLoop(ctx context.Context) {
 			return
 		}
 		attempt++
-		// Discord's provider-mandated cooldown is a floor: ordinary
-		// backoff may be longer, but may never retry sooner than the
-		// rate-limit response allows.
-		delay := backoffDelay(attempt)
-		if apiErr != nil {
-			delay = max(delay, apiErr.RetryAfter)
-		}
+		delay := reconnectDelay(attempt, err)
 		select {
 		case <-ctx.Done():
 			return
@@ -583,7 +577,7 @@ func (a *discordAdapter) registerCommands(ctx context.Context) error {
 	defer resp.Body.Close()
 	got, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Status: resp.StatusCode, RetryAfter: discordRetryAfter(resp, got), Msg: "command registration refused: " + resp.Status}
+		return &apiError{Status: resp.StatusCode, RetryAfter: providerRetryAfter(resp, got), Msg: "command registration refused: " + resp.Status}
 	}
 	return nil
 }

@@ -280,6 +280,56 @@ func TestSlackBlocksDistinctActionIDsAndBoundedEscape(t *testing.T) {
 	}
 }
 
+func TestSlackOpenConnectionPreservesRateLimitDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"ok":false,"error":"ratelimited","retry_after":1.5}`)
+	}))
+	defer srv.Close()
+	a := newSlackAdapter(nil, &ProviderConfig{Provider: SlackProvider, AppToken: "xapp-test"})
+	a.apiBase = srv.URL
+	_, err := a.openConnection(context.Background())
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || !apiErr.rateLimited() || apiErr.RetryAfter != 1500*time.Millisecond {
+		t.Fatalf("open-connection rate limit = %v; want retry after 1.5s", err)
+	}
+}
+
+func TestSlackReconnectRetriesAfterProviderCooldown(t *testing.T) {
+	svc, _ := testService(t)
+	var mu sync.Mutex
+	var calls []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, time.Now())
+		attempt := len(calls)
+		mu.Unlock()
+		if attempt == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"ok":false,"error":"ratelimited","retry_after":3}`)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"ok":false,"error":"internal_error"}`)
+	}))
+	defer srv.Close()
+	a := newSlackAdapter(svc, &ProviderConfig{Provider: SlackProvider, AppToken: "xapp-test"})
+	a.apiBase = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 3200*time.Millisecond)
+	defer cancel()
+	a.run(ctx)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("connection attempts = %d; want rate-limited attempt then one retry", len(calls))
+	}
+	if gap := calls[1].Sub(calls[0]); gap < 2900*time.Millisecond {
+		t.Fatalf("socket reconnect gap = %v; want provider cooldown of 3s honored", gap)
+	}
+}
+
 func TestSlackTransientAPIErrorIsRetryable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		code := "internal_error"
@@ -610,6 +660,89 @@ func TestDiscordRegistrationRetriesTransientFailure(t *testing.T) {
 	a.registerLoop(ctx)
 	if got := attempts.Load(); got != 2 {
 		t.Fatalf("registration attempts = %d; want a transient failure then success", got)
+	}
+}
+
+func TestDiscordGatewayPreservesRateLimitDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"message":"You are being rate limited.","retry_after":1.5,"global":true}`)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(nil, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	_, err := a.gatewayURL(context.Background())
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || !apiErr.rateLimited() || apiErr.RetryAfter != 1500*time.Millisecond {
+		t.Fatalf("gateway rate limit = %v; want retry after 1.5s", err)
+	}
+}
+
+func TestDiscordReconnectRetriesAfterProviderCooldown(t *testing.T) {
+	svc, _ := testService(t)
+	var mu sync.Mutex
+	var calls []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/gateway/bot") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mu.Lock()
+		calls = append(calls, time.Now())
+		attempt := len(calls)
+		mu.Unlock()
+		if attempt == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"message":"You are being rate limited.","retry_after":3,"global":true}`)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, `{"message":"unavailable"}`)
+	}))
+	defer srv.Close()
+	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
+	a.apiBase = srv.URL
+	ctx, cancel := context.WithTimeout(context.Background(), 3200*time.Millisecond)
+	defer cancel()
+	a.run(ctx)
+	svc.waitInflight()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("gateway attempts = %d; want rate-limited attempt then one retry", len(calls))
+	}
+	if gap := calls[1].Sub(calls[0]); gap < 2900*time.Millisecond {
+		t.Fatalf("gateway reconnect gap = %v; want provider cooldown of 3s honored", gap)
+	}
+}
+
+func TestWSDialPreservesUpgradeRateLimitDelay(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil || line == "\r\n" {
+				break
+			}
+		}
+		fmt.Fprint(conn, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3\r\nContent-Length: 0\r\n\r\n")
+	}()
+	_, err = wsDial(context.Background(), "ws://"+ln.Addr().String()+"/")
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) || !apiErr.rateLimited() || apiErr.RetryAfter != 3*time.Second {
+		t.Fatalf("websocket upgrade rate limit = %v; want retry after 3s", err)
 	}
 }
 

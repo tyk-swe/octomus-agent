@@ -83,8 +83,9 @@ func wsDial(ctx context.Context, rawURL string) (*wsConn, error) {
 		return nil, err
 	}
 	if resp.StatusCode != 101 {
+		retryAfter := retryAfterDelay(resp)
 		conn.Close()
-		return nil, fmt.Errorf("websocket upgrade refused: %s", resp.Status)
+		return nil, &apiError{Status: resp.StatusCode, RetryAfter: retryAfter, Msg: fmt.Sprintf("websocket upgrade refused: %s", resp.Status)}
 	}
 	sum := sha1.Sum([]byte(key + wsGUID))
 	if accept := resp.Header.Get("Sec-WebSocket-Accept"); accept != "" && accept != base64.StdEncoding.EncodeToString(sum[:]) {
@@ -262,6 +263,17 @@ func reconnectAttempt(attempt int, servedFor time.Duration) int {
 		return 0
 	}
 	return attempt + 1
+}
+
+// reconnectDelay applies ordinary reconnect backoff with any
+// provider-mandated RetryAfter as a minimum delay.
+func reconnectDelay(attempt int, err error) time.Duration {
+	delay := backoffDelay(attempt)
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		delay = max(delay, apiErr.RetryAfter)
+	}
+	return delay
 }
 
 // backoffDelay grows reconnect pauses from 1s toward a 60s cap with jitter.

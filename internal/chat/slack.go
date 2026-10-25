@@ -115,10 +115,11 @@ func (a *slackAdapter) run(ctx context.Context) {
 			a.svc.warn(fmt.Errorf("slack socket mode: %w", err))
 		}
 		attempt = reconnectAttempt(attempt, time.Since(started))
+		delay := reconnectDelay(attempt, err)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoffDelay(attempt)):
+		case <-time.After(delay):
 		}
 	}
 }
@@ -144,11 +145,20 @@ func (a *slackAdapter) openConnection(ctx context.Context) (string, error) {
 		URL   string `json:"url"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return "", fmt.Errorf("apps.connections.open: %w", err)
+	parseErr := json.Unmarshal(body, &out)
+	retryAfter := providerRetryAfter(resp, body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := "apps.connections.open refused: " + resp.Status
+		if out.Error != "" {
+			msg = "apps.connections.open refused: " + out.Error
+		}
+		return "", &apiError{Status: resp.StatusCode, Code: out.Error, RetryAfter: retryAfter, Msg: msg}
+	}
+	if parseErr != nil {
+		return "", fmt.Errorf("apps.connections.open: %w", parseErr)
 	}
 	if !out.OK || out.URL == "" {
-		return "", &apiError{Status: resp.StatusCode, Code: out.Error, Msg: "apps.connections.open refused: " + out.Error}
+		return "", &apiError{Status: resp.StatusCode, Code: out.Error, RetryAfter: retryAfter, Msg: "apps.connections.open refused: " + out.Error}
 	}
 	return out.URL, nil
 }
