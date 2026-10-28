@@ -197,3 +197,56 @@ test('a legacy rename updates the API scope even when browser storage is denied'
   expect(state.saved!.github_repo).toBe('fixture/renamed');
   await expect(page.locator('.repository-switch strong')).toHaveText('renamed');
 });
+
+test('instance ceiling rejects invalid edits and only saves explicit nonnegative integers', async ({
+  page
+}) => {
+  await configurationFixture(page);
+  const writes: number[] = [];
+  const fleet = {
+    repositories: [],
+    instance_max_sessions_per_day: 12
+  };
+  await page.route('**/api/repositories', (route) => route.fulfill({ json: fleet }));
+  await page.route('**/api/instance', async (route) => {
+    const body = route.request().postDataJSON() as { max_sessions_per_day: number };
+    writes.push(body.max_sessions_per_day);
+    await route.fulfill({
+      json: { ...fleet, instance_max_sessions_per_day: body.max_sessions_per_day }
+    });
+  });
+  await login(page);
+  await openNavigation(page, 'Configuration', false);
+  const ceiling = page.getByRole('spinbutton', { name: /^Instance-wide sessions per day/ });
+  const save = page.getByRole('button', { name: 'Save instance ceiling', exact: true });
+  const error = page.getByRole('alert').filter({ hasText: 'Enter a nonnegative whole number' });
+  await expect(ceiling).toHaveValue('12');
+  for (const invalid of ['-1', '0.5', '']) {
+    await ceiling.fill(invalid);
+    await save.click();
+    await expect(error).toBeVisible();
+    expect(writes).toEqual([]);
+    await page.reload();
+    await page.getByLabel('Operator access token').fill(token);
+    await page.getByRole('button', { name: 'Open dashboard' }).click();
+    await openNavigation(page, 'Configuration', false);
+    await expect(ceiling).toHaveValue('12');
+  }
+  await ceiling.fill('-1');
+  await save.click();
+  await expect(error).toBeVisible();
+  for (const valid of [0, 25]) {
+    await ceiling.fill(String(valid));
+    await save.click();
+    await expect(save).toBeEnabled();
+    await expect(error).toBeHidden();
+    await expect(ceiling).toHaveValue(String(valid));
+  }
+  expect(writes).toEqual([0, 25]);
+  await page.route('**/api/instance', (route) =>
+    route.fulfill({ json: { ...fleet, instance_max_sessions_per_day: 30 } })
+  );
+  await ceiling.fill('40');
+  await save.click();
+  await expect(ceiling).toHaveValue('30');
+});
