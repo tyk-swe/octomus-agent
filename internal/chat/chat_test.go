@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/store"
@@ -16,6 +17,50 @@ const (
 	testSlackUser   = "U-OPERATOR"
 	testDiscordUser = "D-OPERATOR"
 )
+
+func TestBoundTextLimitPreservesUTF8(t *testing.T) {
+	const suffix = "\n… (truncated)"
+	tests := []struct {
+		name  string
+		text  string
+		limit int
+		want  string
+	}{
+		{"empty", "", 0, ""},
+		{"unicode unchanged", "  café 世界 😀  ", 100, "café 世界 😀"},
+		{"unicode exact limit", "café", len("café"), "café"},
+		{"ascii truncation", strings.Repeat("a", 30), 20, "aaaa" + suffix},
+		{"reported boundary", strings.Repeat("a", 1883) + strings.Repeat("é", 20), 1900, strings.Repeat("a", 1883) + suffix},
+		{"two byte split", "aé" + strings.Repeat("x", 20), len(suffix) + 2, "a" + suffix},
+		{"three byte split first", "a界" + strings.Repeat("x", 20), len(suffix) + 2, "a" + suffix},
+		{"three byte split second", "a界" + strings.Repeat("x", 20), len(suffix) + 3, "a" + suffix},
+		{"four byte split first", "a😀" + strings.Repeat("x", 20), len(suffix) + 2, "a" + suffix},
+		{"four byte split second", "a😀" + strings.Repeat("x", 20), len(suffix) + 3, "a" + suffix},
+		{"four byte split third", "a😀" + strings.Repeat("x", 20), len(suffix) + 4, "a" + suffix},
+		{"exact multibyte boundary", "a😀" + strings.Repeat("x", 20), len(suffix) + 5, "a😀" + suffix},
+		{"no content code point fits", strings.Repeat("😀", 10), len(suffix) + 1, suffix},
+		{"zero limit", "hello", 0, ""},
+		{"newline only", "hello", 1, "\n"},
+		{"suffix split first", "hello", 2, "\n"},
+		{"suffix split second", "hello", 3, "\n"},
+		{"suffix ellipsis fits", "hello", 4, "\n…"},
+		{"exact suffix limit", strings.Repeat("x", 30), len(suffix), suffix},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := boundTextLimit(tt.text, tt.limit)
+			if !utf8.ValidString(got) {
+				t.Fatalf("output is invalid UTF-8: %q", got)
+			}
+			if len(got) > tt.limit {
+				t.Fatalf("output is %d bytes, exceeding limit %d", len(got), tt.limit)
+			}
+			if got != tt.want {
+				t.Fatalf("boundTextLimit = %q; want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func testConfig() Config {
 	return Config{
