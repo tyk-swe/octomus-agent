@@ -25,6 +25,22 @@ elif '--environment' in args:
     if os.environ.get('SETUP_REAL_DOCKER'):
         raise SystemExit(subprocess.run([os.environ['SETUP_REAL_DOCKER'], *args]).returncode)
     print('OCTOMUS_GITHUB_REPO=' + os.environ['SETUP_EFFECTIVE_REPO'])
+elif args == ['compose', 'port', 'octomus', '4200']:
+    if os.environ.get('SETUP_PORT_FAILURE'):
+        raise SystemExit(1)
+    if 'SETUP_PORT_BINDING' in os.environ:
+        print(os.environ['SETUP_PORT_BINDING'])
+    elif os.environ.get('SETUP_REAL_DOCKER'):
+        config = subprocess.run([os.environ['SETUP_REAL_DOCKER'], 'compose', 'config', '--format', 'json'],
+                                capture_output=True, text=True)
+        if config.returncode:
+            sys.stderr.write(config.stderr)
+            raise SystemExit(config.returncode)
+        port = next(port for port in json.loads(config.stdout)['services']['octomus']['ports']
+                    if port['target'] == 4200)
+        print(port['host_ip'] + ':' + str(port['published']))
+    else:
+        print('127.0.0.1:' + os.environ['SETUP_EFFECTIVE_PORT'])
 elif args[:3] == ['compose', 'config', '--images']:
     print('octomus-agent:setup-test')
 else:
@@ -34,7 +50,8 @@ else:
 
 
 class SetupRepositoryTests(unittest.TestCase):
-    def run_setup(self, env_file, exported, effective, answers):
+    def run_setup(self, env_file: str, exported: str | None, effective: str, answers: str,
+                  port_env: dict[str, str] | None = None):
         directory = tempfile.TemporaryDirectory(prefix='octomus-setup-')
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -44,6 +61,7 @@ class SetupRepositoryTests(unittest.TestCase):
         self.assertIn('socket=/var/run/docker.sock', source)
         (root / 'setup.sh').write_text(source.replace('socket=/var/run/docker.sock', 'socket=' + str(root / 'docker.sock')))
         (root / '.env').write_text(env_file)
+        shutil.copyfile(PROJECT / 'deploy/docker/compose.yaml', root / 'compose.yaml')
         (root / 'secrets').mkdir()
         (root / 'secrets/operator_token').write_text('synthetic-operator-token\n')
         (root / 'bin').mkdir()
@@ -54,7 +72,9 @@ class SetupRepositoryTests(unittest.TestCase):
             real = None
         env = {key: value for key, value in os.environ.items() if not key.startswith(('COMPOSE_', 'OCTOMUS_'))}
         env.update(PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
-                   SETUP_REAL_DOCKER=real or '', SETUP_EFFECTIVE_REPO=effective, SETUP_CALLS=str(root / 'calls'))
+                   SETUP_REAL_DOCKER=real or '', SETUP_EFFECTIVE_REPO=effective, SETUP_CALLS=str(root / 'calls'),
+                   SETUP_EFFECTIVE_PORT='4200')
+        env.update(port_env or {})
         if exported is not None:
             env['OCTOMUS_GITHUB_REPO'] = exported
         result = subprocess.run(['sh', str(root / 'setup.sh')], input=answers, env=env,
@@ -80,6 +100,42 @@ class SetupRepositoryTests(unittest.TestCase):
                 self.assertTrue(any(call['args'][:2] == ['compose', 'build'] for call in calls))
                 self.assertTrue(any(call['args'][:2] == ['compose', 'up'] for call in calls))
                 self.assertTrue(all(call['repo'] == expected for call in calls), calls)
+
+    def test_tunnel_uses_published_port_and_keeps_local_endpoint(self):
+        cases = [
+            ('OCTOMUS_PORT=4300\n', None, '4300'),
+            ('OCTOMUS_PORT=4300 # dashboard port\n', None, '4300'),
+            ('OCTOMUS_PORT="4300" # dashboard port\n', None, '4300'),
+            ("OCTOMUS_PORT='4300'\n", None, '4300'),
+            ('DASHBOARD_PORT=4300\nOCTOMUS_PORT=${DASHBOARD_PORT}\n', None, '4300'),
+            ('OCTOMUS_PORT=4300 # dashboard port\n', '4400', '4400'),
+            ('OCTOMUS_PORT=4300\n', '', '4200'),
+            ('OCTOMUS_PORT=\n', None, '4200'),
+            ('', None, '4200'),
+        ]
+        for file, exported, expected in cases:
+            with self.subTest(file=file, exported=exported):
+                port_env = {'SETUP_EFFECTIVE_PORT': expected, **(
+                    {'OCTOMUS_PORT': exported} if exported is not None else {})}
+                result, _, _ = self.run_setup('OCTOMUS_GITHUB_REPO=owner/repo\n' + file, None,
+                                              'owner/repo', 'synthetic-github-token\n', port_env)
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                self.assertIn('ssh -N -L 4200:127.0.0.1:' + expected + ' <this-host>', result.stdout)
+                self.assertIn('then browse to http://127.0.0.1:4200', result.stdout)
+
+    def test_port_resolution_failure_never_prints_a_fallback_tunnel(self):
+        cases = [
+            {'SETUP_PORT_FAILURE': '1'},
+            {'SETUP_PORT_BINDING': ''},
+            {'SETUP_PORT_BINDING': '127.0.0.1:invalid'},
+        ]
+        for port_env in cases:
+            with self.subTest(port_env=port_env):
+                result, _, _ = self.run_setup('OCTOMUS_GITHUB_REPO=owner/repo\n', None, 'owner/repo',
+                                              'synthetic-github-token\n', port_env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('dashboard port', result.stderr)
+                self.assertNotIn('ssh -N -L', result.stdout)
 
     def test_invalid_effective_repository_fails_before_token_or_build(self):
         result, calls, _ = self.run_setup('OCTOMUS_GITHUB_REPO=owner/file\n', 'owner/other/nested',

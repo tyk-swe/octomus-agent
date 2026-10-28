@@ -100,9 +100,14 @@ if [ "$(stat -c %u secrets/operator_token)" != 10001 ] || [ "$(stat -c %u secret
 fi
 docker compose up -d
 
-# The tunnel's far end is the port Compose published: the shell's OCTOMUS_PORT, else the one in .env.
-port=${OCTOMUS_PORT:-$(sed -n 's/^OCTOMUS_PORT=//p' .env | tail -n 1 | tr -d "\"' ")}
-case "$port" in ''|*[!0-9]*) port=4200;; esac
+binding=$(docker compose port octomus 4200) || fail 'Could not resolve the dashboard port from Docker Compose'
+case "$binding" in
+  127.0.0.1:*) port=${binding#127.0.0.1:};;
+  *) fail "Expected a loopback dashboard port from Docker Compose, got $binding";;
+esac
+case "$port" in
+  ''|*[!0-9]*) fail "Invalid dashboard port from Docker Compose: $port";;
+esac
 cat <<NEXT
 
 Octomus is starting, sandboxed. Next:
