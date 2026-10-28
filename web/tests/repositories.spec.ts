@@ -204,7 +204,7 @@ test('instance ceiling rejects invalid edits and only saves explicit nonnegative
   await configurationFixture(page);
   const writes: number[] = [];
   const fleet = {
-    repositories: [{ github_repo: 'fixture/project', primary: true }],
+    repositories: [],
     instance_max_sessions_per_day: 12
   };
   await page.route('**/api/repositories', (route) => route.fulfill({ json: fleet }));
