@@ -554,7 +554,7 @@ func (a *discordAdapter) registerCommands(ctx context.Context) error {
 			sub("task", "One task's detail (default: the remembered task)", strOpt("id", "Task ID (default: the remembered task)", false)),
 			sub("cycles", "Latest cycles", strOpt("count", "How many (default 5)", false)),
 			sub("prs", "Observed pull requests", strOpt("count", "How many (default 5)", false)),
-			sub("requests", "Pending work requests"),
+			sub("requests", "Pending and recent work requests", strOpt("page", "Requests page (default 1)", false)),
 			sub("request", "File work for the next planning cycle", strOpt("text", "Title :: description", true)),
 			sub("pause", "Pause this repository"),
 			sub("resume", "Resume continuous operation"),

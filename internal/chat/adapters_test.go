@@ -1400,7 +1400,7 @@ func TestAnswerHeartbeatRequestPreservesACKState(t *testing.T) {
 	}
 }
 
-func TestDiscordTaskIDOptionIsOptional(t *testing.T) {
+func TestDiscordRememberedTaskAndRequestsPageOptionsAreOptional(t *testing.T) {
 	var captured []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
@@ -1416,22 +1416,26 @@ func TestDiscordTaskIDOptionIsOptional(t *testing.T) {
 		t.Fatalf("registered %d commands; want one", len(captured))
 	}
 	subs, _ := captured[0]["options"].([]any)
-	for _, raw := range subs {
-		sub, _ := raw.(map[string]any)
-		if sub["name"] != "task" {
-			continue
-		}
-		opts, _ := sub["options"].([]any)
-		if len(opts) == 0 {
-			t.Fatal("task subcommand has no options")
-		}
-		id, _ := opts[0].(map[string]any)
-		if id["name"] != "id" || id["required"] != false {
-			t.Fatalf("task id option = %+v; want optional so remembered-task lookup is reachable", id)
-		}
-		return
+	for name, option := range map[string]string{"task": "id", "requests": "page"} {
+		t.Run(name, func(t *testing.T) {
+			for _, raw := range subs {
+				sub, _ := raw.(map[string]any)
+				if sub["name"] != name {
+					continue
+				}
+				opts, _ := sub["options"].([]any)
+				if len(opts) == 0 {
+					t.Fatalf("%s subcommand has no options", name)
+				}
+				field, _ := opts[0].(map[string]any)
+				if field["name"] != option || field["required"] != false {
+					t.Fatalf("%s option = %+v, want optional %s", name, field, option)
+				}
+				return
+			}
+			t.Fatalf("%s subcommand not registered", name)
+		})
 	}
-	t.Fatal("task subcommand not registered")
 }
 
 func TestDiscordInvalidSessionPreservesResumableSession(t *testing.T) {

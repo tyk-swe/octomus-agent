@@ -105,7 +105,7 @@ channel; slash-command answers are ephemeral). Discord: `/octomus
 | `digest [page]` | The 7-day fleet summary on demand; large fleets are paged at repository boundaries |
 | `tasks [N]`, `task [id]` | Latest tasks (default 5, at most 20); one task's detail (default: the remembered task), with Retry/Cancel buttons when allowed |
 | `cycles [N]`, `prs [N]` | Latest cycles; observed pull requests |
-| `requests` | Pending and recent work requests |
+| `requests [page]` | Pending and five recent work requests, with complete IDs on numbered pages. Long target names are shortened for display |
 | `request <title> :: <description>` | File a work request (target: the default branch) |
 | `pause`, `resume`, `cycle`, `audit` | Operating controls; ask for confirmation |
 | `retry <task-id>`, `cancel <task-id>`, `withdraw <request-id>` | Task and request actions; ask for confirmation |
