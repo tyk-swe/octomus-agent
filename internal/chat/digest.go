@@ -150,7 +150,8 @@ func nextDigest(now time.Time, loc *time.Location, hhmm string) time.Time {
 	year, month, day := local.Date()
 	for {
 		next := time.Date(year, month, day, t.Hour(), t.Minute(), 0, 0, loc)
-		if next.After(local) {
+		if next.Year() == year && next.Month() == month && next.Day() == day &&
+			next.Hour() == t.Hour() && next.Minute() == t.Minute() && next.After(local) {
 			return next
 		}
 		// Advance the civil date in UTC and reconstruct the wall time:
