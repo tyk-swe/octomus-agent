@@ -107,7 +107,11 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 		filter += fmt.Sprintf(" AND repository=?%d COLLATE NOCASE", len(args))
 	}
 	rows, err := c.QueryContext(background,
-		"SELECT summary,seq,id FROM "+from+" WHERE kind=?1 AND seq<?2"+filter+" AND (?4='' OR instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0) ORDER BY seq DESC LIMIT ?5",
+		"SELECT summary,seq,id FROM "+from+" WHERE kind=?1 AND seq<?2"+filter+` AND (?4='' OR CASE WHEN kind='task' THEN EXISTS (
+			SELECT 1 FROM json_each(summary) AS field
+			WHERE field.key IN ('id','cycle_id','title','category','tier','target','branch','status','pr_url','error','blocked_reason')
+			AND field.type='text' AND instr(lower(field.value),lower(?4))>0
+		) ELSE instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0 END) ORDER BY seq DESC LIMIT ?5`,
 		args...)
 	if err != nil {
 		return nil, err

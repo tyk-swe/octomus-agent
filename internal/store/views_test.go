@@ -212,3 +212,67 @@ func TestIndexedViews(t *testing.T) {
 		t.Fatalf("pruned events: %+v", all)
 	}
 }
+
+func TestTaskSearchValues(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	clean := task()
+	clean.Proposal.Title = "Improve package docs"
+	failed := task()
+	failed.Proposal.Title = "Repair request handling"
+	failed.Proposal.Category = "reliability"
+	failed.Proposal.Target = "release-target"
+	failed.Branch = "retry-branch"
+	failed.Status = model.StatusFailed
+	failed.Error = str("Error returned late")
+	titled := task()
+	titled.Proposal.Title = "Fix error propagation"
+	other := task()
+	other.Config.GitHubRepo = "fixture/other"
+	other.Error = str("Error outside the repository")
+	for _, tk := range []model.Task{clean, failed, titled, other} {
+		must(t, store.Put(s, store.Tasks.Key(tk.ID), tk))
+	}
+	scoped := s.ForRepository("FIXTURE/PROJECT")
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"ErRoR", []string{titled.ID, failed.ID}},
+		{"category", nil},
+		{"null", nil},
+		{"package docs", []string{clean.ID}},
+		{"reliability", []string{failed.ID}},
+		{"release-target", []string{failed.ID}},
+		{"retry-branch", []string{failed.ID}},
+		{"failed", []string{failed.ID}},
+		{"returned late", []string{failed.ID}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			page, err := scoped.TaskPage(store.HistoryQuery{Q: &tc.query})
+			must(t, err)
+			ids := make([]string, len(page.Items))
+			for i, item := range page.Items {
+				ids[i] = item.ID
+			}
+			if !slices.Equal(ids, tc.want) || page.NextCursor != nil || page.Counts["all"] != 3 || page.Counts["failed"] != 1 {
+				t.Fatalf("search %q: ids %v, cursor %v, counts %v", tc.query, ids, page.NextCursor, page.Counts)
+			}
+		})
+	}
+	first, err := scoped.TaskPage(store.HistoryQuery{Q: str("ERROR"), Limit: new(1)})
+	must(t, err)
+	if len(first.Items) != 1 || first.Items[0].ID != titled.ID || first.NextCursor == nil {
+		t.Fatalf("first search page: %+v", first)
+	}
+	second, err := scoped.TaskPage(store.HistoryQuery{Q: str("ERROR"), Limit: new(1), Before: first.NextCursor})
+	must(t, err)
+	if len(second.Items) != 1 || second.Items[0].ID != failed.ID || second.NextCursor != nil || second.Counts["all"] != 3 {
+		t.Fatalf("second search page: %+v", second)
+	}
+	filtered, err := scoped.TaskPage(store.HistoryQuery{Q: str("error"), Status: str("queued")})
+	must(t, err)
+	if len(filtered.Items) != 1 || filtered.Items[0].ID != titled.ID || filtered.Counts["all"] != 3 {
+		t.Fatalf("status-filtered search: %+v", filtered)
+	}
+}
