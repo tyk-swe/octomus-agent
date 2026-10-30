@@ -117,34 +117,52 @@ func prsText(app *engine.App, limit int) (string, error) {
 	return b.String(), nil
 }
 
-func requestsText(app *engine.App) (string, error) {
+func requestsPages(app *engine.App) ([]string, error) {
 	view, err := app.Requests()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(view.Pending) == 0 && len(view.Recent) == 0 {
-		return "No work requests for " + app.Repository() + ".", nil
+		return []string{"No work requests for " + app.Repository() + "."}, nil
 	}
-	var b strings.Builder
-	if len(view.Pending) > 0 {
-		b.WriteString("Pending requests:")
-		for _, r := range view.Pending {
-			fmt.Fprintf(&b, "\n- %s %s (target %s)", r.ID, r.Title, r.Target)
+	header := "Work requests for " + app.Repository()
+	footer := "\n\nUse `requests <page> --repo " + app.Repository() + "` to change pages."
+	maxPages := model.RequestPendingLimit + defaultList
+	limit := maxTextLen - len(footer) - len(fmt.Sprintf("\nPage %d of %d", maxPages, maxPages))
+	pages := []string{}
+	current := header
+	section := ""
+	appendRow := func(label, row string) {
+		prefix := ""
+		if section != label {
+			prefix = "\n" + label
 		}
+		if len(current)+len(prefix)+1+len(row) > limit {
+			pages = append(pages, current)
+			current = header
+			prefix = "\n" + label
+		}
+		current += prefix + "\n" + row
+		section = label
 	}
-	if len(view.Recent) > 0 {
-		if b.Len() > 0 {
-			b.WriteString("\n")
+	for _, r := range view.Pending {
+		target := r.Target
+		if len(target) > 200 {
+			target = target[:197] + "..."
 		}
-		b.WriteString("Recent:")
-		for i, r := range view.Recent {
-			if i >= defaultList {
-				break
-			}
-			fmt.Fprintf(&b, "\n- %s [%s] %s", r.ID, r.Status, r.Title)
-		}
+		appendRow("Pending requests:", cleanText(fmt.Sprintf("- %s %s (target %s)", r.ID, r.Title, target)))
 	}
-	return b.String(), nil
+	for i, r := range view.Recent {
+		if i >= defaultList {
+			break
+		}
+		appendRow("Recent:", cleanText(fmt.Sprintf("- %s [%s] %s", r.ID, r.Status, r.Title)))
+	}
+	pages = append(pages, current)
+	for i := range pages {
+		pages[i] = fmt.Sprintf("%s\nPage %d of %d%s", pages[i], i+1, len(pages), footer)
+	}
+	return pages, nil
 }
 
 func (s *Service) reposText() string {

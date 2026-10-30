@@ -16,7 +16,7 @@ status — mode, cycle, active tasks, today's sessions
 digest [page] — 7-day summary for every repository
 tasks [N] — latest tasks · task [id] — one task's detail (default: the remembered task)
 cycles [N] — latest cycles · prs [N] — observed pull requests
-requests — pending work requests
+requests [page] — pending and recent work requests
 request <title> :: <description> — file work for the next planning cycle
 pause · resume · cycle · audit — operating controls (ask for confirmation)
 retry <task-id> · cancel <task-id> · withdraw <request-id> (ask for confirmation)
@@ -216,7 +216,7 @@ func (s *Service) dispatch(ctx context.Context, inv Invocation, app *engine.App,
 		text, err := prsText(app, listLimit(fields))
 		return text, nil, "", err
 	case "requests":
-		text, err := requestsText(app)
+		text, err := requestsPage(app, fields)
 		return text, nil, "", err
 	case "request":
 		text, err := s.createRequest(app, rest)
@@ -246,4 +246,26 @@ func listLimit(fields []string) int {
 var controlActions = map[string]model.ControlAction{
 	"pause": model.ControlPause, "resume": model.ControlResume,
 	"cycle": model.ControlCycle, "audit": model.ControlAudit,
+}
+
+func requestsPage(app *engine.App, fields []string) (string, error) {
+	if len(fields) > 1 {
+		return "", fmt.Errorf("Name a requests page: `requests [page]`")
+	}
+	page := 1
+	if len(fields) == 1 {
+		parsed, err := strconv.Atoi(fields[0])
+		if err != nil || parsed < 1 {
+			return "", fmt.Errorf("Name a requests page: `requests [page]`")
+		}
+		page = parsed
+	}
+	pages, err := requestsPages(app)
+	if err != nil {
+		return "", err
+	}
+	if page > len(pages) {
+		return "", fmt.Errorf("Requests page %d does not exist, it has %d page(s)", page, len(pages))
+	}
+	return pages[page-1], nil
 }

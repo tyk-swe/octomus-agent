@@ -3,13 +3,16 @@ package chat
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/engine"
+	"github.com/tyk-swe/octomus-agent/internal/model"
 	"github.com/tyk-swe/octomus-agent/internal/store"
 )
 
@@ -356,5 +359,117 @@ func TestFromEnvValidation(t *testing.T) {
 	}
 	if tzCfg.Timezone == nil || tzCfg.Timezone.String() != "Europe/London" {
 		t.Fatalf("timezone = %v; want Europe/London", tzCfg.Timezone)
+	}
+}
+
+func TestRequestsPaginationKeepsEveryIDReachable(t *testing.T) {
+	for i, fixture := range []struct{ title, target string }{
+		{strings.Repeat("x", 200), "main"},
+		{strings.Repeat("界", 66) + "ab", strings.Repeat("b", 200)},
+		{strings.Repeat("界", 66) + "ab", strings.Repeat("branch", 1000)},
+	} {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			title, target := fixture.title, fixture.target
+			st, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { st.Close() })
+			cfg := config.Default()
+			cfg.GitHubRepo = "fixture/requests"
+			if err := store.Put(st, st.ConfigKey(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.RegisterRepository(store.RepositoryEntry{GitHubRepo: cfg.GitHubRepo, DataDir: "."}); err != nil {
+				t.Fatal(err)
+			}
+			fleet, err := engine.NewFleet(st, t.TempDir(), engine.FleetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(fleet.Shutdown)
+			svc := NewService(testConfig(), fleet, st, nil)
+			var rows []string
+			for i := 0; i < model.RequestPendingLimit+defaultList+1; i++ {
+				status := model.RequestPending
+				if i >= model.RequestPendingLimit {
+					status = model.RequestWithdrawn
+				}
+				r := model.OperatorRequest{ID: model.ID(), Repository: cfg.GitHubRepo, Title: title, Target: target, Status: status, CreatedAt: model.Now(), UpdatedAt: model.Now()}
+				if err := store.Put(st, store.Requests.Key(r.ID), r); err != nil {
+					t.Fatal(err)
+				}
+				if status == model.RequestPending {
+					displayTarget := target
+					if len(target) > 200 {
+						displayTarget = target[:197] + "..."
+					}
+					rows = append(rows, fmt.Sprintf("- %s %s (target %s)", r.ID, title, displayTarget))
+				} else if i > model.RequestPendingLimit {
+					rows = append(rows, fmt.Sprintf("- %s [%s] %s", r.ID, status, title))
+				}
+			}
+			inv := Invocation{Provider: SlackProvider, UserID: testSlackUser, ChannelID: "C1", Text: "requests"}
+			first, _ := svc.Handle(context.Background(), inv)
+			var page, total int
+			for _, line := range strings.Split(first.Text, "\n") {
+				if strings.HasPrefix(line, "Page ") {
+					if _, err := fmt.Sscanf(line, "Page %d of %d", &page, &total); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if page != 1 || total < 2 {
+				t.Fatalf("full queue was not paginated: %q", first.Text)
+			}
+			inv.ChannelID = "C-BOUND"
+			var messages []string
+			for n := 1; n <= total; n++ {
+				inv.Text = fmt.Sprintf("requests %d --repo %s", n, cfg.GitHubRepo)
+				resp, handled := svc.Handle(context.Background(), inv)
+				if !handled || len(resp.Text) > maxTextLen || !utf8.ValidString(resp.Text) || strings.Contains(resp.Text, "truncated") {
+					t.Fatalf("page %d is not a complete bounded response: %+v", n, resp)
+				}
+				for _, want := range []string{"Work requests for " + cfg.GitHubRepo, fmt.Sprintf("Page %d of %d", n, total), "requests <page> --repo " + cfg.GitHubRepo} {
+					if !strings.Contains(resp.Text, want) {
+						t.Fatalf("page %d lacks %q: %q", n, want, resp.Text)
+					}
+				}
+				if n == 1 && resp.Text != first.Text {
+					t.Fatal("default and explicit first pages differ")
+				}
+				messages = append(messages, resp.Text)
+			}
+			combined := strings.Join(messages, "\n")
+			if strings.Count(combined, "\n- ") != len(rows) || !strings.Contains(combined, "Recent:") {
+				t.Fatalf("unexpected pending/recent rows: %q", combined)
+			}
+			for _, row := range rows {
+				if strings.Count(combined, row+"\n") != 1 {
+					t.Fatalf("row is missing, duplicated or incomplete: %q", row)
+				}
+			}
+			for _, input := range []string{"0", "-1", "bad", "1.5", "1 2", "99999999999999999999999999", fmt.Sprint(total + 1)} {
+				inv.Text = "requests " + input
+				resp, _ := svc.Handle(context.Background(), inv)
+				if !strings.Contains(resp.Text, "page") || strings.Contains(resp.Text, "\n- ") || len(resp.Buttons) != 0 {
+					t.Fatalf("invalid page %q was not rejected: %+v", input, resp)
+				}
+			}
+		})
+	}
+}
+
+func TestRequestsEmptyQueuePages(t *testing.T) {
+	svc, _ := testService(t)
+	for _, command := range []string{"requests", "requests 1", "requests 2"} {
+		resp, _ := svc.Handle(context.Background(), Invocation{Provider: SlackProvider, UserID: testSlackUser, Text: command})
+		want := "No work requests"
+		if command == "requests 2" {
+			want = "has 1 page(s)"
+		}
+		if !strings.Contains(resp.Text, want) {
+			t.Fatalf("%s = %q, want %q", command, resp.Text, want)
+		}
 	}
 }
