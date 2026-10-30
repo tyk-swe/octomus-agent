@@ -1245,6 +1245,35 @@ func TestNextDigestAcrossSpringForwardGap(t *testing.T) {
 	}
 }
 
+func TestNextDigestSkipsMissingWallTimes(t *testing.T) {
+	// Gap dates checked against installed IANA tzdata 2026b on 2026-10-30
+	// (/usr/share/zoneinfo/tzdata.zi).
+	for _, tc := range []struct {
+		zone string
+		now  string
+		hhmm string
+		want string
+	}{
+		{"America/Santiago", "2026-09-05T00:30:01-04:00", "00:30", "2026-09-07T00:30:00-03:00"},
+		{"America/New_York", "2026-03-08T00:30:00-05:00", "02:30", "2026-03-09T02:30:00-04:00"},
+	} {
+		t.Run(tc.zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(tc.zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now, err := time.Parse(time.RFC3339, tc.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := nextDigest(now, loc, tc.hhmm)
+			if got.Format("15:04") != tc.hhmm || !got.After(now) || got.Format(time.RFC3339) != tc.want {
+				t.Fatalf("next digest = %s; want next existing %s at %s", got.Format(time.RFC3339), tc.hhmm, tc.want)
+			}
+		})
+	}
+}
+
 // An interaction whose REST acknowledgement is in flight when the gateway
 // connection drops must still be answered: the gateway will not replay it
 // on Resume, so the connection-lifetime context must not cancel it.

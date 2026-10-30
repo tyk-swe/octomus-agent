@@ -134,8 +134,9 @@ With `OCTOMUS_CHAT_DIGEST_TIME` set, a daily digest goes to every
 configured alert channel: each repository's mode, cycle, attention and
 pending-request counts, and its 7-day task/cycle/PR outcome counts.
 Large fleets are split into consecutive messages at repository
-boundaries. A missing digest means the service is down — treat it as
-the heartbeat.
+boundaries. If the configured local time does not exist during a clock change,
+that day is skipped. Otherwise, a missing digest can indicate that the service
+is down, so treat it as the heartbeat.
 
 Chat failures never stop the maintainer: connections reconnect with
 backoff, delivery problems appear as `WARN chat: …` in the service log,
