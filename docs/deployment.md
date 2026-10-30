@@ -6,6 +6,17 @@ runs in its own [sandbox](sandbox.md), and the control plane holding your GitHub
 runs repository code. An unsandboxed deployment on a
 [dedicated VM](#dedicated-vm-without-a-sandbox) is also available.
 
+## Source and release versions
+
+This guide describes the checked-out source. The Docker setup below builds that source,
+including changes listed as Unreleased in the [changelog](../CHANGELOG.md).
+The release installer instead downloads the latest stable release unless you select a tag.
+For a release installation, use the documentation at that tag, including its tested runner
+versions, rather than combining the released binary with this branch's instructions.
+For example, [v0.2.0 deployment instructions](https://github.com/tyk-swe/octomus-agent/blob/v0.2.0/docs/deployment.md)
+describe that release's single-repository service. Multi-repository support and chat are
+later additions, not features of v0.2.0.
+
 ## Docker deployment
 
 You need:

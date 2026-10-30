@@ -2,7 +2,8 @@
 
 Octomus is a self-hosted service for one operator and one or more repositories. [Deployment](deployment.md)
 is the source for Docker, the checksum-verifying release installer, the dedicated VM and
-ongoing operations.
+ongoing operations. Before installing, distinguish [source builds from published releases](deployment.md#source-and-release-versions)
+and use the documentation matching your chosen version.
 
 Your first run is deliberately explicit:
 
