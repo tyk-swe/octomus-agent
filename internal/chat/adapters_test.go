@@ -1134,7 +1134,6 @@ func TestDiscordGatewayAnswersHeartbeatRequestDuringCallback(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
-	defer rest.Close()
 	released := false
 	release := func() {
 		if !released {
@@ -1142,13 +1141,22 @@ func TestDiscordGatewayAnswersHeartbeatRequestDuringCallback(t *testing.T) {
 			close(releaseCallback)
 		}
 	}
-	defer release()
 
 	a := newDiscordAdapter(svc, &ProviderConfig{Provider: DiscordProvider, BotToken: "tok", AppID: "app-1"})
 	a.apiBase = rest.URL
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go a.serveOnce(ctx)
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		a.serveOnce(ctx)
+	}()
+	defer func() {
+		cancel()
+		release()
+		<-serveDone
+		svc.waitInflight()
+		rest.Close()
+	}()
 
 	sendHeartbeatRequest := make(chan struct{}, 1)
 	heartbeatSeen := make(chan string, 1)
