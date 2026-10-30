@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tyk-swe/octomus-agent/internal/engine"
 	"github.com/tyk-swe/octomus-agent/internal/redact"
@@ -167,15 +168,24 @@ func cleanText(text string) string {
 }
 
 func boundTextLimit(text string, limit int) string {
-	text = cleanText(text)
-	if len(text) <= limit {
-		return text
+	cleaned := cleanText(text)
+	if len(cleaned) <= limit {
+		return cleaned
 	}
 	const suffix = "\n… (truncated)"
 	if limit <= len(suffix) {
-		return suffix[:limit]
+		return utf8Prefix(suffix, limit)
 	}
-	return text[:limit-len(suffix)] + suffix
+	return utf8Prefix(cleaned, limit-len(suffix)) + suffix
+}
+
+func utf8Prefix(text string, limit int) string {
+	for i, r := range text {
+		if i+utf8.RuneLen(r) > limit {
+			return text[:i]
+		}
+	}
+	return text
 }
 
 func boundText(text string) string {
