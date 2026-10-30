@@ -4,13 +4,14 @@
 Acceptance approves this record only; implementation requires a separate
 explicit request and proceeds one stage at a time.
 
-**Implementation status.** Stage 1 (multi-repository foundation) is
-implemented on branch `tyk/multi-repo-foundation`. Focused store, engine,
-API, CLI and broker validation tests, the API contract check and dashboard
-type checking pass locally; browser, race and broader suites remain for CI.
-Stages 2 (issue intake) and
-3 (tiered auto-merge) remain deferred proposals awaiting their own
-interviews and explicit go-aheads.
+**Implementation status.** Stage 1 (multi-repository foundation) merged in
+[PR #144](https://github.com/tyk-swe/octomus-agent/pull/144).
+[CI on the merge commit](https://github.com/tyk-swe/octomus-agent/actions/runs/40041284500)
+`68096a0f1049ad6fb0ed122f413ef1e9292eb76d` passed, including Go race tests,
+browser and integration suites, sandbox checks and native production-image
+acceptance on both architectures. This is CI evidence, not a live deployment
+validation. Stages 2 (issue intake) and 3 (tiered auto-merge) remain deferred
+proposals awaiting their own interviews and explicit go-aheads.
 
 ## Starting point (researched, 2026-10-23)
 
