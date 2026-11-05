@@ -69,7 +69,7 @@ Repository content, dependencies and model output are untrusted. Keep the dashbo
 loopback behind SSH, use a random operator token and restrict the GitHub token to this
 repository. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
 
-Contribution rules and the repository map are in
+Contribution rules and verification guidance are in
 [CONTRIBUTING.md](https://github.com/tyk-swe/octomus-agent/blob/main/CONTRIBUTING.md) and
 [AGENTS.md](https://github.com/tyk-swe/octomus-agent/blob/main/AGENTS.md).
 License: [Apache-2.0](LICENSE).
