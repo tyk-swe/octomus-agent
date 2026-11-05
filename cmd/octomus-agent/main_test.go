@@ -123,6 +123,32 @@ func TestServiceStartupRequiresOperatorToken(t *testing.T) {
 			t.Fatal(args, code, derr.String())
 		}
 	}
+	const whitespaceError = "OCTOMUS_TOKEN must not contain surrounding whitespace"
+	for name, test := range map[string]struct{ token, want string }{
+		"leading space":     {" " + strings.Repeat("x", 32), whitespaceError},
+		"trailing space":    {strings.Repeat("x", 32) + " ", whitespaceError},
+		"trailing tab":      {strings.Repeat("x", 32) + "\t", whitespaceError},
+		"nonbreaking space": {"\u00a0" + strings.Repeat("x", 32), whitespaceError},
+		"byte order mark":   {"\ufeff" + strings.Repeat("x", 32), whitespaceError},
+		"blank":             {strings.Repeat(" ", 32), whitespaceError},
+		"clean token":       {strings.Repeat("x", 32), "Dashboard override missing 200.html"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			code := run([]string{"--data-dir", directory, "--assets", t.TempDir()}, func(key string) (string, bool) {
+				if key == config.TokenEnv {
+					return test.token, true
+				}
+				return "", false
+			}, &out, &errOut)
+			if code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), test.want) {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+			}
+			if strings.Contains(errOut.String(), test.token) {
+				t.Fatal("startup error echoed the operator token")
+			}
+		})
+	}
 	empty := t.TempDir() + "/must-not-exist"
 	for _, args := range [][]string{{"--usage-report"}, {"--export-run", "cycle"}} {
 		var out, err bytes.Buffer

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	octomus "github.com/tyk-swe/octomus-agent"
 	"github.com/tyk-swe/octomus-agent/internal/chat"
@@ -220,6 +221,9 @@ func service(parsed arguments, env func(string) (string, bool), stdout, stderr i
 	}
 	if len(token) < 32 {
 		return fmt.Errorf("%s must contain at least 32 characters", config.TokenEnv)
+	}
+	if token != strings.TrimFunc(token, func(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }) {
+		return fmt.Errorf("%s must not contain surrounding whitespace", config.TokenEnv)
 	}
 	var assetsOverride string
 	if parsed.assets != nil {
