@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -210,7 +211,7 @@ func (w *Worker) deliverNext() {
 	if delivery == nil {
 		return
 	}
-	status, category := w.deliver(delivery)
+	status, category, retryAt := w.deliver(delivery)
 	// A completed response remains definitive even if shutdown begins before
 	// it is recorded. Only an interrupted request needs uncertain-send recovery.
 	if category != "" && w.ctx.Err() != nil {
@@ -222,7 +223,7 @@ func (w *Worker) deliverNext() {
 	case status >= 200 && status < 300:
 		w.warn(w.store.MarkDelivered(delivery.Seq, time.Now().UTC()))
 	default:
-		w.warn(w.store.MarkFailed(delivery.Seq, httpStatusCategory, &status, retryable(status)))
+		w.warn(w.store.MarkFailedAt(delivery.Seq, httpStatusCategory, &status, retryable(status), retryAt))
 	}
 }
 
@@ -238,25 +239,39 @@ func (w *Worker) warn(err error) {
 	fmt.Fprintf(w.warnings, "WARN notifications: %s\n", message)
 }
 
-func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string) {
+func (w *Worker) deliver(delivery *store.NotificationDelivery) (uint16, string, time.Time) {
 	body, err := payload(delivery)
 	if err != nil {
-		return 0, invalidPayload
+		return 0, invalidPayload, time.Time{}
 	}
 	req, err := http.NewRequestWithContext(w.ctx, http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		return 0, transportCategory
+		return 0, transportCategory, time.Time{}
 	}
 	req.Header.Set("content-type", "application/json")
 	response, err := w.client.Do(req)
 	if err != nil {
 		if isTimeout(err) {
-			return 0, timeoutCategory
+			return 0, timeoutCategory, time.Time{}
 		}
-		return 0, transportCategory
+		return 0, transportCategory, time.Time{}
 	}
 	defer response.Body.Close()
-	return uint16(response.StatusCode), ""
+	return uint16(response.StatusCode), "", retryDeadline(response, time.Now().UTC())
+}
+
+func retryDeadline(response *http.Response, now time.Time) time.Time {
+	if !retryable(uint16(response.StatusCode)) {
+		return time.Time{}
+	}
+	value := strings.TrimSpace(response.Header.Get("Retry-After"))
+	if seconds, err := strconv.ParseUint(value, 10, 32); err == nil && seconds > 0 {
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	if deadline, err := http.ParseTime(value); err == nil && deadline.After(now) {
+		return deadline
+	}
+	return time.Time{}
 }
 
 func isTimeout(err error) bool {
