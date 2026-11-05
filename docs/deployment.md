@@ -298,7 +298,9 @@ new notice. Each `application/json` POST contains:
 
 HTTPS is required except literal loopback HTTP. Redirects and proxies are disabled;
 requests time out at 10s with up to 5 attempts (30/120/600/1,800s backoff, 1s spacing,
-24h expiry, 1,000 pending cap across every destination). Queue overflow, expiry, setup errors and delivery failures
+24h expiry, 1,000 pending cap across every destination). Retryable responses with a valid
+`Retry-After` header pause the destination until that deadline, including after restart.
+Queue overflow, expiry, setup errors and delivery failures
 appear in Configuration.
 
 ## Optional Slack and Discord chat

@@ -142,7 +142,7 @@ func (s *Store) MarkFailedAt(seq int64, category string, httpStatus *uint16, ret
 	}
 	var retryEpoch int64
 	if !retryAt.IsZero() {
-		retryEpoch = retryAt.Unix()
+		retryEpoch = retryAt.Add(time.Second - time.Nanosecond).Unix()
 	}
 	return s.transaction(false, func(c *sql.Conn) error {
 		result, err := c.ExecContext(background, "UPDATE notification_outbox SET status=CASE WHEN ?1=1 AND attempts<?2 THEN 'pending' ELSE 'failed' END, next_attempt_at=CASE WHEN ?1=1 AND attempts<?2 THEN MAX(next_attempt_at,?6) ELSE next_attempt_at END, last_error=?3, http_status=?4 WHERE seq=?5 AND status='pending'", retry, maxAttempts, category, status, seq, retryEpoch)

@@ -95,7 +95,7 @@ func TestRateLimitCooldownPersistsPerDestination(t *testing.T) {
 	putNotificationTask(t, s, "cooldown-1", "blocked", "timeout")
 	putNotificationTask(t, s, "cooldown-2", "blocked", "timeout")
 
-	now := time.Now().Add(time.Second)
+	now := time.Now().Truncate(time.Second).Add(time.Second)
 	claimed, err := s.ClaimDelivery(slackDest.ID, now)
 	must(t, err)
 	if claimed == nil {

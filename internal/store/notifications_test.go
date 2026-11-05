@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/tyk-swe/octomus-agent/internal/config"
 	"github.com/tyk-swe/octomus-agent/internal/model"
@@ -13,6 +14,48 @@ import (
 )
 
 const notifyDest = "destination-a"
+
+func TestNotificationCooldownNeverClaimsBeforeDeadline(t *testing.T) {
+	t.Parallel()
+	for _, check := range []struct {
+		name   string
+		offset time.Duration
+		due    time.Duration
+	}{
+		{"whole second", 0, time.Minute},
+		{"fractional second", 500 * time.Millisecond, time.Minute + time.Second},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
+			path := statePath(t)
+			s := open(t, path)
+			must(t, s.SetNotifyPolicy(str(notifyDest), "enabled", nil))
+			putNotificationTask(t, s, "limited-task", "failed", "")
+			putNotificationTask(t, s, "queued-task", "failed", "")
+			now := time.Now().UTC().Truncate(time.Second).Add(time.Second)
+			delivery, err := s.ClaimDelivery(notifyDest, now)
+			must(t, err)
+			if delivery == nil {
+				t.Fatal("expected first delivery")
+			}
+			deadline := now.Add(time.Minute + check.offset)
+			status := uint16(429)
+			must(t, s.MarkFailedAt(delivery.Seq, "http_status", &status, true, deadline))
+			must(t, s.Close())
+			reopened := open(t, path)
+			early, err := reopened.ClaimDelivery(notifyDest, deadline.Add(-time.Nanosecond))
+			must(t, err)
+			if early != nil {
+				t.Fatalf("claimed delivery before receiver deadline: %+v", early)
+			}
+			retry, err := reopened.ClaimDelivery(notifyDest, now.Add(check.due))
+			must(t, err)
+			if retry == nil || retry.EventID != delivery.EventID || retry.Attempts != 2 {
+				t.Fatalf("expected original delivery after cooldown: %+v", retry)
+			}
+		})
+	}
+}
 
 func putMap(s *store.Store, key store.Key[json.RawMessage], record map[string]any) error {
 	data, err := json.Marshal(record)

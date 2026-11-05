@@ -285,6 +285,101 @@ func TestStatusClassification(t *testing.T) {
 	}
 }
 
+type webhookResponseTransport struct {
+	status     int
+	retryAfter string
+}
+
+func (transport webhookResponseTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: transport.status,
+		Header:     http.Header{"Retry-After": []string{transport.retryAfter}},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    request,
+	}, nil
+}
+
+func TestWebhookRetryAfterDefersDestination(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		for _, format := range []string{"seconds", "date"} {
+			t.Run(http.StatusText(status)+"/"+format, func(t *testing.T) {
+				t.Parallel()
+				state, path := testStore(t)
+				url, destination, err := configure(state, "https://example.com/hook")
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now().UTC().Truncate(time.Second)
+				deadline := now.Add(time.Hour)
+				header := "3600"
+				if format == "date" {
+					header = deadline.Format(http.TimeFormat)
+				}
+				worker := &Worker{
+					store: state, url: url, destID: destination, ctx: context.Background(), warnings: io.Discard,
+					client: &http.Client{Transport: webhookResponseTransport{status: status, retryAfter: header}},
+				}
+				putTask(t, state, "limited-task", "failed", nil)
+				putTask(t, state, "queued-task", "failed", nil)
+				worker.deliverNext()
+				if err := state.Close(); err != nil {
+					t.Fatal(err)
+				}
+				reopened, err := store.Open(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = reopened.Close() })
+				if delivery, err := reopened.ClaimDelivery(destination, now.Add(time.Minute)); err != nil || delivery != nil {
+					t.Fatalf("delivery claimed before Retry-After deadline after restart: %+v, %v", delivery, err)
+				}
+				delivery, err := reopened.ClaimDelivery(destination, time.Now().Add(time.Hour+time.Second))
+				if err != nil || delivery == nil || delivery.TaskID == nil || *delivery.TaskID != "limited-task" || delivery.Attempts != 2 {
+					t.Fatalf("expected original delivery to retry after cooldown: %+v, %v", delivery, err)
+				}
+			})
+		}
+	}
+}
+
+func TestWebhookRetryAfterFallback(t *testing.T) {
+	t.Parallel()
+	for _, check := range []struct {
+		name       string
+		status     int
+		retryAfter string
+	}{
+		{"missing", http.StatusTooManyRequests, ""},
+		{"invalid", http.StatusTooManyRequests, "tomorrow"},
+		{"negative", http.StatusServiceUnavailable, "-1"},
+		{"overflow", http.StatusServiceUnavailable, "18446744073709551615"},
+		{"past", http.StatusServiceUnavailable, time.Now().UTC().Add(-time.Hour).Format(http.TimeFormat)},
+		{"success", http.StatusOK, "3600"},
+		{"terminal", http.StatusBadRequest, "3600"},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			t.Parallel()
+			state, _ := testStore(t)
+			url, destination, err := configure(state, "https://example.com/hook")
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker := &Worker{
+				store: state, url: url, destID: destination, ctx: context.Background(), warnings: io.Discard,
+				client: &http.Client{Transport: webhookResponseTransport{status: check.status, retryAfter: check.retryAfter}},
+			}
+			putTask(t, state, "first-task", "failed", nil)
+			putTask(t, state, "queued-task", "failed", nil)
+			worker.deliverNext()
+			delivery, err := state.ClaimDelivery(destination, time.Now())
+			if err != nil || delivery == nil || delivery.TaskID == nil || *delivery.TaskID != "queued-task" || delivery.Attempts != 1 {
+				t.Fatalf("expected queued delivery without a cooldown: %+v, %v", delivery, err)
+			}
+		})
+	}
+}
+
 func rawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
