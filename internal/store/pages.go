@@ -111,7 +111,11 @@ func pageRows(c *sql.Conn, kind string, query HistoryQuery, n int) ([]pageRow, e
 			SELECT 1 FROM json_each(summary) AS field
 			WHERE field.key IN ('id','cycle_id','title','category','tier','target','branch','status','pr_url','error','blocked_reason')
 			AND field.type='text' AND instr(lower(field.value),lower(?4))>0
-		) ELSE instr(lower(title || ' ' || target || ' ' || summary),lower(?4))>0 END) ORDER BY seq DESC LIMIT ?5`,
+		) ELSE EXISTS (
+				SELECT 1 FROM json_tree(summary) AS field
+				WHERE field.type NOT IN ('object','array','null')
+				AND instr(lower(CASE field.type WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE field.atom END),lower(?4))>0
+			) END) ORDER BY seq DESC LIMIT ?5`,
 		args...)
 	if err != nil {
 		return nil, err
