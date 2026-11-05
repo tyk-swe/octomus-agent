@@ -276,3 +276,108 @@ func TestTaskSearchValues(t *testing.T) {
 		t.Fatalf("status-filtered search: %+v", filtered)
 	}
 }
+
+func TestPRSearchValues(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	for _, observation := range []model.PRObservation{
+		{Repository: "fixture/project", PR: model.PullRequest{Number: 42, Title: "Improve package docs", Branch: "docs-update", Base: "main", State: "open", Owned: true}},
+		{Repository: "fixture/project", PR: model.PullRequest{Number: 43, Title: "Repair head movement", Branch: "retry-branch", Base: "release-target", State: "closed"}},
+		{Repository: "fixture/project", PR: model.PullRequest{Number: 44, Title: "Keep HEAD current", Branch: "refresh-branch", Base: "main", State: "open"}},
+		{Repository: "fixture/other", PR: model.PullRequest{Number: 45, Title: "Other head movement", State: "open"}},
+		{Repository: "fixture/project", PR: model.PullRequest{Number: 46, Title: "Handle null and number input", State: "open"}},
+	} {
+		must(t, store.Put(s, store.PRs.Key(model.ID()), model.PRObservation{Repository: observation.Repository, ObservedAt: "2000-01-01T00:00:00Z", PR: observation.PR}))
+	}
+	scoped := s.ForRepository("FIXTURE/PROJECT")
+	for _, tc := range []struct {
+		query string
+		want  []uint64
+	}{
+		{"HeAd", []uint64{44, 43}},
+		{"number", []uint64{46}},
+		{"null", []uint64{46}},
+		{"true", []uint64{42}},
+		{"package docs", []uint64{42}},
+		{"retry-branch", []uint64{43}},
+		{"release-target", []uint64{43}},
+		{"closed", []uint64{43}},
+		{"42", []uint64{42}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			page, err := scoped.PRPage(store.HistoryQuery{Q: &tc.query})
+			must(t, err)
+			numbers := make([]uint64, len(page.Items))
+			for i, item := range page.Items {
+				numbers[i] = item.PR.Number
+			}
+			if !slices.Equal(numbers, tc.want) || page.NextCursor != nil {
+				t.Fatalf("search %q: numbers %v, cursor %v", tc.query, numbers, page.NextCursor)
+			}
+		})
+	}
+	first, err := scoped.PRPage(store.HistoryQuery{Q: str("head"), Limit: new(1)})
+	must(t, err)
+	if len(first.Items) != 1 || first.Items[0].PR.Number != 44 || first.NextCursor == nil {
+		t.Fatalf("first search page: %+v", first)
+	}
+	second, err := scoped.PRPage(store.HistoryQuery{Q: str("head"), Limit: new(1), Before: first.NextCursor})
+	must(t, err)
+	if len(second.Items) != 1 || second.Items[0].PR.Number != 43 || second.NextCursor != nil {
+		t.Fatalf("second search page: %+v", second)
+	}
+	filtered, err := scoped.PRPage(store.HistoryQuery{Q: str("head"), Status: str("open")})
+	must(t, err)
+	if len(filtered.Items) != 1 || filtered.Items[0].PR.Number != 44 {
+		t.Fatalf("status-filtered search: %+v", filtered)
+	}
+}
+
+func TestCycleSearchValues(t *testing.T) {
+	t.Parallel()
+	s := open(t, statePath(t))
+	clean := cycleFor(task())
+	clean.ID = "clean-cycle"
+	clean.StartedAt = "2000-01-01T00:00:00Z"
+	failed := cycleFor(task())
+	failed.ID = "failed-cycle"
+	failed.StartedAt = clean.StartedAt
+	failed.Status = model.CycleFailed
+	failed.Error = str("Error returned late")
+	failed.Number = 42
+	other := cycleFor(task())
+	other.Repository = "fixture/other"
+	other.Error = str("Error outside the repository")
+	for _, cycle := range []model.Cycle{clean, failed, other} {
+		must(t, store.Put(s, store.Cycles.Key(cycle.ID), cycle))
+	}
+	scoped := s.ForRepository("FIXTURE/PROJECT")
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"ErRoR", []string{failed.ID}},
+		{"number", nil},
+		{"null", nil},
+		{"failed-cycle", []string{failed.ID}},
+		{"running", []string{clean.ID}},
+		{"42", []string{failed.ID}},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			page, err := scoped.CyclePage(store.HistoryQuery{Q: &tc.query})
+			must(t, err)
+			ids := make([]string, len(page.Items))
+			for i, item := range page.Items {
+				ids[i] = item.ID
+			}
+			if !slices.Equal(ids, tc.want) || page.NextCursor != nil {
+				t.Fatalf("search %q: ids %v, cursor %v", tc.query, ids, page.NextCursor)
+			}
+		})
+	}
+	selected, err := scoped.CyclePage(store.HistoryQuery{Q: str("error"), Cycle: &clean.ID})
+	must(t, err)
+	if len(selected.Items) != 0 {
+		t.Fatalf("cycle-filtered search: %+v", selected)
+	}
+}
