@@ -75,7 +75,7 @@
   const draftExcluded = $derived(draft ? excludedForDraft(draft) : []);
   let fleet = $state<RepositoriesView | null>(null),
     newRepository = $state(''),
-    instanceCeiling = $state(0),
+    instanceCeiling = $state<number | undefined>(0),
     fleetError = $state(''),
     fleetBusy = $state(false);
   let disposed = false;
@@ -202,10 +202,20 @@
   }
   async function saveInstanceCeiling() {
     if (fleetBusy) return;
+    if (
+      instanceCeiling === undefined ||
+      !Number.isInteger(instanceCeiling) ||
+      instanceCeiling < 0
+    ) {
+      fleetError =
+        'Enter a nonnegative whole number for the instance ceiling. Use 0 for no ceiling.';
+      return;
+    }
     fleetBusy = true;
     fleetError = '';
     try {
-      fleet = await client.saveInstance(Math.max(0, Math.floor(instanceCeiling) || 0));
+      fleet = await client.saveInstance(instanceCeiling);
+      instanceCeiling = fleet.instance_max_sessions_per_day;
     } catch (e) {
       if (!disposed) fleetError = (e as Error).message;
     } finally {
