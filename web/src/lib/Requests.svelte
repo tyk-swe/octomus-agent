@@ -71,18 +71,25 @@
   );
 
   async function submit() {
+    const submitted = { title, description, target };
     pendingAction = 'create';
     actionError = '';
     message = '';
     try {
       await client.createRequest({
-        title: title.trim(),
-        description: description.trim(),
-        target
+        title: submitted.title.trim(),
+        description: submitted.description.trim(),
+        target: submitted.target
       });
-      title = '';
-      description = '';
-      target = view?.default_branch ?? '';
+      if (
+        title === submitted.title &&
+        description === submitted.description &&
+        target === submitted.target
+      ) {
+        title = '';
+        description = '';
+        target = view?.default_branch ?? '';
+      }
       message = 'Request saved. The next planning cycle will assess it.';
       await resource.refresh('requests', true);
     } catch (error) {

@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test';
 import {
+  deferred,
   login,
   nextPoll,
   openNavigation,
@@ -294,3 +295,72 @@ test('request assessments inspect seeded proposals and dismissed cycles @respons
     await page.getByRole('button', { name: 'Close run evidence' }).click();
   }
 });
+
+for (const changed of ['title', 'description', 'target', 'all'] as const) {
+  test(`request submission preserves newer ${changed} edits while the saved request settles`, async ({
+    page
+  }) => {
+    const createGate = deferred();
+    const bodies: { title: string; description: string; target: string }[] = [];
+    const view = {
+      repository: 'fixture/project',
+      default_branch: 'main',
+      pending: [] as RequestRecord[],
+      recent: [],
+      pending_limit: 20,
+      seed_limit: 10,
+      targets: [{ branch: 'octomus/existing', number: 42, title: 'An existing improvement' }]
+    };
+    await page.route('**/api/requests**', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({ json: view });
+        return;
+      }
+      const body = route.request().postDataJSON() as (typeof bodies)[number];
+      bodies.push(body);
+      await createGate.promise;
+      const created = record({ id: `request-${bodies.length}`, ...body });
+      view.pending.push(created);
+      await route.fulfill({ status: 201, json: created });
+    });
+    await login(page);
+    await openNavigation(page, 'Requests', false);
+    const title = page.locator('#request-title');
+    const description = page.locator('#request-description');
+    const target = page.locator('#request-target');
+    const submit = page.getByRole('button', { name: 'Request work', exact: true });
+    await title.fill('First request');
+    await description.fill('Save the first request.');
+    await submit.click();
+    await expect.poll(() => bodies.length).toBe(1);
+    const next = {
+      title: changed === 'title' || changed === 'all' ? 'Next request' : 'First request',
+      description:
+        changed === 'description' || changed === 'all'
+          ? 'Keep the next request draft.'
+          : 'Save the first request.',
+      target: changed === 'target' || changed === 'all' ? 'octomus/existing' : 'main'
+    };
+    await title.fill(next.title);
+    await description.fill(next.description);
+    await target.selectOption(next.target);
+    createGate.resolve();
+    await expect(
+      page.getByText('Request saved. The next planning cycle will assess it.')
+    ).toBeVisible();
+    await expect(title).toHaveValue(next.title);
+    await expect(description).toHaveValue(next.description);
+    await expect(target).toHaveValue(next.target);
+    expect(bodies).toEqual([
+      { title: 'First request', description: 'Save the first request.', target: 'main' }
+    ]);
+    await submit.click();
+    await expect(title).toHaveValue('');
+    await expect(description).toHaveValue('');
+    await expect(target).toHaveValue('main');
+    expect(bodies).toEqual([
+      { title: 'First request', description: 'Save the first request.', target: 'main' },
+      next
+    ]);
+  });
+}
